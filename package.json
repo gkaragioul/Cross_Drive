@@ -1,0 +1,97 @@
+{
+  "name": "my-mac-drive",
+  "version": "1.0.0",
+  "description": "Mac-formatted drive manager for Windows with local drive-letter mounting.",
+  "author": "MacMount",
+  "license": "MIT",
+  "main": "main.js",
+  "scripts": {
+    "dev": "vite --port 5173 --strictPort",
+    "build": "vite build",
+    "electron": "wait-on http://localhost:5173 && node scripts/start-electron.js",
+    "electron:prod": "cross-env NODE_ENV=production electron .",
+    "start": "concurrently \"npm run dev\" \"npm run electron\"",
+    "start:prod": "npm run build && npm run electron:prod",
+    "test": "node scripts/self-test.js",
+    "security:audit": "node scripts/security-audit.js",
+    "commercial:gate": "node scripts/commercial-gate.js",
+    "package": "npm run release:win:full",
+    "native:run": "dotnet run --project native/MacMount.NativeService/MacMount.NativeService.csproj",
+    "native:build": "dotnet build native/MacMount.NativeService/MacMount.NativeService.csproj -c Release",
+    "raw:build": "dotnet build native/MacMount.RawDiskEngine/MacMount.RawDiskEngine.csproj -c Release",
+    "broker:build": "dotnet build native/MacMount.NativeBroker/MacMount.NativeBroker.csproj -c Release",
+    "native:publish": "powershell -ExecutionPolicy Bypass -File scripts/publish-native.ps1",
+    "release:prep": "npm run native:publish && npm run build",
+    "release:win": "npm run release:prep && electron-builder --win portable --publish never",
+    "release:win:full": "npm run release:prep && electron-builder --win nsis portable --publish never",
+    "release:win:unsigned": "npm run release:prep && powershell -ExecutionPolicy Bypass -File scripts/build-release-unsigned.ps1",
+    "release:audit": "powershell -ExecutionPolicy Bypass -File scripts/release-audit.ps1",
+    "release:audit:unsigned": "powershell -ExecutionPolicy Bypass -File scripts/release-audit.ps1 -AllowUnsigned",
+    "release:gate": "npm run test && npm run security:audit && npm run commercial:gate && npm run release:audit",
+    "signing:verify": "powershell -ExecutionPolicy Bypass -File scripts/verify-signing-config.ps1",
+    "release:candidate": "powershell -ExecutionPolicy Bypass -File scripts/release-candidate.ps1",
+    "signing:setup:test": "powershell -ExecutionPolicy Bypass -File scripts/setup-signing-env.ps1",
+    "signing:setup:real": "powershell -ExecutionPolicy Bypass -File scripts/configure-real-signing.ps1",
+    "release:win:signed": "npm run release:win:full && npm run release:audit"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3",
+    "electron": "^32.0.0",
+    "electron-builder": "^24.13.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^5.4.0",
+    "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "com.macmount.app",
+    "productName": "MacMount",
+    "files": [
+      "dist/**/*",
+      "main.js",
+      "preload.js",
+      "server.js",
+      "routes/**/*.js",
+      "scripts/**/*.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "scripts/MacMount.ps1",
+        "to": "scripts/MacMount.ps1"
+      },
+      {
+        "from": "prereqs",
+        "to": "prereqs"
+      },
+      {
+        "from": "native/bin",
+        "to": "native-bin"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "publisherName": "MacMount",
+      "signAndEditExecutable": false,
+      "requestedExecutionLevel": "requireAdministrator"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": true,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": false,
+      "license": "build/EULA.txt",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}

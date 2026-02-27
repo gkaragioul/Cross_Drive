@@ -1,0 +1,261 @@
+# MacMount — Mac Drive Manager for Windows
+
+MacMount is a Windows desktop application that lets you **mount, browse, and read** APFS and HFS+ formatted Mac drives directly on Windows — exposed as real local drive letters (e.g. `M:\`, `N:\`), not slow network shares.
+
+Built on Electron + React + .NET, with a high-performance native caching engine and WinFsp for OS-level filesystem integration.
+
+---
+
+## Table of Contents
+
+- [Features](#features)
+- [Architecture](#architecture)
+- [Prerequisites](#prerequisites)
+- [Development Setup](#development-setup)
+- [Build & Release](#build--release)
+- [Mount Modes](#mount-modes)
+- [Project Structure](#project-structure)
+- [Commercial Readiness](#commercial-readiness)
+- [Known Limitations](#known-limitations)
+- [License](#license)
+
+---
+
+## Features
+
+| Feature | Status |
+|---|---|
+| APFS read support | Stable |
+| HFS+ read support | Stable |
+| APFS write support | Experimental |
+| Local drive-letter mounting (e.g. `M:\`) | Stable |
+| WinFsp filesystem integration | Stable |
+| High-performance native caching engine | Stable |
+| Multi-tier block + directory cache | Stable |
+| Read-ahead prefetching | Stable |
+| WSL UNC fallback path | Stable |
+| Native .NET raw disk service | Stable |
+| Electron UI + real-time dashboard | Stable |
+| Code-signed installer | Pending (real cert required) |
+
+### Performance highlights
+
+- **Block-level caching** — 64 KB–512 KB blocks with LRU eviction
+- **Directory entry caching** — fast repeated directory listings with automatic invalidation
+- **Read-ahead prefetching** — predictive sequential load for large file access
+- **Async I/O** — non-blocking operations keep the UI responsive
+- **Zero-allocation reads** — `ArrayPool` recycling on small files
+
+---
+
+## Architecture
+
+```
+┌──────────────────────────────────┐
+│  Electron Shell  (main.js)       │  Admin UAC elevation at launch
+│  React UI  (src/)                │  Vite dev server / bundled dist/
+│  Express API  (server.js :3001)  │  Routes: drive / mount / native / system
+└────────────┬─────────────────────┘
+             │ IPC / HTTP (localhost only)
+    ┌────────▼──────────┐    ┌─────────────────────┐
+    │  MacMount.Native  │    │  MacMount.RawDisk   │
+    │  Service (.NET)   │    │  Engine (.NET)      │
+    │  Named-pipe IPC   │    │  Direct disk I/O    │
+    └────────┬──────────┘    └─────────────────────┘
+             │
+    ┌────────▼──────────┐
+    │  WinFsp  /  WSL   │  OS-level FUSE + UNC fallback
+    └───────────────────┘
+```
+
+**Mount modes** (selectable at runtime via `MACMOUNT_MOUNT_MODE`):
+
+| Mode | Description |
+|---|---|
+| `hybrid_canary` | Default. Routes a percentage of mounts through native engine, remainder via WSL UNC |
+| `wsl_unc` | All mounts via WSL (`\\wsl$\...`), maximum compatibility |
+| `experimental_raw` | All mounts via native raw disk engine, maximum performance |
+
+---
+
+## Prerequisites
+
+| Requirement | Notes |
+|---|---|
+| **Windows 10/11 64-bit** | Latest cumulative updates recommended |
+| **Administrator privileges** | Required for raw disk access (`\\.\PHYSICALDRIVE#`) |
+| **[WinFsp](https://github.com/winfsp/winfsp/releases)** | v1.10 or later — provides FUSE kernel driver |
+| **Node.js 20+** | For development only |
+| **[.NET 8 SDK](https://dotnet.microsoft.com/download)** | For building native services |
+| **WSL 2** | Required for `wsl_unc` and `hybrid_canary` mount modes |
+
+---
+
+## Development Setup
+
+```bash
+# 1. Install JS dependencies
+npm install
+
+# 2. Build native .NET services
+npm run native:build   # MacMount.NativeService
+npm run raw:build      # MacMount.RawDiskEngine
+npm run broker:build   # MacMount.NativeBroker
+
+# 3. Start dev server + Electron
+npm run start
+```
+
+The Vite dev server starts on `http://localhost:5173` and Electron loads it automatically. The Express backend starts on `http://127.0.0.1:3001` (loopback-only).
+
+### Available scripts
+
+| Script | Purpose |
+|---|---|
+| `npm run start` | Dev mode: Vite + Electron in parallel |
+| `npm run start:prod` | Production build then launch |
+| `npm run build` | Vite production bundle |
+| `npm run test` | Self-test suite (Electron hardening, config checks) |
+| `npm run security:audit` | Dependency vulnerability scan |
+| `npm run commercial:gate` | Validate release documentation presence |
+| `npm run native:publish` | Publish all .NET binaries to `native/bin/` |
+| `npm run release:prep` | `native:publish` + `build` |
+| `npm run release:win:full` | Full NSIS installer + portable `.exe` |
+| `npm run release:win:unsigned` | CI/staging build without production signing |
+| `npm run release:gate` | End-to-end gate: test + audit + signing |
+| `npm run release:candidate` | Full production release pipeline |
+| `npm run signing:setup:real` | Configure real Authenticode certificate |
+| `npm run signing:verify` | Validate signing environment |
+
+---
+
+## Build & Release
+
+### Development / staging build (no real cert)
+
+```bash
+npm run release:win:unsigned
+```
+
+Outputs unsigned installer and portable artifacts to `dist/`.
+
+### Production build (requires real Authenticode certificate)
+
+```bash
+# 1. Configure certificate
+npm run signing:setup:real -- -PfxPath "C:\secure\MacMount-Prod.pfx" -PfxPassword "YOUR_PASSWORD"
+
+# 2. Build and sign
+npm run release:win:signed
+
+# 3. Full release gate (recommended on the release machine)
+npm run release:candidate
+```
+
+Env vars accepted for CI:
+
+```
+CSC_LINK              Path or base64 blob of the PFX
+CSC_KEY_PASSWORD      PFX passphrase
+WIN_CSC_LINK          (optional) Windows-specific override
+WIN_CSC_KEY_PASSWORD  (optional) Windows-specific passphrase
+```
+
+Place the offline WinFsp installer at `prereqs/winfsp.msi` before building the full installer so it is bundled for end-user machines without internet access.
+
+---
+
+## Mount Modes
+
+Configure via environment variable before launching:
+
+```powershell
+# Maximum compatibility (WSL UNC only)
+$env:MACMOUNT_MOUNT_MODE = "wsl_unc"
+
+# Default: split traffic — 10% native, 90% WSL
+$env:MACMOUNT_MOUNT_MODE = "hybrid_canary"
+$env:MACMOUNT_CANARY_PERCENT = "10"
+
+# Maximum performance (native raw disk engine only)
+$env:MACMOUNT_MOUNT_MODE = "experimental_raw"
+```
+
+---
+
+## Project Structure
+
+```
+Mac_Opener/
+├── main.js                  Electron main process, UAC elevation, window lifecycle
+├── server.js                Express API server (port 3001, loopback-only)
+├── preload.js               Electron preload bridge (context-isolated)
+├── vite.config.js           Vite bundler config
+├── package.json             Dependencies, scripts, electron-builder config
+│
+├── src/                     React UI (Vite)
+│   ├── App.jsx              Root component + dashboard
+│   ├── main.jsx             React entry point
+│   └── App.css / index.css  Styling
+│
+├── routes/                  Express route modules
+│   ├── driveRoutes.js       Physical disk enumeration
+│   ├── mountRoutes.js       Mount / unmount operations
+│   ├── nativeRoutes.js      Native service IPC bridge
+│   └── systemRoutes.js      Health, logs, setup status
+│
+├── scripts/                 Build, release, signing, and utility scripts
+│
+├── native/                  .NET projects
+│   ├── MacMount.NativeService/   Named-pipe filesystem service
+│   ├── MacMount.RawDiskEngine/   Low-level APFS/HFS+ parser + disk I/O
+│   └── MacMount.NativeBroker/    Privileged broker for UAC-separated ops
+│
+├── docs/                    Commercial readiness documentation
+│   ├── COMMERCIAL_READINESS.md
+│   ├── GO_NO_GO.md
+│   ├── RISK_REGISTER.md
+│   └── SUPPORT_RUNBOOK.md
+│
+├── prereqs/                 Bundled redistributables (e.g. winfsp.msi)
+├── public/                  Static assets served by Vite
+└── build/                   Electron-builder resources (EULA, icons)
+```
+
+---
+
+## Commercial Readiness
+
+Current status: **NOT ready for public GA release.**
+
+Blocking items before general availability:
+
+1. Configure a real Authenticode code-signing certificate (`CSC_LINK` / `WIN_CSC_LINK`).
+2. Produce and verify a `Valid` signed installer artifact (`npm run release:gate`).
+3. Final smoke test on a clean Windows machine with a standard user workflow.
+
+See [`docs/COMMERCIAL_READINESS.md`](docs/COMMERCIAL_READINESS.md) and [`docs/GO_NO_GO.md`](docs/GO_NO_GO.md) for the full release gate matrix and approval checklist.
+
+### SLO targets (post-GA)
+
+| Metric | Target |
+|---|---|
+| App launch to usable UI | ≤ 5 s on reference hardware |
+| Mount success rate | ≥ 99% on supported hardware |
+| Crash-free sessions | ≥ 99.5% |
+| Support diagnostics bundle | ≤ 2 minutes to collect |
+
+---
+
+## Known Limitations
+
+- **APFS write support is experimental.** Always keep backups before writing to an APFS volume.
+- **Administrator rights are mandatory.** Raw `\\.\PHYSICALDRIVE#` access is not available to standard users.
+- **WinFsp must be installed** before the native mount engine will work. The full installer bundles WinFsp automatically; dev setups require manual installation.
+- **WSL 2 required** for `wsl_unc` and `hybrid_canary` modes. WSL 1 is not supported.
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE) for details.

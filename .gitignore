@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+*.local
+
+# Electron builder output
+release/
+
+# Native build output
+native/bin/
+native/*/bin/
+native/*/obj/
+native-bridge/bin/
+native-bridge/obj/
+
+# Logs
+*.log
+logs/
+
+# macOS artifacts
+.DS_Store
+
+# Windows artifacts
+Thumbs.db
+desktop.ini
+
+# Environment / secrets
+.env
+.env.*
+*.pfx
+*.p12
+
+# Signing config (never commit real certs)
+signing-env.ps1
+
+# VS / Rider
+.vs/
+*.user
+*.suo
+.idea/
+
+# Claude workspace
+.claude/
+
+# Temp / scratch
+asar-check/
+asar-temp/
+asar-test/
+
+# Embedded third-party repos (not tracked as submodules)
+native-bridge/apfs-fuse/

@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html data-color-mode="auto" data-light-theme="light" data-dark-theme="dark_dimmed">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark">
+    <meta name="supported-color-schemes" content="light dark">
+
+    <title>Download &middot; WinFsp</title>
+      
+        <link rel="icon" type="image/png" href="../favicon.png" />
+      <link rel="stylesheet" href="../assets/css/site.css" />
+  </head>
+  <body class="color-bg-default color-fg-default">
+
+    
+
+    <div id="container" class="container-lg clearfix"><div id="top" class="d-block d-md-none">
+          <div class="clearfix color-bg-subtle border-bottom p-3">
+              
+                <img src="../logo.png" class="float-left mr-3 auto-invert" style="height:32px;" />
+              <h1 class="f2-light text-uppercase float-left">WinFsp</h1>
+            <details class="dropdown details-reset details-overlay float-right">
+              <summary class="btn btn-invisible" aria-haspopup="true">
+                <img src="../assets/svg/three-bars.svg" class="auto-invert" />
+              </summary>
+              <ul class="dropdown-menu dropdown-menu-w">
+                <li><a class="dropdown-item" href="../">Home</a></li><li><a class="dropdown-item" href="../rel">Download</a></li><li><a class="dropdown-item" href="../apiref">API Reference</a></li><li><a class="dropdown-item" href="../doc">Documentation</a></li><li><a class="dropdown-item" href="../com">Commercial License</a></li><li><a class="dropdown-item" href="../src">Source</a></li>
+              </ul>
+            </details>
+          </div>
+        </div>
+
+        <div id="side" class="col-md-3 float-left d-none d-md-block">
+          <div class="p-3" style="min-height:100vh">
+              
+                <div class="mb-3 text-center">
+                  <img src="../logo.png" class="auto-invert" style="width:75%;" />
+                </div>
+              <h1 class="f1-light text-uppercase text-center mb-3">WinFsp</h1>
+            <nav class="SideNav border"><a class="SideNav-item" href="../" >Home</a>
+                <a class="SideNav-item" href="../rel" aria-current="page">Download</a>
+                <a class="SideNav-item" href="../apiref" >API Reference</a>
+                <a class="SideNav-item" href="../doc" >Documentation</a>
+                <a class="SideNav-item" href="../com" >Commercial License</a>
+                <a class="SideNav-item" href="../src" >Source</a>
+                
+            </nav>
+          </div>
+        </div>
+
+      <div id="main" class="col-12 col-md-9 float-left">
+        <div class="p-3 markdown-body" style="min-height:100vh">
+          <h1>Download</h1>
+<p>WinFsp is released in the form of an MSI installer that includes a signed driver and all files necessary to run and develop user mode file systems on Windows. The installer supports Windows native, FUSE, .NET and Cygwin file systems out of the box. Download the latest version here.</p>
+<center class="my-5">
+<a class="btn btn-primary" style="width:240px;" href="https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi" role="button">Download WinFsp Installer</a><br/>
+<a class="text-small" href="https://github.com/winfsp/winfsp">Repository</a> &middot; <a class="text-small" href="https://github.com/winfsp/winfsp/blob/v2.1/Changelog.md">Changelog</a><br/>
+<br/>
+<br/>
+<b>Additional Downloads</b><br/>
+<span class="text-small">WinFsp installation required</span><br/>
+<br/>
+<a class="btn mb-1" style="width:240px;" href="https://github.com/winfsp/sshfs-win/releases/download/v3.5.20357/sshfs-win-3.5.20357-x64.msi" role="button">SSHFS-Win (x64)</a><br/>
+<a class="btn" style="width:240px;" href="https://github.com/winfsp/sshfs-win/releases/download/v3.5.20357/sshfs-win-3.5.20357-x86.msi" role="button">SSHFS-Win (x86)</a><br/>
+<a class="text-small" href="https://github.com/winfsp/sshfs-win">Repository</a><br/>
+<br/>
+<a class="btn" style="width:240px;" href="https://github.com/winfsp/nfs-win/releases/download/v1.0.17083/nfs-win-1.0.17083.msi" role="button">NFS-Win (x86)</a><br/>
+<a class="text-small" href="https://github.com/winfsp/nfs-win">Repository</a>
+</center>
+<h2 id="quick-start-guide">Quick Start Guide</h2>
+<div class="clearfix">
+  <div class="float-right col-6 pl-2">
+    <img src="install.png" class="" />
+  </div>
+  <div class="float-right col-6 pr-2">
+<ul>
+<li>
+<p>Download and run the WinFsp installer.</p>
+</li>
+<li>
+<p>In the installer select the option to install the developer files. These include the MEMFS sample file system, but also header and library files that let you develop your own user-mode file system.</p>
+</li>
+<li>
+<p>You should not need to reboot, unless WinFsp was already running on your system.</p>
+</div>
+</li>
+</ul>
+</div>
+<h2 id="launch-winfsp-from-the-windows-explorer">Launch WinFsp from the Windows Explorer</h2>
+<div class="clearfix">
+  <div class="float-left col-6 pr-2">
+    <img src="explorer.png" class="" />
+  </div>
+  <div class="float-left col-6 pl-2">
+<ul>
+<li>
+<p>Open Windows Explorer</p>
+</li>
+<li>
+<p>Select &ldquo;This PC&rdquo;. Right-click and select &ldquo;Map network drive&hellip;&rdquo;</p>
+</li>
+<li>
+<p>Map a drive to <code>\\memfs64\share</code>. (Assuming a 64-bit machine. Try <code>\\memfs32\share</code> if you have a 32-bit machine.)</p>
+</li>
+<li>
+<p>After a few seconds a new Explorer window will open up for your new drive.</p>
+</li>
+<li>
+<p>The file system behind this drive is a case-insensitive in-memory file system (MEMFS).</p>
+</li>
+<li>
+<p>When you are done, you can simply right click on the drive from Windows Explorer and select “Disconnect”.</p>
+</div>
+</li>
+</ul>
+</div>
+<h2 id="launch-winfsp-from-the-command-prompt">Launch WinFsp from the Command Prompt</h2>
+<div class="clearfix">
+  <div class="float-right col-6 pl-2">
+    <img src="command.png" class="" />
+  </div>
+  <div class="float-right col-6 pr-2">
+<ul>
+<li>
+<p>Start a non-admin Command Prompt.</p>
+</li>
+<li>
+<p>Navigate to the folder where you installed WinFsp: <code>cd C:\Program Files (x86)\WinFsp\bin</code></p>
+</li>
+<li>
+<p>Execute the command: <code>memfs-x64 -u \memfs64\share2 -m *</code>. (Assuming a 64-bit machine. Try <code>memfs-x86 -u \memfs32\share2 -m *</code> if you have a 32-bit machine.)</p>
+</li>
+<li>
+<p>Open a second non-admin Command Prompt and navigate to the new drive.</p>
+</li>
+<li>
+<p>When you are done, you can just press Ctrl-C to kill the MEMFS process from the first command prompt.</p>
+</div>
+</li>
+</ul>
+</div>
+<h2 id="for-cygwin-users">For Cygwin users</h2>
+<div class="clearfix">
+  <div class="float-left col-6 pr-2">
+    <img src="cygwin.png" class="" />
+  </div>
+  <div class="float-left col-6 pl-2">
+<p>The installer includes a FUSE package that can be installed on 32-bit or 64-bit Cygwin. This allows software such as SSHFS and FUSEPY to be built and run on Cygwin with minimal changes.</p>
+<p>To install the FUSE package to Cygwin perform the following steps:</p>
+<pre tabindex="0"><code>$ cd opt/cygfuse/       &lt;1&gt;
+$ sh ./install.sh       &lt;2&gt;
+</code></pre><ol>
+<li>From a Cygwin command prompt change to the subdirectory <code>opt/cygfuse</code> under the WinFsp installation directory.</li>
+<li>Execute the command <code>sh ./install.sh</code> which will install the necessary FUSE files. This includes FUSE runtime and development files.</li>
+</ol>
+<p>To uninstall the FUSE package to Cygwin perform the following steps:</p>
+<pre tabindex="0"><code>$ cd opt/cygfuse/       &lt;1&gt;
+$ sh ./uninstall.sh     &lt;2&gt;
+</code></pre><ol>
+<li>From a Cygwin command prompt change to the subdirectory <code>opt/cygfuse</code> under the WinFsp installation directory.</li>
+<li>Execute the command <code>sh ./uninstall.sh</code> which will uninstall all previously installed FUSE files.</li>
+</ol>
+  </div>
+</div>
+
+</div>
+      </div>
+
+    </div>
+
+  <!-- Cloudflare Pages Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "32269d9001c74230870e017e103bfda1"}'></script><!-- Cloudflare Pages Analytics --><script defer src="https://static.cloudflareinsights.com/beacon.min.js/vcd15cbe7772f49c399c6a5babf22c1241717689176015" integrity="sha512-ZpsOmlRQV6y907TI0dKBHq9Md29nnaEIPlkf84rnaERnq6zvWvPUqr2ft8M1aS28oN72PdrCzSjY4U6VaAw1EQ==" data-cf-beacon='{"version":"2024.11.0","token":"5334b99b9f1747d388d07f3a3d5618ea","r":1,"server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+</body>
+</html>
+

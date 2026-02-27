@@ -1,0 +1,11 @@
+MacMount End User License Agreement (EULA)
+
+By installing or using MacMount, you agree to use the software at your own risk.
+
+Important terms:
+1. MacMount mounts physical disks and may perform privileged operations.
+2. You are responsible for selecting the correct physical disk and maintaining backups.
+3. The software is provided "as is" without warranties of any kind.
+4. The authors are not liable for data loss, corruption, or business interruption.
+
+If you do not agree with these terms, do not install or use MacMount.
