@@ -167,6 +167,13 @@ function Get-Drives {
                     if ($type -match "7C3457EF-0000-11AA-AA11-00306543ECAC" -or $p.Type -match "APFS") {
                         $isMac = $true; $format = "APFS"; break
                     }
+                    # MBR-based HFS+ (partition type 0xAF) — shows as Unknown in Windows
+                    if ($p.Type -eq "Unknown") {
+                        $diskInfo = Get-Disk -Number $id -ErrorAction SilentlyContinue
+                        if ($diskInfo -and $diskInfo.PartitionStyle -eq "MBR" -and $p.MbrType -eq 175) {
+                            $isMac = $true; $format = "HFS+ (MBR)"; break
+                        }
+                    }
                 }
             }
         }

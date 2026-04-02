@@ -212,21 +212,22 @@ const App = () => {
 
     return (
       <div style={{
-        backgroundColor: isFailed ? 'rgba(255,69,58,0.12)' : 'rgba(10,132,255,0.1)',
-        border: `1px solid ${isFailed ? 'var(--danger)' : '#0a84ff'}`,
-        color: isFailed ? 'var(--danger)' : '#60aaff',
+        backgroundColor: isFailed ? 'rgba(192,57,43,0.1)' : 'rgba(229,83,0,0.08)',
+        border: `1px solid ${isFailed ? 'var(--danger)' : 'rgba(229,83,0,0.3)'}`,
+        color: isFailed ? 'var(--danger)' : 'var(--primary)',
         padding: '14px 18px',
-        borderRadius: '12px',
         marginBottom: '20px',
         display: 'flex',
         alignItems: 'center',
         gap: '12px',
-        fontSize: '13px'
+        fontSize: '12px',
+        fontFamily: 'var(--font-mono)',
+        letterSpacing: '0.5px'
       }}>
         {isInstalling && (
           <div style={{
-            width: 16, height: 16, borderRadius: '50%',
-            border: '2px solid #0a84ff', borderTopColor: 'transparent',
+            width: 14, height: 14,
+            border: '2px solid var(--primary)', borderTopColor: 'transparent',
             animation: 'spin 0.8s linear infinite', flexShrink: 0
           }} />
         )}
@@ -255,8 +256,8 @@ const App = () => {
           <SetupBanner />
 
           {errorMessage && (
-            <div style={{ backgroundColor: 'rgba(255, 69, 58, 0.1)', border: '1px solid var(--danger)', color: 'var(--danger)', padding: '16px', borderRadius: '12px', marginBottom: '24px' }}>
-              <strong>System Notification:</strong> {errorMessage}
+            <div style={{ backgroundColor: 'rgba(192,57,43,0.08)', border: '1px solid var(--danger)', color: 'var(--danger)', padding: '14px 18px', marginBottom: '24px', fontFamily: 'var(--font-mono)', fontSize: '12px', letterSpacing: '0.5px' }}>
+              <strong style={{ letterSpacing: '1.5px', textTransform: 'uppercase' }}>SYS_ERROR:</strong> {errorMessage}
             </div>
           )}
 
@@ -326,14 +327,14 @@ const App = () => {
               <button className="btn btn-outline" style={{ width: 'auto', padding: '8px 16px' }} onClick={() => setLogs([])}>Clear</button>
             </div>
           </div>
-          <div style={{ backgroundColor: '#000', border: '1px solid var(--border)', borderRadius: '12px', padding: '20px', height: '500px', overflowY: 'auto', fontFamily: 'monospace', fontSize: '13px' }}>
+          <div style={{ backgroundColor: '#080808', border: '1px solid var(--border)', padding: '20px', height: '500px', overflowY: 'auto', fontFamily: 'var(--font-mono)', fontSize: '12px' }}>
             {logs.map((log, i) => (
-              <div key={i} style={{ marginBottom: '8px', color: log.type === 'error' ? 'var(--danger)' : log.type === 'success' ? 'var(--success)' : log.type === 'warning' ? '#ff9f0a' : 'var(--text-dim)' }}>
-                <span style={{ color: '#555', marginRight: '10px' }}>[{log.timestamp}]</span>
+              <div key={i} style={{ marginBottom: '6px', color: log.type === 'error' ? 'var(--danger)' : log.type === 'success' ? 'var(--success)' : log.type === 'warning' ? 'var(--warning)' : 'var(--text-dim)', lineHeight: '1.6' }}>
+                <span style={{ color: '#333', marginRight: '10px' }}>[{log.timestamp}]</span>
                 <span>{log.message}</span>
               </div>
             ))}
-            {logs.length === 0 && <div style={{ color: '#444', textAlign: 'center', marginTop: '200px' }}>No activity logged yet.</div>}
+            {logs.length === 0 && <div style={{ color: '#333', textAlign: 'center', marginTop: '200px', letterSpacing: '2px', textTransform: 'uppercase', fontSize: '11px' }}>-- NO ACTIVITY LOGGED --</div>}
           </div>
         </section>
       );
@@ -353,8 +354,8 @@ const App = () => {
 
       const row = (label, value) => (
         <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
-          <span style={{ color: 'var(--text-dim)' }}>{label}</span>
-          <span style={{ fontFamily: 'monospace' }}>{value}</span>
+          <span style={{ color: 'var(--text-dim)', fontSize: '12px', letterSpacing: '1px', textTransform: 'uppercase' }}>{label}</span>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'var(--text-main)' }}>{value}</span>
         </div>
       );
 
@@ -362,15 +363,15 @@ const App = () => {
         <section className="fade-in">
           <h1>Settings</h1>
 
-          <h3 style={{ marginTop: '24px', marginBottom: '12px', opacity: 0.6, fontSize: '12px', textTransform: 'uppercase', letterSpacing: '1px' }}>Native Engine</h3>
-          <div style={{ background: '#111', border: '1px solid var(--border)', borderRadius: '12px', padding: '16px' }}>
+          <h3 style={{ marginTop: '24px', marginBottom: '12px', opacity: 0.5, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '2.5px', fontFamily: 'var(--font-heading)', color: 'var(--primary)' }}>Native Engine</h3>
+          <div style={{ background: '#0e0e0e', border: '1px solid var(--border)', padding: '16px' }}>
             {row('Status', nativeStatus.available ? 'Connected' : 'Not connected')}
             {nativeStatus.available && row('Engine', nativeStatus.engine || 'unknown')}
             {nativeStatus.available && row('Local Fixed Support', nativeStatus.supportsLocalFixed ? 'Yes' : 'No')}
           </div>
 
-          <h3 style={{ marginTop: '24px', marginBottom: '12px', opacity: 0.6, fontSize: '12px', textTransform: 'uppercase', letterSpacing: '1px' }}>Runtime Configuration</h3>
-          <div style={{ background: '#111', border: '1px solid var(--border)', borderRadius: '12px', padding: '16px' }}>
+          <h3 style={{ marginTop: '24px', marginBottom: '12px', opacity: 0.5, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '2.5px', fontFamily: 'var(--font-heading)', color: 'var(--primary)' }}>Runtime Configuration</h3>
+          <div style={{ background: '#0e0e0e', border: '1px solid var(--border)', padding: '16px' }}>
             {runtimeConfig ? (
               <>
                 {row('Mount Mode', runtimeConfig.mode)}
@@ -383,8 +384,8 @@ const App = () => {
             )}
           </div>
 
-          <h3 style={{ marginTop: '24px', marginBottom: '12px', opacity: 0.6, fontSize: '12px', textTransform: 'uppercase', letterSpacing: '1px' }}>Support</h3>
-          <div style={{ background: '#111', border: '1px solid var(--border)', borderRadius: '12px', padding: '16px' }}>
+          <h3 style={{ marginTop: '24px', marginBottom: '12px', opacity: 0.5, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '2.5px', fontFamily: 'var(--font-heading)', color: 'var(--primary)' }}>Support</h3>
+          <div style={{ background: '#0e0e0e', border: '1px solid var(--border)', padding: '16px' }}>
             <p style={{ fontSize: '13px', color: 'var(--text-dim)', margin: '0 0 12px' }}>
               Generate a diagnostic bundle saved to <code>%ProgramData%\MacMount\Support\</code>.
             </p>
@@ -418,13 +419,19 @@ const App = () => {
     <div className="app-container">
       <aside className="sidebar">
         <div className="sidebar-header">
-          <div className="logo">🍎</div>
+          <div className="logo">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="square" strokeLinejoin="miter">
+              <rect x="2" y="4" width="20" height="16" rx="0" />
+              <line x1="2" y1="10" x2="22" y2="10" />
+              <line x1="12" y1="10" x2="12" y2="20" />
+            </svg>
+          </div>
           <h2>MacMount</h2>
         </div>
         <nav className="nav-list">
           <li className={`nav-item ${activeTab === 'drives' ? 'active' : ''}`} onClick={() => setActiveTab('drives')}>
             <DriveIcon /> Drives
-            {!setup.ready && <span style={{ marginLeft: 'auto', width: 8, height: 8, borderRadius: '50%', background: setup.status === 'failed' ? 'var(--danger)' : '#0a84ff', display: 'inline-block', animation: setup.status !== 'failed' ? 'pulse 1.5s infinite' : 'none' }} />}
+            {!setup.ready && <span style={{ marginLeft: 'auto', width: 6, height: 6, background: setup.status === 'failed' ? 'var(--danger)' : 'var(--primary)', display: 'inline-block', animation: setup.status !== 'failed' ? 'pulse 1.5s infinite' : 'none' }} />}
           </li>
           <li className={`nav-item ${activeTab === 'logs' ? 'active' : ''}`} onClick={() => setActiveTab('logs')}>
             <FolderIcon /> Logs
@@ -443,10 +450,12 @@ const App = () => {
         <div className="modal-overlay fade-in">
           <div className="modal-content glass" style={{ maxWidth: '400px', width: '90%' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '20px' }}>
-              <div style={{ fontSize: '24px' }}>🔒</div>
+              <div style={{ width: 36, height: 36, background: 'rgba(229,83,0,0.1)', border: '1px solid rgba(229,83,0,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" strokeWidth="2" strokeLinecap="square"><rect x="3" y="11" width="18" height="11" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>
+              </div>
               <div>
-                <h3 style={{ margin: 0 }}>Encrypted Drive</h3>
-                <span style={{ fontSize: '13px', opacity: 0.7 }}>FileVault Protection Active</span>
+                <h3 style={{ margin: 0, fontFamily: 'var(--font-heading)', letterSpacing: '2px', textTransform: 'uppercase', fontSize: '15px' }}>Encrypted Drive</h3>
+                <span style={{ fontSize: '11px', opacity: 0.5, fontFamily: 'var(--font-mono)', letterSpacing: '1px', textTransform: 'uppercase' }}>FileVault Active</span>
               </div>
             </div>
 
