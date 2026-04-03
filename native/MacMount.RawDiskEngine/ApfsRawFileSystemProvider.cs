@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -10,6 +11,7 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
 {
     private const int MaxVolumeHintsForView = 64;
     private const int MaxPreviewEntriesPerVolume = 48;
+    private const ulong DefaultApfsRootDirectoryId = 2;
     private readonly IRawBlockDevice _device;
     private readonly uint _blockSize;
     private readonly long _partitionOffsetBytes;
@@ -42,33 +44,22 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
 
         var rootChildren = new List<RawFsEntry> { volumesDir, infoFile };
         var volumeChildren = new List<RawFsEntry>();
+        var usedVolumeNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var oid in summary.VolumeObjectIds)
         {
-            var name = $"Volume_{oid:X}";
+            summary.VolumePreviewsByOid.TryGetValue(oid, out var preview);
+            var name = BuildVolumeFolderName(preview, oid, usedVolumeNames);
             var path = $"\\Volumes\\{name}";
             var entry = new RawFsEntry(path, name, true, 0, now, FileAttributes.Directory);
             _entries[path] = entry;
             volumeChildren.Add(entry);
 
-            if (summary.VolumePreviewsByOid.TryGetValue(oid, out var preview))
+            if (preview is not null)
             {
-                var previewChildren = new List<RawFsEntry>();
-                foreach (var item in preview.RootEntries.Take(MaxPreviewEntriesPerVolume))
+                if (!PopulateVolumeCatalog(path, preview, now))
                 {
-                    var childPath = $"{path}\\{item.Name}";
-                    var attrs = item.IsDirectory ? FileAttributes.Directory : FileAttributes.ReadOnly;
-                    long size = 0;
-                    if (!item.IsDirectory &&
-                        preview.RootFilePlansByName.TryGetValue(item.Name, out var planForFile))
-                    {
-                        _fileReadPlans[childPath] = planForFile;
-                        size = Math.Max(0, planForFile.TotalSize);
-                    }
-                    var child = new RawFsEntry(childPath, item.Name, item.IsDirectory, size, now, attrs);
-                    _entries[childPath] = child;
-                    previewChildren.Add(child);
+                    AddPreviewEntries(path, preview, now);
                 }
-                _dirChildren[path] = previewChildren;
             }
             else
             {
@@ -105,7 +96,14 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
             basePath = basePath[..hashIdx];
         }
 
-        var device = await new WindowsRawBlockDeviceFactory().OpenReadOnlyAsync(basePath, cancellationToken).ConfigureAwait(false);
+        IRawBlockDevice device = await new WindowsRawBlockDeviceFactory().OpenReadOnlyAsync(basePath, cancellationToken).ConfigureAwait(false);
+
+        if (plan.EncryptionKey is not null && plan.EncryptionKey.Length >= 32)
+        {
+            var containerBlockSize = 4096u;
+            device = new DecryptingRawBlockDevice(device, plan.EncryptionKey, containerBlockSize);
+        }
+
         try
         {
             var reader = new ApfsMetadataReader(device, plan.PartitionOffsetBytes, plan.PartitionLengthBytes);
@@ -117,6 +115,19 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
             device.Dispose();
             throw;
         }
+    }
+
+    private static readonly HashSet<string> MacMetadataNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".fseventsd", ".Spotlight-V100", ".Trashes", ".TemporaryItems",
+        ".DocumentRevisions-V100", ".vol", ".com.apple.timemachine.donotpresent",
+        ".MobileBackups", ".PKInstallSandboxManager", ".com.apple.bootpicker.history",
+        ".com.apple.recovery.boot", ".dbfseventsd", ".hotfiles.btree"
+    };
+
+    private static bool IsMacMetadata(string name)
+    {
+        return MacMetadataNames.Contains(name) || name.StartsWith("._", StringComparison.Ordinal);
     }
 
     public RawFsEntry? GetEntry(string path)
@@ -156,6 +167,22 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
             return 0;
         }
         if (offset >= readPlan.TotalSize)
+        {
+            return 0;
+        }
+
+        if (readPlan.InlineData is not null)
+        {
+            var available = readPlan.InlineData.Length - (int)offset;
+            var count = Math.Min(destination.Length, Math.Max(0, available));
+            if (count > 0)
+            {
+                readPlan.InlineData.AsSpan((int)offset, count).CopyTo(destination);
+            }
+            return count;
+        }
+
+        if (readPlan.IsCompressed)
         {
             return 0;
         }
@@ -224,6 +251,139 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
         try { _device.Dispose(); } catch { }
     }
 
+    private bool PopulateVolumeCatalog(string volumePath, ApfsVolumePreview preview, DateTimeOffset now)
+    {
+        if (preview.DirectoryEntriesByParentId.Count == 0)
+        {
+            return false;
+        }
+
+        var queue = new Queue<(ulong DirectoryId, string Path)>();
+        var visitedDirectoryIds = new HashSet<ulong>();
+        queue.Enqueue((preview.RootDirectoryId, volumePath));
+
+        var populated = false;
+        while (queue.Count > 0)
+        {
+            var (directoryId, currentPath) = queue.Dequeue();
+            if (!visitedDirectoryIds.Add(directoryId))
+            {
+                continue;
+            }
+
+            if (!preview.DirectoryEntriesByParentId.TryGetValue(directoryId, out var catalogChildren) || catalogChildren.Count == 0)
+            {
+                _dirChildren[currentPath] = Array.Empty<RawFsEntry>();
+                continue;
+            }
+
+            var currentChildren = new List<RawFsEntry>(catalogChildren.Count);
+            foreach (var item in catalogChildren)
+            {
+                if (IsMacMetadata(item.Name)) continue;
+
+                var childPath = $"{currentPath}\\{item.Name}";
+                long size = 0;
+                if (!item.IsDirectory &&
+                    item.ChildId.HasValue &&
+                    preview.FilePlansByObjectId.TryGetValue(item.ChildId.Value, out var planForFile))
+                {
+                    _fileReadPlans[childPath] = planForFile;
+                    size = Math.Max(0, planForFile.TotalSize);
+                }
+
+                var attrs = item.IsDirectory ? FileAttributes.Directory : FileAttributes.ReadOnly;
+                var child = new RawFsEntry(childPath, item.Name, item.IsDirectory, size, now, attrs);
+                _entries[childPath] = child;
+                currentChildren.Add(child);
+
+                if (item.IsDirectory && item.ChildId.HasValue)
+                {
+                    queue.Enqueue((item.ChildId.Value, childPath));
+                }
+            }
+
+            _dirChildren[currentPath] = currentChildren;
+            populated = populated || currentChildren.Count > 0;
+        }
+
+        return populated;
+    }
+
+    private void AddPreviewEntries(string volumePath, ApfsVolumePreview preview, DateTimeOffset now)
+    {
+        var previewChildren = new List<RawFsEntry>();
+        foreach (var item in preview.RootEntries.Take(MaxPreviewEntriesPerVolume))
+        {
+            if (IsMacMetadata(item.Name)) continue;
+
+            var childPath = $"{volumePath}\\{item.Name}";
+            var attrs = item.IsDirectory ? FileAttributes.Directory : FileAttributes.ReadOnly;
+            long size = 0;
+            if (!item.IsDirectory &&
+                preview.RootFilePlansByName.TryGetValue(item.Name, out var planForFile))
+            {
+                _fileReadPlans[childPath] = planForFile;
+                size = Math.Max(0, planForFile.TotalSize);
+            }
+            var child = new RawFsEntry(childPath, item.Name, item.IsDirectory, size, now, attrs);
+            _entries[childPath] = child;
+            previewChildren.Add(child);
+        }
+        _dirChildren[volumePath] = previewChildren;
+    }
+
+    private static string BuildVolumeFolderName(ApfsVolumePreview? preview, ulong oid, ISet<string> usedVolumeNames)
+    {
+        var preferredName = preview is not null
+            ? SanitizeVolumeName(preview.DisplayName)
+            : string.Empty;
+
+        if (string.IsNullOrWhiteSpace(preferredName))
+        {
+            preferredName = $"Volume_{oid:X}";
+        }
+
+        var candidate = preferredName;
+        if (usedVolumeNames.Add(candidate))
+        {
+            return candidate;
+        }
+
+        candidate = $"{preferredName}_OID_{oid:X}";
+        if (usedVolumeNames.Add(candidate))
+        {
+            return candidate;
+        }
+
+        var suffix = 2;
+        while (!usedVolumeNames.Add($"{candidate}_{suffix}"))
+        {
+            suffix++;
+        }
+
+        return $"{candidate}_{suffix}";
+    }
+
+    private static string SanitizeVolumeName(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var builder = new StringBuilder(value.Length);
+        foreach (var ch in value.Trim())
+        {
+            builder.Append(Array.IndexOf(Path.GetInvalidFileNameChars(), ch) >= 0 ? '_' : ch);
+        }
+
+        return builder
+            .ToString()
+            .Trim()
+            .TrimEnd('.', ' ');
+    }
+
     private static string Normalize(string path)
     {
         if (string.IsNullOrWhiteSpace(path)) return "\\";
@@ -262,15 +422,74 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
         foreach (var kv in summary.VolumePreviewsByOid.Take(MaxVolumeHintsForView))
         {
             var v = kv.Value;
-            sb.AppendLine($"VolumePreview: oid=0x{kv.Key:X} rootTreeOid={(v.RootTreeOid?.ToString() ?? "n/a")} rootTreeBlock={(v.RootTreeBlock?.ToString() ?? "n/a")} entries={v.RootEntries.Count}");
+            sb.AppendLine(
+                $"VolumePreview: oid=0x{kv.Key:X} name=\"{v.DisplayName}\" role={v.RoleName} encrypted={(v.IsEncrypted ? "yes" : "no")} fsFlags=0x{v.FsFlags:X} rootTreeOid={(v.RootTreeOid?.ToString() ?? "n/a")} rootTreeBlock={(v.RootTreeBlock?.ToString() ?? "n/a")} entries={v.RootEntries.Count}");
         }
         sb.AppendLine($"VolumeSuperblockHintsCount: {summary.VolumeSuperblockHints.Count}");
         foreach (var hint in summary.VolumeSuperblockHints.Take(MaxVolumeHintsForView))
         {
-            sb.AppendLine($"VolumeHint: block={hint.BlockNumber} oid=0x{hint.ObjectId:X} xid={hint.TransactionId}");
+            sb.AppendLine(
+                $"VolumeHint: block={hint.BlockNumber} oid=0x{hint.ObjectId:X} xid={hint.TransactionId} name=\"{hint.VolumeName}\" role={DescribeVolumeRole(hint.Role)} encrypted={(((hint.FsFlags & ApfsMetadataReader.ApfsFsOneKeyFlag) != 0) ? "yes" : "no")} fsFlags=0x{hint.FsFlags:X}");
         }
         sb.AppendLine("Status: APFS object map/tree traversal is in progress.");
         return sb.ToString();
+    }
+
+    internal static string DescribeVolumeRole(ushort role)
+    {
+        if (role == 0)
+        {
+            return "None";
+        }
+
+        var names = new List<string>(8);
+        var legacyFlags = role & 0x003F;
+        if ((legacyFlags & 0x0001) != 0) names.Add("System");
+        if ((legacyFlags & 0x0002) != 0) names.Add("User");
+        if ((legacyFlags & 0x0004) != 0) names.Add("Recovery");
+        if ((legacyFlags & 0x0008) != 0) names.Add("VM");
+        if ((legacyFlags & 0x0010) != 0) names.Add("Preboot");
+        if ((legacyFlags & 0x0020) != 0) names.Add("Installer");
+
+        var enumeratedRole = role >> 6;
+        switch (enumeratedRole)
+        {
+            case 1:
+                names.Add("Data");
+                break;
+            case 2:
+                names.Add("Baseband");
+                break;
+            case 3:
+                names.Add("Update");
+                break;
+            case 4:
+                names.Add("XART");
+                break;
+            case 5:
+                names.Add("Hardware");
+                break;
+            case 6:
+                names.Add("Backup");
+                break;
+            case 7:
+                names.Add("Sidecar");
+                break;
+            case 8:
+                names.Add("Reserved8");
+                break;
+            case 9:
+                names.Add("Enterprise");
+                break;
+            case 10:
+                names.Add("Reserved10");
+                break;
+            case 11:
+                names.Add("Prelogin");
+                break;
+        }
+
+        return names.Count == 0 ? $"0x{role:X4}" : string.Join("+", names);
     }
 }
 
@@ -307,7 +526,10 @@ internal sealed record ApfsContainerSummary(
 internal sealed record ApfsVolumeSuperblockHint(
     ulong BlockNumber,
     ulong ObjectId,
-    ulong TransactionId
+    ulong TransactionId,
+    string VolumeName,
+    ushort Role,
+    ulong FsFlags
 );
 
 internal sealed record ApfsResolvedObjectPointer(
@@ -320,10 +542,19 @@ internal sealed record ApfsResolvedObjectPointer(
 
 internal sealed record ApfsVolumePreview(
     ulong VolumeObjectId,
+    Guid VolumeUuid,
+    string DisplayName,
+    string RoleName,
+    ushort Role,
+    ulong FsFlags,
+    bool IsEncrypted,
     ulong? RootTreeOid,
     ulong? RootTreeBlock,
     IReadOnlyList<ApfsPreviewEntry> RootEntries,
-    IReadOnlyDictionary<string, ApfsFileReadPlan> RootFilePlansByName
+    IReadOnlyDictionary<string, ApfsFileReadPlan> RootFilePlansByName,
+    ulong RootDirectoryId,
+    IReadOnlyDictionary<ulong, IReadOnlyList<ApfsCatalogEntry>> DirectoryEntriesByParentId,
+    IReadOnlyDictionary<ulong, ApfsFileReadPlan> FilePlansByObjectId
 );
 
 internal sealed record ApfsPreviewEntry(
@@ -331,9 +562,17 @@ internal sealed record ApfsPreviewEntry(
     bool IsDirectory
 );
 
+internal sealed record ApfsCatalogEntry(
+    string Name,
+    bool IsDirectory,
+    ulong? ChildId
+);
+
 internal sealed record ApfsFileReadPlan(
     long TotalSize,
-    IReadOnlyList<ApfsFileExtent> Extents
+    IReadOnlyList<ApfsFileExtent> Extents,
+    byte[]? InlineData = null,
+    bool IsCompressed = false
 );
 
 internal sealed record ApfsFileExtent(
@@ -344,8 +583,15 @@ internal sealed record ApfsFileExtent(
 
 internal sealed class ApfsMetadataReader
 {
+    internal const ulong ApfsFsOneKeyFlag = 0x00000008;
     private const uint NxsbMagic = 0x4253584E; // "NXSB" little-endian
     private const uint ApsbMagic = 0x42535041; // "APSB" little-endian
+    private const ulong DefaultApfsRootDirectoryId = 2;
+    private const int ApfsFsFlagsOffset = 264;
+    private const int ApfsVolumeUuidOffset = 240; // apfs_vol_uuid at 0xF0 in volume superblock
+    private const int ApfsVolumeNameOffset = 704;
+    private const int ApfsVolumeNameLength = 256;
+    private const int ApfsRoleOffset = 964;
     private const int MaxHintScanBlocks = 8192;
     private const int MaxHintResults = 128;
     private const int MaxOmapCandidateBlocks = 96;
@@ -964,6 +1210,20 @@ internal sealed class ApfsMetadataReader
             return null;
         }
 
+        var volumeName = TryReadUtf8NullTerminatedString(volumeBuffer, ApfsVolumeNameOffset, ApfsVolumeNameLength);
+        var volumeUuid = Guid.Empty;
+        if (volumeBuffer.Length >= ApfsVolumeUuidOffset + 16)
+        {
+            var uuidBytes = new byte[16];
+            Array.Copy(volumeBuffer, ApfsVolumeUuidOffset, uuidBytes, 0, 16);
+            volumeUuid = new Guid(uuidBytes);
+        }
+        var role = volumeBuffer.Length >= ApfsRoleOffset + 2
+            ? BinaryPrimitives.ReadUInt16LittleEndian(volumeBuffer.AsSpan(ApfsRoleOffset, 2))
+            : (ushort)0;
+        var fsFlags = volumeBuffer.Length >= ApfsFsFlagsOffset + 8
+            ? BinaryPrimitives.ReadUInt64LittleEndian(volumeBuffer.AsSpan(ApfsFsFlagsOffset, 8))
+            : 0UL;
         var rootTreeOid = TryExtractVolumeRootTreeOid(volumeBuffer, objectIndex);
         ulong? rootTreeBlock = null;
         if (rootTreeOid.HasValue && objectIndex.TryGetValue(rootTreeOid.Value, out var rootTreePtr))
@@ -973,6 +1233,9 @@ internal sealed class ApfsMetadataReader
 
         var rootEntries = new List<ApfsPreviewEntry>();
         var rootFilePlansByName = new Dictionary<string, ApfsFileReadPlan>(StringComparer.OrdinalIgnoreCase);
+        ulong rootDirectoryId = DefaultApfsRootDirectoryId;
+        IReadOnlyDictionary<ulong, IReadOnlyList<ApfsCatalogEntry>> directoryEntriesByParentId = new Dictionary<ulong, IReadOnlyList<ApfsCatalogEntry>>();
+        IReadOnlyDictionary<ulong, ApfsFileReadPlan> filePlansByObjectId = new Dictionary<ulong, ApfsFileReadPlan>();
         if (rootTreeBlock.HasValue)
         {
             var traversal = await TraverseFsTreePreviewEntriesAsync(
@@ -986,14 +1249,26 @@ internal sealed class ApfsMetadataReader
             {
                 rootFilePlansByName[kv.Key] = kv.Value;
             }
+            rootDirectoryId = traversal.RootDirectoryId;
+            directoryEntriesByParentId = traversal.DirectoryEntriesByParentId;
+            filePlansByObjectId = traversal.FilePlansByObjectId;
         }
 
         return new ApfsVolumePreview(
             VolumeObjectId: resolvedVolumePointer.ObjectId,
+            VolumeUuid: volumeUuid,
+            DisplayName: string.IsNullOrWhiteSpace(volumeName) ? $"Volume_{resolvedVolumePointer.ObjectId:X}" : volumeName,
+            RoleName: ApfsRawFileSystemProvider.DescribeVolumeRole(role),
+            Role: role,
+            FsFlags: fsFlags,
+            IsEncrypted: (fsFlags & ApfsFsOneKeyFlag) != 0,
             RootTreeOid: rootTreeOid,
             RootTreeBlock: rootTreeBlock,
             RootEntries: rootEntries,
-            RootFilePlansByName: rootFilePlansByName
+            RootFilePlansByName: rootFilePlansByName,
+            RootDirectoryId: rootDirectoryId,
+            DirectoryEntriesByParentId: directoryEntriesByParentId,
+            FilePlansByObjectId: filePlansByObjectId
         );
     }
 
@@ -1004,12 +1279,10 @@ internal sealed class ApfsMetadataReader
         int maxEntries,
         CancellationToken cancellationToken)
     {
-        var results = new List<ApfsPreviewEntry>(Math.Max(8, maxEntries));
-        var rootFilePlansByName = new Dictionary<string, ApfsFileReadPlan>(StringComparer.OrdinalIgnoreCase);
-        var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var childIdToName = new Dictionary<ulong, string>();
-        var childIdToIsDir = new Dictionary<ulong, bool>();
+        var fallbackNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var extentsByChildId = new Dictionary<ulong, List<ApfsFileExtent>>();
+        var inlineDataByObjectId = new Dictionary<ulong, (byte[]?, bool)>();
+        var dirEntriesByParentId = new Dictionary<ulong, Dictionary<string, ApfsCatalogEntry>>();
         var visitedBlocks = new HashSet<ulong>();
         var queue = new Queue<(ulong Block, int Depth)>();
         queue.Enqueue((rootTreeBlock, 0));
@@ -1017,7 +1290,7 @@ internal sealed class ApfsMetadataReader
         const int maxDepth = 2;
         const int maxVisitedBlocks = 192;
 
-        while (queue.Count > 0 && results.Count < maxEntries && visitedBlocks.Count < maxVisitedBlocks)
+        while (queue.Count > 0 && visitedBlocks.Count < maxVisitedBlocks)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var (block, depth) = queue.Dequeue();
@@ -1032,7 +1305,7 @@ internal sealed class ApfsMetadataReader
                 continue;
             }
 
-            if (TryDecodeStructuredNodeSlots(node, out _, out _, out var isLeaf) && isLeaf)
+            if (TryDecodeStructuredNodeSlots(node, out var slots, out _, out var isLeaf) && isLeaf)
             {
                 var entries = TryExtractFsTreePreviewEntries(node);
                 if (entries.Count == 0)
@@ -1040,22 +1313,31 @@ internal sealed class ApfsMetadataReader
                     var names = ExtractLikelyApfsNames(node);
                     foreach (var name in names)
                     {
-                        if (results.Count >= maxEntries) break;
-                        if (string.IsNullOrWhiteSpace(name) || !seenNames.Add(name)) continue;
-                        results.Add(new ApfsPreviewEntry(name, IsDirectory: false));
+                        if (!string.IsNullOrWhiteSpace(name))
+                        {
+                            fallbackNames.Add(name);
+                        }
                     }
                 }
                 else
                 {
                     foreach (var e in entries)
                     {
-                        if (results.Count >= maxEntries) break;
-                        if (!seenNames.Add(e.Name)) continue;
-                        results.Add(new ApfsPreviewEntry(e.Name, e.IsDirectory));
-                        if (e.ChildId.HasValue)
+                        if (e.KeyType != FsKeyType.DirRecord)
                         {
-                            childIdToName[e.ChildId.Value] = e.Name;
-                            childIdToIsDir[e.ChildId.Value] = e.IsDirectory;
+                            continue;
+                        }
+
+                        if (!dirEntriesByParentId.TryGetValue(e.ParentId, out var byName))
+                        {
+                            byName = new Dictionary<string, ApfsCatalogEntry>(StringComparer.OrdinalIgnoreCase);
+                            dirEntriesByParentId[e.ParentId] = byName;
+                        }
+
+                        if (!byName.TryGetValue(e.Name, out var existing) ||
+                            (!existing.ChildId.HasValue && e.ChildId.HasValue))
+                        {
+                            byName[e.Name] = new ApfsCatalogEntry(e.Name, e.IsDirectory, e.ChildId);
                         }
                     }
                 }
@@ -1069,6 +1351,15 @@ internal sealed class ApfsMetadataReader
                         extentsByChildId[kv.Key] = list;
                     }
                     list.AddRange(kv.Value);
+                }
+
+                var nodeInodeData = BuildInodeDataMap(node, slots, extentsByChildId);
+                foreach (var kv in nodeInodeData)
+                {
+                    if (!inlineDataByObjectId.ContainsKey(kv.Key))
+                    {
+                        inlineDataByObjectId[kv.Key] = kv.Value;
+                    }
                 }
                 continue;
             }
@@ -1087,13 +1378,45 @@ internal sealed class ApfsMetadataReader
             }
         }
 
+        var rootDirectoryId = dirEntriesByParentId.ContainsKey(DefaultApfsRootDirectoryId)
+            ? DefaultApfsRootDirectoryId
+            : dirEntriesByParentId
+                .OrderByDescending(x => x.Value.Count)
+                .Select(x => x.Key)
+                .FirstOrDefault();
+
+        var results = new List<ApfsPreviewEntry>(Math.Max(8, maxEntries));
+        var rootFilePlansByName = new Dictionary<string, ApfsFileReadPlan>(StringComparer.OrdinalIgnoreCase);
+        var rootChildIdToName = new Dictionary<ulong, string>();
+        var rootChildIdToIsDir = new Dictionary<ulong, bool>();
+
+        if (rootDirectoryId != 0 &&
+            dirEntriesByParentId.TryGetValue(rootDirectoryId, out var rootCatalogEntriesByName))
+        {
+            foreach (var item in rootCatalogEntriesByName.Values
+                .OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
+                .Take(maxEntries))
+            {
+                results.Add(new ApfsPreviewEntry(item.Name, item.IsDirectory));
+                if (item.ChildId.HasValue)
+                {
+                    rootChildIdToName[item.ChildId.Value] = item.Name;
+                    rootChildIdToIsDir[item.ChildId.Value] = item.IsDirectory;
+                }
+            }
+        }
+        else
+        {
+            foreach (var name in fallbackNames.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).Take(maxEntries))
+            {
+                results.Add(new ApfsPreviewEntry(name, IsDirectory: false));
+            }
+        }
+
+        var filePlansByObjectId = new Dictionary<ulong, ApfsFileReadPlan>();
         foreach (var kv in extentsByChildId)
         {
-            if (!childIdToName.TryGetValue(kv.Key, out var name))
-            {
-                continue;
-            }
-            if (childIdToIsDir.TryGetValue(kv.Key, out var isDir) && isDir)
+            if (rootChildIdToIsDir.TryGetValue(kv.Key, out var isDir) && isDir)
             {
                 continue;
             }
@@ -1108,10 +1431,57 @@ internal sealed class ApfsMetadataReader
             {
                 continue;
             }
-            rootFilePlansByName[name] = new ApfsFileReadPlan(totalSize, ordered);
+
+            byte[]? inlineData = null;
+            var isCompressed = false;
+            if (inlineDataByObjectId.TryGetValue(kv.Key, out var inodeInfo))
+            {
+                inlineData = inodeInfo.Item1;
+                isCompressed = inodeInfo.Item2;
+            }
+
+            var plan = new ApfsFileReadPlan(totalSize, ordered, inlineData, isCompressed);
+            filePlansByObjectId[kv.Key] = plan;
+            if (rootChildIdToName.TryGetValue(kv.Key, out var name))
+            {
+                rootFilePlansByName[name] = plan;
+            }
         }
 
-        return new ApfsVolumeTraversalResult(results, rootFilePlansByName);
+        foreach (var kv in inlineDataByObjectId)
+        {
+            if (filePlansByObjectId.ContainsKey(kv.Key)) continue;
+            if (rootChildIdToIsDir.TryGetValue(kv.Key, out var isDir) && isDir) continue;
+            if (kv.Value.Item1 is null)
+            {
+                if (kv.Value.Item2 && rootChildIdToName.TryGetValue(kv.Key, out var cname))
+                {
+                    filePlansByObjectId[kv.Key] = new ApfsFileReadPlan(0, Array.Empty<ApfsFileExtent>(), null, true);
+                    rootFilePlansByName[cname] = filePlansByObjectId[kv.Key];
+                }
+                continue;
+            }
+
+            var iPlan = new ApfsFileReadPlan(kv.Value.Item1.Length, Array.Empty<ApfsFileExtent>(), kv.Value.Item1, kv.Value.Item2);
+            filePlansByObjectId[kv.Key] = iPlan;
+            if (rootChildIdToName.TryGetValue(kv.Key, out var iname))
+            {
+                rootFilePlansByName[iname] = iPlan;
+            }
+        }
+
+        var readonlyCatalog = dirEntriesByParentId.ToDictionary(
+            kv => kv.Key,
+            kv => (IReadOnlyList<ApfsCatalogEntry>)kv.Value.Values
+                .OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
+                .ToArray());
+
+        return new ApfsVolumeTraversalResult(
+            results,
+            rootFilePlansByName,
+            rootDirectoryId == 0 ? DefaultApfsRootDirectoryId : rootDirectoryId,
+            readonlyCatalog,
+            filePlansByObjectId);
     }
 
     private static ulong? TryExtractVolumeRootTreeOid(byte[] volumeBuffer, Dictionary<ulong, ApfsObjectPointer> objectIndex)
@@ -1221,12 +1591,12 @@ internal sealed class ApfsMetadataReader
             {
                 continue;
             }
-            if (!seen.Add(record.Name))
+            if (!seen.Add($"{record.ParentId:X}:{record.Name}"))
             {
                 continue;
             }
 
-            output.Add(new FsTreePreviewItem(record.Name, record.IsDirectory, record.ChildId));
+            output.Add(new FsTreePreviewItem(record.KeyType, record.ParentId, record.Name, record.IsDirectory, record.ChildId));
             if (output.Count >= MaxVolumePreviewEntries)
             {
                 break;
@@ -1395,7 +1765,7 @@ internal sealed class ApfsMetadataReader
                 }
             }
 
-            record = new FsTreeRecord(name, isDir, childId);
+            record = new FsTreeRecord(key.Type, key.ObjectId, name, isDir, childId);
             return true;
         }
 
@@ -1426,6 +1796,90 @@ internal sealed class ApfsMetadataReader
                     map[key.ObjectId] = mode.Value;
                     break;
                 }
+            }
+        }
+        return map;
+    }
+
+    private static Dictionary<ulong, (byte[]? InlineData, bool IsCompressed)> BuildInodeDataMap(
+        byte[] nodeBuffer,
+        IReadOnlyList<NodeSlot> slots,
+        IReadOnlyDictionary<ulong, List<ApfsFileExtent>> extentsByChildId)
+    {
+        var map = new Dictionary<ulong, (byte[]?, bool)>();
+        foreach (var slot in slots)
+        {
+            if (!TryDecodeFsTreeKeyFromNode(nodeBuffer, slot, out var key) || key.Type != FsKeyType.Inode)
+            {
+                continue;
+            }
+
+            foreach (var absValOff in EnumerateAbsoluteOffsets(slot.ValueOffset))
+            {
+                if (absValOff < 0 || absValOff + 4 > nodeBuffer.Length)
+                {
+                    continue;
+                }
+
+                var valLen = slot.ValueLength > 0 ? Math.Min((int)slot.ValueLength, 256) : 256;
+                if (absValOff + valLen > nodeBuffer.Length) valLen = nodeBuffer.Length - absValOff;
+                if (valLen < 32) continue;
+
+                var inodeData = nodeBuffer.AsSpan(absValOff, valLen);
+
+                // APFS inode layout (common):
+                // offset 0-7: parent_id
+                // offset 8-9: private_id
+                // offset 10-11: create_time (nanoseconds)
+                // offset 12-13: mod_time
+                // offset 14-15: change_time
+                // offset 16-17: access_time
+                // offset 18-19: nchildren (dirs) / nlink
+                // offset 20-21: mode (unix permissions + file type)
+                // offset 22-23: owner (uid)
+                // offset 24-25: group (gid)
+                // offset 26-27: flags (bsd_flags, includes UF_COMPRESSED=0x20)
+                // offset 28-31: internal_flags
+                // offset 32-39: union_size (for regular files: logical size)
+                // offset 40-47: gen_count
+                // offset 48-55: rec_ext_size
+                // offset 56-63: alloc_size
+                // offset 64+: inline_data (if internal_flags has INLINE_DATA_FLAG=0x20000000)
+
+                var mode = TryExtractModeFromValue(inodeData.Slice(20, Math.Min(4, inodeData.Length - 20)));
+                if (!mode.HasValue) continue;
+                var isRegular = (mode.Value & 0xF000) == 0x8000;
+                if (!isRegular) continue;
+
+                // Skip if this object already has extents (means it's not inline)
+                if (extentsByChildId.ContainsKey(key.ObjectId)) continue;
+
+                var internalFlags = valLen >= 32 ? BinaryPrimitives.ReadUInt32LittleEndian(inodeData.Slice(28, 4)) : 0u;
+                var bsdFlags = valLen >= 28 ? BinaryPrimitives.ReadUInt16LittleEndian(inodeData.Slice(26, 2)) : (ushort)0;
+                const uint INLINE_DATA_FLAG = 0x20000000;
+                const ushort UF_COMPRESSED = 0x0020;
+
+                var isCompressed = (bsdFlags & UF_COMPRESSED) != 0;
+
+                if ((internalFlags & INLINE_DATA_FLAG) != 0 && valLen >= 80)
+                {
+                    // Inline data starts around offset 64 in the inode value
+                    // The size is stored in union_size at offset 32
+                    var inlineSize = (int)BinaryPrimitives.ReadUInt64LittleEndian(inodeData.Slice(32, 8));
+                    if (inlineSize > 0 && inlineSize <= 3800 && valLen >= 64 + inlineSize)
+                    {
+                        var inlineBytes = inodeData.Slice(64, inlineSize).ToArray();
+                        map[key.ObjectId] = (inlineBytes, isCompressed);
+                    }
+                }
+                else if (isCompressed)
+                {
+                    // File is compressed but has no inline data flag
+                    // Mark it so we can report size but not serve garbage
+                    map[key.ObjectId] = (null, true);
+                }
+
+                break;
             }
         }
         return map;
@@ -1953,7 +2407,39 @@ internal sealed class ApfsMetadataReader
             return null;
         }
 
-        return new ApfsVolumeSuperblockHint(blockNumber, oid, xid);
+        var volumeName = TryReadUtf8NullTerminatedString(buffer, ApfsVolumeNameOffset, ApfsVolumeNameLength) ?? $"Volume_{oid:X}";
+        var role = buffer.Length >= ApfsRoleOffset + 2
+            ? BinaryPrimitives.ReadUInt16LittleEndian(buffer.AsSpan(ApfsRoleOffset, 2))
+            : (ushort)0;
+        var fsFlags = buffer.Length >= ApfsFsFlagsOffset + 8
+            ? BinaryPrimitives.ReadUInt64LittleEndian(buffer.AsSpan(ApfsFsFlagsOffset, 8))
+            : 0UL;
+
+        return new ApfsVolumeSuperblockHint(blockNumber, oid, xid, volumeName, role, fsFlags);
+    }
+
+    private static string? TryReadUtf8NullTerminatedString(byte[] buffer, int offset, int maxLength)
+    {
+        if (offset < 0 || maxLength <= 0 || buffer.Length < offset + 1)
+        {
+            return null;
+        }
+
+        var available = Math.Min(maxLength, buffer.Length - offset);
+        var slice = buffer.AsSpan(offset, available);
+        var zeroIndex = slice.IndexOf((byte)0);
+        if (zeroIndex >= 0)
+        {
+            slice = slice[..zeroIndex];
+        }
+
+        if (slice.IsEmpty)
+        {
+            return null;
+        }
+
+        var value = Encoding.UTF8.GetString(slice).Trim();
+        return string.IsNullOrWhiteSpace(value) ? null : value;
     }
 
     private sealed record NxSuperblock(
@@ -1985,13 +2471,16 @@ internal sealed class ApfsMetadataReader
 
     private readonly record struct OmapKey(ulong Oid, ulong Xid);
 
-    private readonly record struct FsTreeRecord(string Name, bool IsDirectory, ulong? ChildId);
+    private readonly record struct FsTreeRecord(FsKeyType KeyType, ulong ParentId, string Name, bool IsDirectory, ulong? ChildId);
 
-    private readonly record struct FsTreePreviewItem(string Name, bool IsDirectory, ulong? ChildId);
+    private readonly record struct FsTreePreviewItem(FsKeyType KeyType, ulong ParentId, string Name, bool IsDirectory, ulong? ChildId);
 
     private sealed record ApfsVolumeTraversalResult(
         IReadOnlyList<ApfsPreviewEntry> Entries,
-        IReadOnlyDictionary<string, ApfsFileReadPlan> RootFilePlansByName
+        IReadOnlyDictionary<string, ApfsFileReadPlan> RootFilePlansByName,
+        ulong RootDirectoryId,
+        IReadOnlyDictionary<ulong, IReadOnlyList<ApfsCatalogEntry>> DirectoryEntriesByParentId,
+        IReadOnlyDictionary<ulong, ApfsFileReadPlan> FilePlansByObjectId
     );
 
     private readonly record struct DecodedFsKey(FsKeyType Type, ulong ObjectId, byte[] NamePayload);
