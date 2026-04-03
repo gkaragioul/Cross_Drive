@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -18,37 +19,93 @@ public sealed class ApfsParser : IFileSystemParser
 
     public async Task<MountPlan> BuildMountPlanAsync(IRawBlockDevice device, CancellationToken cancellationToken = default)
     {
-        var container = await ReadContainerAsync(device, cancellationToken).ConfigureAwait(false);
-        if (container is null)
+        try
         {
+            var reader = new ApfsMetadataReader(device, 0, device.Length);
+            var summary = await reader.ReadSummaryAsync(cancellationToken).ConfigureAwait(false);
+            var total = summary.EstimatedTotalBytes > 0 ? summary.EstimatedTotalBytes : device.Length;
+            var previews = summary.VolumePreviewsByOid.Values.ToList();
+            var encryptedCount = previews.Count(v => v.IsEncrypted);
+            var hasBrowsableUnencryptedVolume = previews.Any(v =>
+                !v.IsEncrypted &&
+                (v.RootEntries.Count > 0 || v.DirectoryEntriesByParentId.Count > 0));
+            var needsPassword = encryptedCount > 0 && !hasBrowsableUnencryptedVolume;
+            var volumeSummary = string.Join(
+                ", ",
+                previews.Take(6).Select(v =>
+                {
+                    var roleSuffix = string.Equals(v.RoleName, "None", StringComparison.OrdinalIgnoreCase)
+                        ? string.Empty
+                        : $"[{v.RoleName}]";
+                    var encryptedSuffix = v.IsEncrypted ? "[Encrypted]" : string.Empty;
+                    return $"{v.DisplayName}{roleSuffix}{encryptedSuffix}";
+                }));
+            if (previews.Count > 6)
+            {
+                volumeSummary += ", ...";
+            }
+
+            var firstEncryptedUuid = previews
+                .Where(v => v.IsEncrypted && v.VolumeUuid != Guid.Empty)
+                .Select(v => v.VolumeUuid)
+                .FirstOrDefault();
+
+            var notes =
+                $"APFS container parsed. " +
+                $"BlockSize={summary.BlockSize}, BlockCount={summary.BlockCount}, " +
+                $"CheckpointXid={summary.TransactionId}, VolumeCount={summary.VolumeObjectIds.Count}, " +
+                $"ResolvedVolumePointers={summary.ResolvedVolumePointers.Count}, IndexedObjects={summary.IndexedObjectCount}, " +
+                $"EncryptedVolumes={encryptedCount}" +
+                (firstEncryptedUuid != Guid.Empty ? $" VolumeUuid={firstEncryptedUuid}" : string.Empty) +
+                "." +
+                (string.IsNullOrWhiteSpace(volumeSummary) ? string.Empty : $" Volumes={volumeSummary}.");
+
             return new MountPlan(
                 device.DevicePath,
                 "APFS",
-                device.Length,
+                total,
                 Writable: false,
-                Notes: "APFS detection uncertain (NXSB parse failed). Metadata parser incomplete."
+                Notes: notes,
+                IsEncrypted: encryptedCount > 0,
+                NeedsPassword: needsPassword
             );
         }
+        catch
+        {
+            var container = await ReadContainerAsync(device, cancellationToken).ConfigureAwait(false);
+            if (container is null)
+            {
+                return new MountPlan(
+                    device.DevicePath,
+                    "APFS",
+                    device.Length,
+                    Writable: false,
+                    Notes: "APFS detection uncertain (NXSB parse failed).",
+                    IsEncrypted: false,
+                    NeedsPassword: false
+                );
+            }
 
-        var computedTotal = checked((long)Math.Min((decimal)long.MaxValue, (decimal)container.BlockSize * container.BlockCount));
-        var total = computedTotal > 0 ? computedTotal : device.Length;
+            var computedTotal = checked((long)Math.Min((decimal)long.MaxValue, (decimal)container.BlockSize * container.BlockCount));
+            var total = computedTotal > 0 ? computedTotal : device.Length;
 
-        var notes =
-            $"APFS container parsed. " +
-            $"NXBlockSize={container.BlockSize}, NXBlockCount={container.BlockCount}, " +
-            $"CheckpointDescBase={container.CheckpointDescriptorBase}, CheckpointDescBlocks={container.CheckpointDescriptorBlocks}, " +
-            $"CheckpointDataBase={container.CheckpointDataBase}, CheckpointDataBlocks={container.CheckpointDataBlocks}, " +
-            $"FSOid={container.MainVolumeOid}. " +
-            "Metadata tree traversal not implemented yet.";
+            var notes =
+                $"APFS container parsed. " +
+                $"NXBlockSize={container.BlockSize}, NXBlockCount={container.BlockCount}, " +
+                $"CheckpointDescBase={container.CheckpointDescriptorBase}, CheckpointDescBlocks={container.CheckpointDescriptorBlocks}, " +
+                $"CheckpointDataBase={container.CheckpointDataBase}, CheckpointDataBlocks={container.CheckpointDataBlocks}, " +
+                $"FSOid={container.MainVolumeOid}.";
 
-        var plan = new MountPlan(
-            device.DevicePath,
-            "APFS",
-            total,
-            Writable: false,
-            Notes: notes
-        );
-        return plan;
+            return new MountPlan(
+                device.DevicePath,
+                "APFS",
+                total,
+                Writable: false,
+                Notes: notes,
+                IsEncrypted: false,
+                NeedsPassword: false
+            );
+        }
     }
 
     public async IAsyncEnumerable<FileEntry> EnumerateRootAsync(IRawBlockDevice device, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
