@@ -184,6 +184,21 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
 
         if (readPlan.IsCompressed)
         {
+            if (readPlan.InlineData is not null)
+            {
+                var decompressed = TryDecompressInlineDecmpfs(readPlan.InlineData);
+                if (decompressed is not null)
+                {
+                    if (offset >= decompressed.Length) return 0;
+                    var available = decompressed.Length - (int)offset;
+                    var count = Math.Min(destination.Length, available);
+                    if (count > 0)
+                    {
+                        decompressed.AsSpan((int)offset, count).CopyTo(destination);
+                    }
+                    return count;
+                }
+            }
             return 0;
         }
 
@@ -244,6 +259,56 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
         }
 
         return written;
+    }
+
+    private static byte[]? TryDecompressInlineDecmpfs(byte[] inlineData)
+    {
+        // decmpfs header: 4-byte magic + 4-byte type + 8-byte uncompressed_size = 12 bytes minimum
+        if (inlineData.Length < 12) return null;
+
+        var magic = BinaryPrimitives.ReadUInt32LittleEndian(inlineData.AsSpan(0, 4));
+        if (magic != 0x636D7066) return null; // "fpmc" LE
+
+        var compressionType = BinaryPrimitives.ReadUInt32LittleEndian(inlineData.AsSpan(4, 4));
+        var uncompressedSize = (long)BinaryPrimitives.ReadUInt64LittleEndian(inlineData.AsSpan(8, 8));
+
+        if (uncompressedSize <= 0 || uncompressedSize > 64 * 1024 * 1024) return null; // sanity cap
+
+        // Type 3: zlib-compressed data stored inline after the 12-byte header
+        if (compressionType == 3 && inlineData.Length > 12)
+        {
+            try
+            {
+                var compressedPayload = inlineData.AsSpan(12);
+                using var inputStream = new MemoryStream(compressedPayload.ToArray());
+
+                // APFS zlib inline data uses raw deflate (no zlib header) when the first byte
+                // is NOT 0x78. If it IS 0x78 it's a standard zlib stream (skip 2-byte header).
+                if (compressedPayload.Length > 0 && compressedPayload[0] == 0x78)
+                {
+                    inputStream.Position = 2; // skip zlib header (CMF + FLG)
+                }
+
+                using var deflate = new System.IO.Compression.DeflateStream(inputStream, System.IO.Compression.CompressionMode.Decompress);
+                using var output = new MemoryStream((int)uncompressedSize);
+                deflate.CopyTo(output);
+                return output.ToArray();
+            }
+            catch
+            {
+                return null; // decompression failed, fall back to returning 0 bytes
+            }
+        }
+
+        // Type 1: uncompressed data stored inline after the header (rare, small files)
+        if (compressionType == 1 && inlineData.Length > 12)
+        {
+            var data = new byte[Math.Min(uncompressedSize, inlineData.Length - 12)];
+            Array.Copy(inlineData, 12, data, 0, data.Length);
+            return data;
+        }
+
+        return null; // unsupported compression type (LZVN=7, LZFSE=11, resource-fork types 4/8/12)
     }
 
     public void Dispose()
