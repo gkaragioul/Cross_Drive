@@ -1,4 +1,53 @@
-const { exec } = require('child_process');
+const { exec, execSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+
+function mapDriveLetterInUserSession(letter) {
+    // WinFsp mounts in the elevated namespace. We must also map the drive letter
+    // in the non-elevated user session so Explorer can see it.
+    // Write a temp PS1 script and execute it to avoid inline quoting issues.
+    try {
+        const dir = 'C:\\ProgramData\\MacMount';
+        try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+
+        const mapScript = path.join(dir, 'user-mount.ps1');
+        const launchScript = path.join(dir, 'launch-user-mount.ps1');
+
+        // Step 1: Query the device path, write it to a file
+        // Step 2: Map via Scheduled Task running as interactive user
+        const queryAndMap = [
+            `Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;using System.Text;public class QDD{[DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)]public static extern uint QueryDosDevice(string d,StringBuilder b,uint max);}' -ErrorAction SilentlyContinue`,
+            `$sb = New-Object System.Text.StringBuilder 1024`,
+            `$len = [QDD]::QueryDosDevice("${letter}:", $sb, 1024)`,
+            `if ($len -eq 0) { exit 1 }`,
+            `$device = $sb.ToString()`,
+            ``,
+            `# Write user-session mount script that uses DefineDosDevice with proper NT path`,
+            `$mountCode = "Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class UM{[DllImport(""kernel32.dll"",SetLastError=true,CharSet=CharSet.Auto)]public static extern bool DefineDosDevice(uint f,string d,string t);}' -ErrorAction SilentlyContinue"`,
+            `$mountCode += "`n[UM]::DefineDosDevice(1, '${letter}:', '$device')"`,
+            `Set-Content -Path '${mapScript}' -Value $mountCode -Force -Encoding UTF8`,
+            ``,
+            `# Run in user session via Scheduled Task`,
+            `$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ""${mapScript}""'`,
+            `$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive`,
+            `$task = New-ScheduledTask -Action $action -Principal $principal`,
+            `Register-ScheduledTask -TaskName 'MacMountMap${letter}' -InputObject $task -Force | Out-Null`,
+            `Start-ScheduledTask -TaskName 'MacMountMap${letter}' | Out-Null`,
+            `Start-Sleep -Milliseconds 1000`,
+            `Unregister-ScheduledTask -TaskName 'MacMountMap${letter}' -Confirm:$false -ErrorAction SilentlyContinue | Out-Null`,
+        ].join('\r\n');
+
+        fs.writeFileSync(launchScript, queryAndMap, 'utf8');
+
+        execSync(`powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${launchScript}"`, {
+            timeout: 15000,
+            windowsHide: true,
+            stdio: ['ignore', 'ignore', 'ignore']
+        });
+    } catch (e) {
+        // best-effort — mount still works in elevated namespace
+    }
+}
 
 module.exports = function mountMountRoutes(app, ctx) {
     const {
@@ -34,6 +83,8 @@ module.exports = function mountMountRoutes(app, ctx) {
                     const resolvedLetter = String(nativeResult.letter || '').trim().toUpperCase().replace(':', '');
                     if (/^[A-Z]$/.test(resolvedLetter)) {
                         nativeMountState.set(String(driveId), { letter: resolvedLetter });
+                        // Map drive letter in non-elevated user session so Explorer can see it
+                        try { mapDriveLetterInUserSession(resolvedLetter); } catch (e) { addLog(`User session drive map warning: ${e.message}`, 'warning'); }
                     }
                     return res.json({
                         success: true,

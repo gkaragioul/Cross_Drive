@@ -138,12 +138,49 @@ public sealed class RawDiskEngine : IRawDiskEngine
                 }
             }
 
+            // Inspect MBR partitions for Apple HFS+ (type 0xAF).
+            var mbrCandidates = ReadMbrHfsCandidates(probeBuffer);
+            foreach (var mbr in mbrCandidates)
+            {
+                using var slice = new PartitionSliceRawBlockDevice(
+                    rawDevice,
+                    devicePath: $"{rawDevice.DevicePath}#mbrpart{mbr.Index}",
+                    baseOffset: mbr.StartOffset,
+                    length: mbr.Length
+                );
+
+                foreach (var parser in _parsers)
+                {
+                    if (await parser.CanHandleAsync(slice, cancellationToken).ConfigureAwait(false))
+                    {
+                        var parserPlan = await parser.BuildMountPlanAsync(slice, cancellationToken).ConfigureAwait(false);
+                        return parserPlan with
+                        {
+                            Notes = $"{parserPlan.Notes} Source=MBR part {mbr.Index}, Type=0xAF, StartOffset={mbr.StartOffset}",
+                            PartitionOffsetBytes = mbr.StartOffset,
+                            PartitionLengthBytes = mbr.Length
+                        };
+                    }
+                }
+
+                // Parser didn't match signature but MBR type is 0xAF — trust the partition type
+                return new MountPlan(
+                    slice.DevicePath,
+                    "HFS+",
+                    slice.Length,
+                    Writable: false,
+                    Notes: $"MBR HFS+ partition (type 0xAF) at part {mbr.Index}; StartOffset={mbr.StartOffset}",
+                    PartitionOffsetBytes: mbr.StartOffset,
+                    PartitionLengthBytes: mbr.Length
+                );
+            }
+
             return new MountPlan(
                 rawDevice.DevicePath,
                 "unknown",
                 TotalBytes: rawDevice.Length,
                 Writable: false,
-                Notes: $"Raw-disk reader active. ProbeBytes={read}, Header32={headerHex}. No APFS/HFS+ GPT partition detected.",
+                Notes: $"Raw-disk reader active. ProbeBytes={read}, Header32={headerHex}. No APFS/HFS+ partition detected.",
                 PartitionOffsetBytes: 0,
                 PartitionLengthBytes: rawDevice.Length
             );
@@ -236,6 +273,36 @@ public sealed class RawDiskEngine : IRawDiskEngine
     }
 
     private readonly record struct GptPartitionCandidate(int Index, Guid TypeGuid, long StartOffset, long Length);
+
+    private readonly record struct MbrPartitionCandidate(int Index, long StartOffset, long Length);
+
+    private static IReadOnlyList<MbrPartitionCandidate> ReadMbrHfsCandidates(byte[] mbrBuffer)
+    {
+        // MBR signature check: bytes 510-511 must be 0x55AA
+        if (mbrBuffer.Length < 512 || mbrBuffer[510] != 0x55 || mbrBuffer[511] != 0xAA)
+            return Array.Empty<MbrPartitionCandidate>();
+
+        var result = new List<MbrPartitionCandidate>(4);
+        // 4 primary MBR partition entries start at offset 446, each 16 bytes
+        for (int i = 0; i < 4; i++)
+        {
+            int offset = 446 + i * 16;
+            byte partType = mbrBuffer[offset + 4];
+            // 0xAF = Apple HFS/HFS+, 0xAF is the standard type for HFS+
+            if (partType != 0xAF) continue;
+
+            // LBA start (4 bytes little-endian at offset+8), sector count (4 bytes at offset+12)
+            uint lbaStart = BitConverter.ToUInt32(mbrBuffer, offset + 8);
+            uint sectorCount = BitConverter.ToUInt32(mbrBuffer, offset + 12);
+            if (lbaStart == 0 || sectorCount == 0) continue;
+
+            long startOffset = (long)lbaStart * LbaSize;
+            long length = (long)sectorCount * LbaSize;
+            result.Add(new MbrPartitionCandidate(i + 1, startOffset, length));
+        }
+
+        return result;
+    }
 }
 
 internal sealed class ProbeRawFileSystemProvider : IRawFileSystemProvider
@@ -334,7 +401,7 @@ internal sealed class HfsPlusRawFileSystemProvider : IRawFileSystemProvider
     public static HfsPlusRawFileSystemProvider Create(MountPlan plan)
     {
         var basePath = plan.PhysicalDrivePath;
-        var hashIdx = basePath.IndexOf("#part", StringComparison.OrdinalIgnoreCase);
+        var hashIdx = basePath.IndexOf('#');
         if (hashIdx > 0)
         {
             basePath = basePath[..hashIdx];

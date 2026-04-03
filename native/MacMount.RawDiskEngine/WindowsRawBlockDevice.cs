@@ -55,6 +55,8 @@ public sealed class WindowsRawBlockDevice : IRawBlockDevice, IDisposable
         return new WindowsRawBlockDevice(normalizedPath, handle, length);
     }
 
+    private const int SectorSize = 512;
+
     public ValueTask<int> ReadAsync(long offset, byte[] buffer, int count, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
@@ -68,12 +70,41 @@ public sealed class WindowsRawBlockDevice : IRawBlockDevice, IDisposable
         var effectiveCount = (int)Math.Min(count, remaining);
         cancellationToken.ThrowIfCancellationRequested();
 
-        var read = RandomAccess.Read(
-            _handle,
-            buffer.AsSpan(0, effectiveCount),
-            fileOffset: offset
-        );
-        return new ValueTask<int>(read);
+        // Raw physical drives require sector-aligned offset and count.
+        var alignedOffset = (offset / SectorSize) * SectorSize;
+        var skipBytes = (int)(offset - alignedOffset);
+        var alignedCount = ((skipBytes + effectiveCount + SectorSize - 1) / SectorSize) * SectorSize;
+        alignedCount = (int)Math.Min(alignedCount, Length - alignedOffset);
+
+        if (!NativeMethods.SetFilePointerEx(_handle, alignedOffset, out _, 0 /* FILE_BEGIN */))
+        {
+            var win32 = Marshal.GetLastWin32Error();
+            throw new IOException($"SetFilePointerEx failed at offset {alignedOffset} (win32={win32}).");
+        }
+
+        if (skipBytes == 0 && effectiveCount % SectorSize == 0)
+        {
+            // Already aligned — read directly into caller's buffer
+            if (!NativeMethods.ReadFile(_handle, buffer, alignedCount, out var bytesRead, IntPtr.Zero))
+            {
+                var win32 = Marshal.GetLastWin32Error();
+                throw new IOException($"ReadFile failed at offset {alignedOffset}, count {alignedCount} (win32={win32}).");
+            }
+            return new ValueTask<int>(Math.Min(bytesRead, effectiveCount));
+        }
+
+        // Unaligned — read into a temp sector-aligned buffer, then copy the requested slice
+        var alignedBuffer = new byte[alignedCount];
+        if (!NativeMethods.ReadFile(_handle, alignedBuffer, alignedCount, out var alignedRead, IntPtr.Zero))
+        {
+            var win32 = Marshal.GetLastWin32Error();
+            throw new IOException($"ReadFile failed at offset {alignedOffset}, count {alignedCount} (win32={win32}).");
+        }
+
+        var available = Math.Min(effectiveCount, alignedRead - skipBytes);
+        if (available <= 0) return new ValueTask<int>(0);
+        Buffer.BlockCopy(alignedBuffer, skipBytes, buffer, 0, available);
+        return new ValueTask<int>(available);
     }
 
     public void Dispose()
@@ -176,6 +207,12 @@ internal static class NativeMethods
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool GetFileSizeEx(SafeFileHandle hFile, out long lpFileSize);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool SetFilePointerEx(SafeFileHandle hFile, long liDistanceToMove, out long lpNewFilePointer, uint dwMoveMethod);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool ReadFile(SafeFileHandle hFile, byte[] lpBuffer, int nNumberOfBytesToRead, out int lpNumberOfBytesRead, IntPtr lpOverlapped);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct GET_LENGTH_INFORMATION

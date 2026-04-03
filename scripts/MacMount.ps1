@@ -256,6 +256,37 @@ function Mount-Drive($id, $Password = "") {
 
     $mountPoint = "$freeLetter`:"
     $mountPathForCheck = "$freeLetter`:\"
+
+    # Detect drive format to route correctly
+    $detectedFormat = "unknown"
+    try {
+        $mountPartitions = Get-Partition -DiskNumber $id -ErrorAction SilentlyContinue
+        foreach ($mp in $mountPartitions) {
+            $gType = "$($mp.GptType)"
+            if ($gType -match "48465300-0000-11AA-AA11-00306543ECAC" -or $mp.Type -match "HFS") {
+                $detectedFormat = "HFS+"; break
+            }
+            if ($gType -match "7C3457EF-0000-11AA-AA11-00306543ECAC" -or $mp.Type -match "APFS") {
+                $detectedFormat = "APFS"; break
+            }
+            if ($mp.Type -eq "Unknown") {
+                $dInfo = Get-Disk -Number $id -ErrorAction SilentlyContinue
+                if ($dInfo -and $dInfo.PartitionStyle -eq "MBR" -and $mp.MbrType -eq 175) {
+                    $detectedFormat = "HFS+"; break
+                }
+            }
+        }
+    } catch {}
+
+    # HFS+ is handled by the native broker, not this PowerShell fallback
+    if ($detectedFormat -eq "HFS+" -or $detectedFormat -eq "unknown") {
+        return @{
+            error = "This drive format ($detectedFormat) requires the native mount engine."
+            suggestion = "The native broker handles HFS+/HFSX/APFS mounting. If this message appears, the native broker may not be running."
+        } | ConvertTo-Json
+    }
+
+    # APFS path via apfs-fuse
     $apfsExe = Join-Path $PSScriptRoot "..\native-bridge\apfs-fuse\build\apfs-fuse.exe"
 
     if (-not (Test-Path $apfsExe)) {

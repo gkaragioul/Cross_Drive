@@ -69,13 +69,38 @@ internal sealed class NativeService
         {
             try
             {
-                var server = new NamedPipeServerStream(
-                    "macmount.native",
-                    PipeDirection.InOut,
-                    16,
-                    PipeTransmissionMode.Byte,
-                    PipeOptions.Asynchronous
-                );
+                NamedPipeServerStream server;
+                try
+                {
+                    server = new NamedPipeServerStream(
+                        "macmount.native",
+                        PipeDirection.InOut,
+                        16,
+                        PipeTransmissionMode.Byte,
+                        PipeOptions.Asynchronous
+                    );
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    // Pipe may already exist with different ACL — wait and retry
+                    await Task.Delay(1000);
+                    try
+                    {
+                        server = new NamedPipeServerStream(
+                            "macmount.native",
+                            PipeDirection.InOut,
+                            16,
+                            PipeTransmissionMode.Byte,
+                            PipeOptions.Asynchronous
+                        );
+                    }
+                    catch (Exception retryEx)
+                    {
+                        Console.Error.WriteLine($"Pipe retry failed: {retryEx.Message}");
+                        await Task.Delay(2000);
+                        continue;
+                    }
+                }
 
                 await server.WaitForConnectionAsync();
 

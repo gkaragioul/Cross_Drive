@@ -17,15 +17,15 @@ const host = '127.0.0.1';
 let httpServer = null;
 
 let logs = [];
-const VALID_RUNTIME_MOUNT_MODES = new Set(['wsl_unc', 'hybrid_canary', 'experimental_raw']);
+const VALID_RUNTIME_MOUNT_MODES = new Set(['wsl_unc', 'hybrid_canary', 'experimental_raw', 'native_first']);
 const RUNTIME_MOUNT_MODE = (() => {
     const raw = String(process.env.MACMOUNT_MOUNT_MODE || '').trim().toLowerCase();
-    if (!raw) return 'hybrid_canary';
-    return VALID_RUNTIME_MOUNT_MODES.has(raw) ? raw : 'wsl_unc';
+    if (!raw) return 'native_first';
+    return VALID_RUNTIME_MOUNT_MODES.has(raw) ? raw : 'native_first';
 })();
 const RUNTIME_CANARY_PERCENT = (() => {
-    const raw = Number.parseInt(String(process.env.MACMOUNT_CANARY_PERCENT || '10'), 10);
-    if (!Number.isFinite(raw)) return 10;
+    const raw = Number.parseInt(String(process.env.MACMOUNT_CANARY_PERCENT || '100'), 10);
+    if (!Number.isFinite(raw)) return 100;
     return Math.max(0, Math.min(100, raw));
 })();
 const RUNTIME_NATIVE_MOUNT_ENABLED = RUNTIME_MOUNT_MODE !== 'wsl_unc';
@@ -77,12 +77,9 @@ function bucketizeDriveId(driveId) {
 
 function shouldAttemptNativeMountForDrive(driveId, forceNative = false) {
     if (!RUNTIME_NATIVE_MOUNT_ENABLED) return false;
-    if (forceNative) return true;
-    if (RUNTIME_MOUNT_MODE === 'experimental_raw') return true;
-    if (RUNTIME_MOUNT_MODE === 'hybrid_canary') {
-        return bucketizeDriveId(driveId) < RUNTIME_CANARY_PERCENT;
-    }
-    return false;
+    // Always attempt native broker first — it supports HFS+, HFSX, and APFS.
+    // PowerShell fallback only handles APFS via apfs-fuse.
+    return true;
 }
 
 function execPsMount(driveId, password = '', skipLetter = false) {
