@@ -42,6 +42,9 @@ public sealed class HfsPlusNativeReader : IDisposable
     private uint _leafRecords;
     private uint _lastLeafNode;
 
+    // Thread safety: serialise all write operations (WinFsp callbacks are concurrent)
+    private readonly SemaphoreSlim _writeLock = new(1, 1);
+
     public HfsPlusVolumeHeader VolumeHeader => _header;
     public bool IsWritable => _device.CanWrite;
     public uint NextCatalogId => _nextCatalogId;
@@ -413,15 +416,23 @@ public sealed class HfsPlusNativeReader : IDisposable
     /// </summary>
     public async Task DisableJournalAsync(CancellationToken ct = default)
     {
-        const uint kHFSVolumeJournaledBit = 1u << 13;
-        if ((_volumeAttributes & kHFSVolumeJournaledBit) == 0) return; // already off
+        await _writeLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            const uint kHFSVolumeJournaledBit = 1u << 13;
+            if ((_volumeAttributes & kHFSVolumeJournaledBit) == 0) return; // already off
 
-        _volumeAttributes &= ~kHFSVolumeJournaledBit;
-        // Zero out journalInfoBlock (VH offset 36, uint32 BE)
-        BinaryPrimitives.WriteUInt32BigEndian(_vhRawBuf.AsSpan(4, 4), _volumeAttributes);
-        BinaryPrimitives.WriteUInt32BigEndian(_vhRawBuf.AsSpan(36, 4), 0);
+            _volumeAttributes &= ~kHFSVolumeJournaledBit;
+            // Zero out journalInfoBlock (VH offset 36, uint32 BE)
+            BinaryPrimitives.WriteUInt32BigEndian(_vhRawBuf.AsSpan(4, 4), _volumeAttributes);
+            BinaryPrimitives.WriteUInt32BigEndian(_vhRawBuf.AsSpan(36, 4), 0);
 
-        await FlushVolumeHeaderAsync(ct).ConfigureAwait(false);
+            await FlushVolumeHeaderAsync(ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
     }
 
     /// <summary>
@@ -900,64 +911,15 @@ public sealed class HfsPlusNativeReader : IDisposable
     }
 
     /// <summary>
-    /// Insert an index record pointing to childNodeIndex into the parent index node.
-    /// This is needed after a leaf split.
+    /// Insert an index record pointing to childNodeIndex into the specified parent index node.
+    /// This is needed after a leaf (or index) split. The parentNodeIndex is obtained from
+    /// FindLeafForKeyAsync so we insert at the correct level without re-traversing.
+    /// If the parent itself is full, we split it and propagate upward.
     /// </summary>
-    private async Task InsertIntoIndexAsync(uint parentCnid, string name, uint childNodeIndex,
+    private async Task InsertIntoParentIndexAsync(uint parentNodeIndex, uint childNodeIndex,
         byte[] childFirstKey, CancellationToken ct)
     {
-        // For simplicity: traverse from the root to find the correct index node,
-        // then insert the new pointer. If the index node also splits, recurse.
-        // For now, we handle the simple case where the root or its children have space.
-
-        // Find the index node that should contain the pointer
-        var currentNode = _rootNodeIndex;
-        var depth = 0;
-        var parentIndexNode = _rootNodeIndex;
-
-        while (depth < 20)
-        {
-            var nodeBuf = await ReadCatalogNodeAsync(currentNode, ct).ConfigureAwait(false);
-            if (nodeBuf is null) break;
-
-            var kind = (sbyte)nodeBuf[8];
-            if (kind == -1) break; // reached leaf level — parent is the index
-
-            if (kind != 0) break;
-            parentIndexNode = currentNode;
-
-            var numRecs = BinaryPrimitives.ReadUInt16BigEndian(nodeBuf.AsSpan(10, 2));
-            uint bestChild = 0;
-            var targetParent = BinaryPrimitives.ReadUInt32BigEndian(childFirstKey.AsSpan(2, 4));
-            var targetNameLen = BinaryPrimitives.ReadUInt16BigEndian(childFirstKey.AsSpan(6, 2));
-            var targetChars = new char[targetNameLen];
-            for (int i = 0; i < targetNameLen; i++)
-                targetChars[i] = (char)BinaryPrimitives.ReadUInt16BigEndian(childFirstKey.AsSpan(8 + i * 2, 2));
-            var targetName = new string(targetChars);
-
-            for (int i = 0; i < numRecs; i++)
-            {
-                var (recOff, recLen) = GetRecordOffsetAndLength(nodeBuf, i, numRecs);
-                if (recOff < 14 || recOff + 6 > nodeBuf.Length) continue;
-                var keyLen = BinaryPrimitives.ReadUInt16BigEndian(nodeBuf.AsSpan(recOff, 2));
-                if (keyLen < 6) continue;
-                var ptrOffset = recOff + 2 + keyLen;
-                if (ptrOffset % 2 != 0) ptrOffset++;
-                if (ptrOffset + 4 > nodeBuf.Length) continue;
-                var child = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(ptrOffset, 4));
-
-                var cmp = CompareCatalogKeys(nodeBuf, recOff, targetParent, targetName);
-                if (cmp <= 0) bestChild = child;
-                else break;
-            }
-
-            if (bestChild == 0) break;
-            currentNode = bestChild;
-            depth++;
-        }
-
-        // Now insert a new index record in parentIndexNode pointing to childNodeIndex
-        var parentBuf = await ReadCatalogNodeAsync(parentIndexNode, ct).ConfigureAwait(false);
+        var parentBuf = await ReadCatalogNodeAsync(parentNodeIndex, ct).ConfigureAwait(false);
         if (parentBuf is null) return;
 
         var parentNumRecords = BinaryPrimitives.ReadUInt16BigEndian(parentBuf.AsSpan(10, 2));
@@ -972,10 +934,240 @@ public sealed class HfsPlusNativeReader : IDisposable
         if (freeSpace >= totalNeeded)
         {
             InsertRecordIntoNode(parentBuf, parentNumRecords, childFirstKey, ptrData);
-            await WriteCatalogNodeAsync(parentIndexNode, parentBuf, ct).ConfigureAwait(false);
+            await WriteCatalogNodeAsync(parentNodeIndex, parentBuf, ct).ConfigureAwait(false);
         }
-        // If the parent index node is also full, we'd need to split it too.
-        // For now, log a warning — this is an edge case for very large catalogs.
+        else
+        {
+            // Parent index node is full — split it and propagate upward.
+            // Find the grandparent by doing a full-key descent for the child's first key.
+            var (_, grandparentIndex) = await FindLeafForKeyAsync(childFirstKey, ct).ConfigureAwait(false);
+            // Actually we need the parent of parentNodeIndex. Walk from root to find it.
+            var grandparent = await FindParentOfNodeAsync(parentNodeIndex, ct).ConfigureAwait(false);
+
+            var splitResult = await SplitIndexAndInsertAsync(parentNodeIndex, parentBuf, parentNumRecords,
+                childFirstKey, ptrData, ct).ConfigureAwait(false);
+
+            if (splitResult is not null && grandparent != parentNodeIndex)
+            {
+                // Recurse: insert the new index node's first key into the grandparent
+                await InsertIntoParentIndexAsync(grandparent, splitResult.Value.NewNodeIndex,
+                    splitResult.Value.NewNodeFirstKey, ct).ConfigureAwait(false);
+            }
+            else if (splitResult is not null)
+            {
+                // We split the root — need to create a new root
+                await CreateNewRootAsync(parentNodeIndex, splitResult.Value.NewNodeIndex,
+                    splitResult.Value.NewNodeFirstKey, ct).ConfigureAwait(false);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Find the parent index node of the given target node by traversing from root.
+    /// Returns the root node index if target is the root or not found.
+    /// </summary>
+    private async Task<uint> FindParentOfNodeAsync(uint targetNodeIndex, CancellationToken ct)
+    {
+        uint currentNode = _rootNodeIndex;
+        uint parentNode = _rootNodeIndex;
+        int depth = 0;
+
+        while (depth < 20)
+        {
+            if (currentNode == targetNodeIndex) return parentNode;
+
+            var nodeBuf = await ReadCatalogNodeAsync(currentNode, ct).ConfigureAwait(false);
+            if (nodeBuf is null) return _rootNodeIndex;
+
+            var kind = (sbyte)nodeBuf[8];
+            if (kind == -1) return _rootNodeIndex; // leaf — target not found as index node
+            if (kind != 0) return _rootNodeIndex;
+
+            var numRecords = BinaryPrimitives.ReadUInt16BigEndian(nodeBuf.AsSpan(10, 2));
+
+            // Check all children — if any is the target, current is the parent
+            for (int i = 0; i < numRecords; i++)
+            {
+                var (recOff, _) = GetRecordOffsetAndLength(nodeBuf, i, numRecords);
+                if (recOff < 14 || recOff + 6 > nodeBuf.Length) continue;
+                var keyLen = BinaryPrimitives.ReadUInt16BigEndian(nodeBuf.AsSpan(recOff, 2));
+                if (keyLen < 6) continue;
+                var ptrOffset = recOff + 2 + keyLen;
+                if (ptrOffset % 2 != 0) ptrOffset++;
+                if (ptrOffset + 4 > nodeBuf.Length) continue;
+                var childNode = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(ptrOffset, 4));
+
+                if (childNode == targetNodeIndex) return currentNode;
+            }
+
+            // Follow the last child pointer to continue descending (heuristic)
+            uint lastChild = 0;
+            for (int i = 0; i < numRecords; i++)
+            {
+                var (recOff, _) = GetRecordOffsetAndLength(nodeBuf, i, numRecords);
+                if (recOff < 14 || recOff + 6 > nodeBuf.Length) continue;
+                var keyLen = BinaryPrimitives.ReadUInt16BigEndian(nodeBuf.AsSpan(recOff, 2));
+                if (keyLen < 6) continue;
+                var ptrOffset = recOff + 2 + keyLen;
+                if (ptrOffset % 2 != 0) ptrOffset++;
+                if (ptrOffset + 4 > nodeBuf.Length) continue;
+                lastChild = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(ptrOffset, 4));
+            }
+
+            if (lastChild == 0) return _rootNodeIndex;
+            parentNode = currentNode;
+            currentNode = lastChild;
+            depth++;
+        }
+
+        return _rootNodeIndex;
+    }
+
+    /// <summary>
+    /// Split an index node and insert a new record. Returns the split info for propagation.
+    /// </summary>
+    private async Task<(bool Split, uint NewNodeIndex, byte[] NewNodeFirstKey)?> SplitIndexAndInsertAsync(
+        uint nodeIndex, byte[] nodeBuf, int numRecords, byte[] key, byte[] data, CancellationToken ct)
+    {
+        // Collect all existing records + the new one, in key order
+        var targetParent = BinaryPrimitives.ReadUInt32BigEndian(key.AsSpan(2, 4));
+        var targetNameLen = BinaryPrimitives.ReadUInt16BigEndian(key.AsSpan(6, 2));
+        var targetChars = new char[targetNameLen];
+        for (int i = 0; i < targetNameLen; i++)
+            targetChars[i] = (char)BinaryPrimitives.ReadUInt16BigEndian(key.AsSpan(8 + i * 2, 2));
+        var targetName = new string(targetChars);
+
+        var allRecords = new List<byte[]>();
+        bool inserted = false;
+        for (int i = 0; i < numRecords; i++)
+        {
+            var (recOff, recLen) = GetRecordOffsetAndLength(nodeBuf, i, numRecords);
+            if (recOff < 14 || recLen <= 0) continue;
+
+            if (!inserted)
+            {
+                var cmp = CompareCatalogKeys(nodeBuf, recOff, targetParent, targetName);
+                if (cmp > 0)
+                {
+                    var newRec = new byte[key.Length + data.Length];
+                    Buffer.BlockCopy(key, 0, newRec, 0, key.Length);
+                    Buffer.BlockCopy(data, 0, newRec, key.Length, data.Length);
+                    allRecords.Add(newRec);
+                    inserted = true;
+                }
+            }
+
+            var existing = new byte[recLen];
+            Buffer.BlockCopy(nodeBuf, recOff, existing, 0, recLen);
+            allRecords.Add(existing);
+        }
+
+        if (!inserted)
+        {
+            var newRec = new byte[key.Length + data.Length];
+            Buffer.BlockCopy(key, 0, newRec, 0, key.Length);
+            Buffer.BlockCopy(data, 0, newRec, key.Length, data.Length);
+            allRecords.Add(newRec);
+        }
+
+        // Split at midpoint
+        var splitPoint = allRecords.Count / 2;
+        var leftRecords = allRecords.GetRange(0, splitPoint);
+        var rightRecords = allRecords.GetRange(splitPoint, allRecords.Count - splitPoint);
+
+        // Allocate a new node
+        var newNodeIndex = await AllocateBTreeNodeAsync(ct).ConfigureAwait(false);
+
+        // Prepare new index node buffer
+        var newNodeBuf = new byte[_nodeSize];
+        var height = nodeBuf[9]; // preserve height from original index node
+        var oldFLink = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(0, 4));
+        BinaryPrimitives.WriteUInt32BigEndian(newNodeBuf.AsSpan(0, 4), oldFLink);
+        BinaryPrimitives.WriteUInt32BigEndian(newNodeBuf.AsSpan(4, 4), nodeIndex);
+        newNodeBuf[8] = 0; // kind = index
+        newNodeBuf[9] = height;
+
+        // Update old node's fLink
+        BinaryPrimitives.WriteUInt32BigEndian(nodeBuf.AsSpan(0, 4), newNodeIndex);
+
+        // If old fLink node exists, update its bLink
+        if (oldFLink != 0)
+        {
+            var fLinkBuf = await ReadCatalogNodeAsync(oldFLink, ct).ConfigureAwait(false);
+            if (fLinkBuf != null)
+            {
+                BinaryPrimitives.WriteUInt32BigEndian(fLinkBuf.AsSpan(4, 4), newNodeIndex);
+                await WriteCatalogNodeAsync(oldFLink, fLinkBuf, ct).ConfigureAwait(false);
+            }
+        }
+
+        RebuildNodeRecords(nodeBuf, leftRecords);
+        RebuildNodeRecords(newNodeBuf, rightRecords);
+
+        await WriteCatalogNodeAsync(nodeIndex, nodeBuf, ct).ConfigureAwait(false);
+        await WriteCatalogNodeAsync(newNodeIndex, newNodeBuf, ct).ConfigureAwait(false);
+
+        // Extract first key of new (right) node for parent insertion
+        var (firstRecOff, _) = GetRecordOffsetAndLength(newNodeBuf, 0, rightRecords.Count);
+        var keyLenField = BinaryPrimitives.ReadUInt16BigEndian(newNodeBuf.AsSpan(firstRecOff, 2));
+        var firstKey = new byte[2 + keyLenField];
+        Buffer.BlockCopy(newNodeBuf, firstRecOff, firstKey, 0, firstKey.Length);
+
+        return (true, newNodeIndex, firstKey);
+    }
+
+    /// <summary>
+    /// Create a new root index node when the current root is split.
+    /// </summary>
+    private async Task CreateNewRootAsync(uint leftChild, uint rightChild, byte[] rightFirstKey, CancellationToken ct)
+    {
+        var newRootIndex = await AllocateBTreeNodeAsync(ct).ConfigureAwait(false);
+        var newRootBuf = new byte[_nodeSize];
+
+        // Read old root to get its height
+        var oldRootBuf = await ReadCatalogNodeAsync(leftChild, ct).ConfigureAwait(false);
+        var childHeight = oldRootBuf != null ? oldRootBuf[9] : (byte)1;
+
+        // New root: kind=0 (index), height = childHeight + 1
+        newRootBuf[8] = 0;
+        newRootBuf[9] = (byte)(childHeight + 1);
+
+        // Build two index records: one for left child (using its first key) and one for right child
+        // Left child: extract first key from left child node
+        byte[] leftFirstKey;
+        if (oldRootBuf != null)
+        {
+            var leftNumRecs = BinaryPrimitives.ReadUInt16BigEndian(oldRootBuf.AsSpan(10, 2));
+            var (leftRecOff, _) = GetRecordOffsetAndLength(oldRootBuf, 0, leftNumRecs);
+            var leftKeyLen = BinaryPrimitives.ReadUInt16BigEndian(oldRootBuf.AsSpan(leftRecOff, 2));
+            leftFirstKey = new byte[2 + leftKeyLen];
+            Buffer.BlockCopy(oldRootBuf, leftRecOff, leftFirstKey, 0, leftFirstKey.Length);
+        }
+        else
+        {
+            leftFirstKey = rightFirstKey; // fallback
+        }
+
+        var records = new List<byte[]>();
+
+        // Left record: leftFirstKey + leftChild pointer
+        var leftRec = new byte[leftFirstKey.Length + 4];
+        Buffer.BlockCopy(leftFirstKey, 0, leftRec, 0, leftFirstKey.Length);
+        BinaryPrimitives.WriteUInt32BigEndian(leftRec.AsSpan(leftFirstKey.Length, 4), leftChild);
+        records.Add(leftRec);
+
+        // Right record: rightFirstKey + rightChild pointer
+        var rightRec = new byte[rightFirstKey.Length + 4];
+        Buffer.BlockCopy(rightFirstKey, 0, rightRec, 0, rightFirstKey.Length);
+        BinaryPrimitives.WriteUInt32BigEndian(rightRec.AsSpan(rightFirstKey.Length, 4), rightChild);
+        records.Add(rightRec);
+
+        RebuildNodeRecords(newRootBuf, records);
+        await WriteCatalogNodeAsync(newRootIndex, newRootBuf, ct).ConfigureAwait(false);
+
+        // Update tree depth in header
+        _rootNodeIndex = newRootIndex;
+        await UpdateBTreeHeaderAsync(ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -983,8 +1175,8 @@ public sealed class HfsPlusNativeReader : IDisposable
     /// </summary>
     private async Task<bool> RemoveFromLeafAsync(uint parentCnid, string name, CancellationToken ct)
     {
-        var leafNode = await FindFirstLeafForParentAsync(parentCnid, ct).ConfigureAwait(false);
-        if (leafNode == 0) leafNode = _firstLeafNodeIndex;
+        var removeKey = BuildCatalogKey(parentCnid, name);
+        var (leafNode, _) = await FindLeafForKeyAsync(removeKey, ct).ConfigureAwait(false);
 
         var currentNode = leafNode;
         var visited = new HashSet<uint>();
@@ -1060,64 +1252,71 @@ public sealed class HfsPlusNativeReader : IDisposable
     /// </summary>
     public async Task<uint> CreateFileAsync(uint parentCnid, string name, byte[]? initialData = null, CancellationToken ct = default)
     {
-        var cnid = _nextCatalogId++;
-        var now = GetCurrentHfsTimestamp();
-
-        // Allocate blocks for initial data if any
-        var dataExtents = Array.Empty<HfsPlusExtent>();
-        long dataSize = 0;
-        if (initialData is not null && initialData.Length > 0)
+        await _writeLock.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            dataSize = initialData.Length;
-            var blocksNeeded = (uint)((dataSize + _header.BlockSize - 1) / _header.BlockSize);
-            var startBlock = await AllocateBlocksAsync(blocksNeeded, ct).ConfigureAwait(false);
-            dataExtents = new[] { new HfsPlusExtent(startBlock, blocksNeeded) };
+            var cnid = _nextCatalogId++;
+            var now = GetCurrentHfsTimestamp();
 
-            // Write data to allocated blocks
-            var writeOffset = _partitionOffset + (long)startBlock * _header.BlockSize;
-            // Pad to block boundary for sector-aligned writes
-            var paddedSize = (int)(blocksNeeded * _header.BlockSize);
-            var paddedData = new byte[paddedSize];
-            Buffer.BlockCopy(initialData, 0, paddedData, 0, initialData.Length);
-            await _device.WriteAsync(writeOffset, paddedData, paddedSize, ct).ConfigureAwait(false);
+            // Allocate blocks for initial data if any
+            var dataExtents = Array.Empty<HfsPlusExtent>();
+            long dataSize = 0;
+            if (initialData is not null && initialData.Length > 0)
+            {
+                dataSize = initialData.Length;
+                var blocksNeeded = (uint)((dataSize + _header.BlockSize - 1) / _header.BlockSize);
+                var startBlock = await AllocateBlocksAsync(blocksNeeded, ct).ConfigureAwait(false);
+                dataExtents = new[] { new HfsPlusExtent(startBlock, blocksNeeded) };
+
+                // Write data to allocated blocks
+                var writeOffset = _partitionOffset + (long)startBlock * _header.BlockSize;
+                // Pad to block boundary for sector-aligned writes
+                var paddedSize = (int)(blocksNeeded * _header.BlockSize);
+                var paddedData = new byte[paddedSize];
+                Buffer.BlockCopy(initialData, 0, paddedData, 0, initialData.Length);
+                await _device.WriteAsync(writeOffset, paddedData, paddedSize, ct).ConfigureAwait(false);
+            }
+
+            // Build and insert file record: key=(parentCnid, name), data=file record
+            var fileKey = BuildCatalogKey(parentCnid, name);
+            var fileRecord = BuildFileRecord(cnid, now, dataSize, dataExtents);
+
+            // Find the correct leaf using FULL key descent (parentCnid + name)
+            var (leafNode, parentIndex) = await FindLeafForKeyAsync(fileKey, ct).ConfigureAwait(false);
+            var split = await InsertIntoLeafAsync(leafNode, fileKey, fileRecord, ct).ConfigureAwait(false);
+            _leafRecords++;
+
+            if (split is not null)
+            {
+                await InsertIntoParentIndexAsync(parentIndex, split.Value.NewNodeIndex, split.Value.NewNodeFirstKey, ct).ConfigureAwait(false);
+            }
+
+            // Build and insert thread record: key=(cnid, ""), data=thread pointing back to parent
+            var threadKey = BuildCatalogKey(cnid, "");
+            var threadRecord = BuildThreadRecord(4, parentCnid, name); // 4 = file thread
+
+            // Use full-key descent for thread record too (high CNID goes to correct leaf, not first)
+            var (threadLeaf, threadParentIndex) = await FindLeafForKeyAsync(threadKey, ct).ConfigureAwait(false);
+            var threadSplit = await InsertIntoLeafAsync(threadLeaf, threadKey, threadRecord, ct).ConfigureAwait(false);
+            _leafRecords++;
+
+            if (threadSplit is not null)
+            {
+                await InsertIntoParentIndexAsync(threadParentIndex, threadSplit.Value.NewNodeIndex, threadSplit.Value.NewNodeFirstKey, ct).ConfigureAwait(false);
+            }
+
+            // Update B-tree header
+            await UpdateBTreeHeaderAsync(ct).ConfigureAwait(false);
+
+            // Flush volume header
+            await FlushVolumeHeaderAsync(ct).ConfigureAwait(false);
+
+            return cnid;
         }
-
-        // Build and insert file record: key=(parentCnid, name), data=file record
-        var fileKey = BuildCatalogKey(parentCnid, name);
-        var fileRecord = BuildFileRecord(cnid, now, dataSize, dataExtents);
-
-        // Find the correct leaf and insert
-        var leafNode = await FindFirstLeafForParentAsync(parentCnid, ct).ConfigureAwait(false);
-        if (leafNode == 0) leafNode = _firstLeafNodeIndex;
-        var split = await InsertIntoLeafAsync(leafNode, fileKey, fileRecord, ct).ConfigureAwait(false);
-        _leafRecords++;
-
-        if (split is not null)
+        finally
         {
-            await InsertIntoIndexAsync(parentCnid, name, split.Value.NewNodeIndex, split.Value.NewNodeFirstKey, ct).ConfigureAwait(false);
+            _writeLock.Release();
         }
-
-        // Build and insert thread record: key=(cnid, ""), data=thread pointing back to parent
-        var threadKey = BuildCatalogKey(cnid, "");
-        var threadRecord = BuildThreadRecord(4, parentCnid, name); // 4 = file thread
-
-        var threadLeaf = await FindFirstLeafForParentAsync(cnid, ct).ConfigureAwait(false);
-        if (threadLeaf == 0) threadLeaf = _firstLeafNodeIndex;
-        var threadSplit = await InsertIntoLeafAsync(threadLeaf, threadKey, threadRecord, ct).ConfigureAwait(false);
-        _leafRecords++;
-
-        if (threadSplit is not null)
-        {
-            await InsertIntoIndexAsync(cnid, "", threadSplit.Value.NewNodeIndex, threadSplit.Value.NewNodeFirstKey, ct).ConfigureAwait(false);
-        }
-
-        // Update B-tree header
-        await UpdateBTreeHeaderAsync(ct).ConfigureAwait(false);
-
-        // Flush volume header
-        await FlushVolumeHeaderAsync(ct).ConfigureAwait(false);
-
-        return cnid;
     }
 
     /// <summary>
@@ -1125,40 +1324,48 @@ public sealed class HfsPlusNativeReader : IDisposable
     /// </summary>
     public async Task<uint> CreateFolderAsync(uint parentCnid, string name, CancellationToken ct = default)
     {
-        var cnid = _nextCatalogId++;
-        var now = GetCurrentHfsTimestamp();
-
-        var folderKey = BuildCatalogKey(parentCnid, name);
-        var folderRecord = BuildFolderRecord(cnid, now);
-
-        var leafNode = await FindFirstLeafForParentAsync(parentCnid, ct).ConfigureAwait(false);
-        if (leafNode == 0) leafNode = _firstLeafNodeIndex;
-        var split = await InsertIntoLeafAsync(leafNode, folderKey, folderRecord, ct).ConfigureAwait(false);
-        _leafRecords++;
-
-        if (split is not null)
+        await _writeLock.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            await InsertIntoIndexAsync(parentCnid, name, split.Value.NewNodeIndex, split.Value.NewNodeFirstKey, ct).ConfigureAwait(false);
+            var cnid = _nextCatalogId++;
+            var now = GetCurrentHfsTimestamp();
+
+            var folderKey = BuildCatalogKey(parentCnid, name);
+            var folderRecord = BuildFolderRecord(cnid, now);
+
+            // Find the correct leaf using FULL key descent (parentCnid + name)
+            var (leafNode, parentIndex) = await FindLeafForKeyAsync(folderKey, ct).ConfigureAwait(false);
+            var split = await InsertIntoLeafAsync(leafNode, folderKey, folderRecord, ct).ConfigureAwait(false);
+            _leafRecords++;
+
+            if (split is not null)
+            {
+                await InsertIntoParentIndexAsync(parentIndex, split.Value.NewNodeIndex, split.Value.NewNodeFirstKey, ct).ConfigureAwait(false);
+            }
+
+            // Thread record: type 3 = folder thread
+            var threadKey = BuildCatalogKey(cnid, "");
+            var threadRecord = BuildThreadRecord(3, parentCnid, name);
+
+            // Use full-key descent for thread record too
+            var (threadLeaf, threadParentIndex) = await FindLeafForKeyAsync(threadKey, ct).ConfigureAwait(false);
+            var threadSplit = await InsertIntoLeafAsync(threadLeaf, threadKey, threadRecord, ct).ConfigureAwait(false);
+            _leafRecords++;
+
+            if (threadSplit is not null)
+            {
+                await InsertIntoParentIndexAsync(threadParentIndex, threadSplit.Value.NewNodeIndex, threadSplit.Value.NewNodeFirstKey, ct).ConfigureAwait(false);
+            }
+
+            await UpdateBTreeHeaderAsync(ct).ConfigureAwait(false);
+            await FlushVolumeHeaderAsync(ct).ConfigureAwait(false);
+
+            return cnid;
         }
-
-        // Thread record: type 3 = folder thread
-        var threadKey = BuildCatalogKey(cnid, "");
-        var threadRecord = BuildThreadRecord(3, parentCnid, name);
-
-        var threadLeaf = await FindFirstLeafForParentAsync(cnid, ct).ConfigureAwait(false);
-        if (threadLeaf == 0) threadLeaf = _firstLeafNodeIndex;
-        var threadSplit = await InsertIntoLeafAsync(threadLeaf, threadKey, threadRecord, ct).ConfigureAwait(false);
-        _leafRecords++;
-
-        if (threadSplit is not null)
+        finally
         {
-            await InsertIntoIndexAsync(cnid, "", threadSplit.Value.NewNodeIndex, threadSplit.Value.NewNodeFirstKey, ct).ConfigureAwait(false);
+            _writeLock.Release();
         }
-
-        await UpdateBTreeHeaderAsync(ct).ConfigureAwait(false);
-        await FlushVolumeHeaderAsync(ct).ConfigureAwait(false);
-
-        return cnid;
     }
 
     /// <summary>
@@ -1167,31 +1374,39 @@ public sealed class HfsPlusNativeReader : IDisposable
     /// </summary>
     public async Task DeleteEntryAsync(uint parentCnid, string name, CancellationToken ct = default)
     {
-        // First, find the entry to get its CNID and data fork (for freeing blocks)
-        var items = await ListDirectoryAsync(parentCnid, ct).ConfigureAwait(false);
-        var target = items.Find(i => string.Equals(i.Name, name, StringComparison.OrdinalIgnoreCase));
-        if (target is null) throw new FileNotFoundException($"Entry '{name}' not found under CNID {parentCnid}.");
-
-        // Free data blocks if it's a file
-        if (!target.IsDirectory && target.DataFork is not null)
+        await _writeLock.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            foreach (var ext in target.DataFork.Extents)
+            // First, find the entry to get its CNID and data fork (for freeing blocks)
+            var items = await ListDirectoryAsync(parentCnid, ct).ConfigureAwait(false);
+            var target = items.Find(i => string.Equals(i.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (target is null) throw new FileNotFoundException($"Entry '{name}' not found under CNID {parentCnid}.");
+
+            // Free data blocks if it's a file
+            if (!target.IsDirectory && target.DataFork is not null)
             {
-                if (ext.BlockCount > 0)
+                foreach (var ext in target.DataFork.Extents)
                 {
-                    await FreeBlocksAsync(ext.StartBlock, ext.BlockCount, ct).ConfigureAwait(false);
+                    if (ext.BlockCount > 0)
+                    {
+                        await FreeBlocksAsync(ext.StartBlock, ext.BlockCount, ct).ConfigureAwait(false);
+                    }
                 }
             }
+
+            // Remove the file/folder record: key=(parentCnid, name)
+            await RemoveFromLeafAsync(parentCnid, name, ct).ConfigureAwait(false);
+
+            // Remove the thread record: key=(cnid, "")
+            await RemoveFromLeafAsync(target.Cnid, "", ct).ConfigureAwait(false);
+
+            await UpdateBTreeHeaderAsync(ct).ConfigureAwait(false);
+            await FlushVolumeHeaderAsync(ct).ConfigureAwait(false);
         }
-
-        // Remove the file/folder record: key=(parentCnid, name)
-        await RemoveFromLeafAsync(parentCnid, name, ct).ConfigureAwait(false);
-
-        // Remove the thread record: key=(cnid, "")
-        await RemoveFromLeafAsync(target.Cnid, "", ct).ConfigureAwait(false);
-
-        await UpdateBTreeHeaderAsync(ct).ConfigureAwait(false);
-        await FlushVolumeHeaderAsync(ct).ConfigureAwait(false);
+        finally
+        {
+            _writeLock.Release();
+        }
     }
 
     /// <summary>
@@ -1200,11 +1415,24 @@ public sealed class HfsPlusNativeReader : IDisposable
     public async Task WriteFileDataAsync(uint fileCnid, long offset, byte[] data, int count, CancellationToken ct = default)
     {
         if (count <= 0) return;
+        await _writeLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await WriteFileDataCoreAsync(fileCnid, offset, data, count, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    private async Task WriteFileDataCoreAsync(uint fileCnid, long offset, byte[] data, int count, CancellationToken ct)
+    {
 
         // Find the file's catalog record to get current fork data
         // We need to find it by searching for the thread record first, then the file record
-        var threadLeaf = await FindFirstLeafForParentAsync(fileCnid, ct).ConfigureAwait(false);
-        if (threadLeaf == 0) threadLeaf = _firstLeafNodeIndex;
+        var threadKey = BuildCatalogKey(fileCnid, "");
+        var (threadLeaf, _) = await FindLeafForKeyAsync(threadKey, ct).ConfigureAwait(false);
 
         // Find the thread record to get parentCnid and name
         uint parentCnid = 0;
@@ -1256,8 +1484,8 @@ public sealed class HfsPlusNativeReader : IDisposable
             throw new InvalidOperationException($"Cannot find thread record for CNID {fileCnid}.");
 
         // Now find the file record to get current fork data
-        var fileLeaf = await FindFirstLeafForParentAsync(parentCnid, ct).ConfigureAwait(false);
-        if (fileLeaf == 0) fileLeaf = _firstLeafNodeIndex;
+        var fileKey = BuildCatalogKey(parentCnid, fileName);
+        var (fileLeaf, _fileParent) = await FindLeafForKeyAsync(fileKey, ct).ConfigureAwait(false);
 
         currentNode = fileLeaf;
         visited.Clear();
@@ -1385,15 +1613,26 @@ public sealed class HfsPlusNativeReader : IDisposable
     public async Task SetFileSizeAsync(uint fileCnid, long newSize, CancellationToken ct = default)
     {
         if (newSize < 0) throw new ArgumentOutOfRangeException(nameof(newSize));
+        await _writeLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await SetFileSizeCoreAsync(fileCnid, newSize, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
 
+    private async Task SetFileSizeCoreAsync(uint fileCnid, long newSize, CancellationToken ct)
+    {
         // Find file record via thread record (same logic as WriteFileDataAsync)
         // For brevity, we use the simplified approach: find the record and update it
 
         // Locate file record
-        var items = new List<HfsPlusCatalogItem>();
-        // Search all leaves for this CNID's thread to find parent+name
-        var tLeaf = await FindFirstLeafForParentAsync(fileCnid, ct).ConfigureAwait(false);
-        if (tLeaf == 0) tLeaf = _firstLeafNodeIndex;
+        // Search for this CNID's thread to find parent+name
+        var threadKey = BuildCatalogKey(fileCnid, "");
+        var (tLeaf, _) = await FindLeafForKeyAsync(threadKey, ct).ConfigureAwait(false);
 
         uint parentCnid = 0;
         string fileName = "";
@@ -1435,8 +1674,8 @@ public sealed class HfsPlusNativeReader : IDisposable
             throw new InvalidOperationException($"Cannot find thread record for CNID {fileCnid}.");
 
         // Find the file record
-        var fileLeaf = await FindFirstLeafForParentAsync(parentCnid, ct).ConfigureAwait(false);
-        if (fileLeaf == 0) fileLeaf = _firstLeafNodeIndex;
+        var fileKey = BuildCatalogKey(parentCnid, fileName);
+        var (fileLeaf, _fileParent) = await FindLeafForKeyAsync(fileKey, ct).ConfigureAwait(false);
 
         cn = fileLeaf;
         vis.Clear();
@@ -1660,6 +1899,65 @@ public sealed class HfsPlusNativeReader : IDisposable
         }
 
         return 0;
+    }
+
+    /// <summary>
+    /// Proper B-tree descent using the FULL catalog key (parentCnid + name) to find the
+    /// correct leaf node for insertion. Also returns the parent index node so that split
+    /// propagation can insert directly into the right place.
+    /// </summary>
+    private async Task<(uint LeafNode, uint ParentNode)> FindLeafForKeyAsync(byte[] catalogKey, CancellationToken ct)
+    {
+        var targetParent = BinaryPrimitives.ReadUInt32BigEndian(catalogKey.AsSpan(2, 4));
+        var targetNameLen = BinaryPrimitives.ReadUInt16BigEndian(catalogKey.AsSpan(6, 2));
+        var targetChars = new char[targetNameLen];
+        for (int i = 0; i < targetNameLen; i++)
+            targetChars[i] = (char)BinaryPrimitives.ReadUInt16BigEndian(catalogKey.AsSpan(8 + i * 2, 2));
+        var targetName = new string(targetChars);
+
+        uint currentNode = _rootNodeIndex;
+        uint parentNode = _rootNodeIndex;
+        int depth = 0;
+
+        while (depth < 20)
+        {
+            var nodeBuf = await ReadCatalogNodeAsync(currentNode, ct).ConfigureAwait(false);
+            if (nodeBuf is null) return (_firstLeafNodeIndex, _rootNodeIndex);
+
+            var kind = (sbyte)nodeBuf[8];
+            if (kind == -1) return (currentNode, parentNode); // found leaf
+
+            if (kind != 0) return (_firstLeafNodeIndex, _rootNodeIndex); // unexpected node kind
+
+            parentNode = currentNode;
+            var numRecords = BinaryPrimitives.ReadUInt16BigEndian(nodeBuf.AsSpan(10, 2));
+            uint bestChild = 0;
+
+            for (int i = 0; i < numRecords; i++)
+            {
+                var (recOff, _) = GetRecordOffsetAndLength(nodeBuf, i, numRecords);
+                if (recOff < 14 || recOff + 6 > nodeBuf.Length) continue;
+                var keyLen = BinaryPrimitives.ReadUInt16BigEndian(nodeBuf.AsSpan(recOff, 2));
+                if (keyLen < 6) continue;
+
+                var ptrOffset = recOff + 2 + keyLen;
+                if (ptrOffset % 2 != 0) ptrOffset++;
+                if (ptrOffset + 4 > nodeBuf.Length) continue;
+
+                var childNode = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(ptrOffset, 4));
+                var cmp = CompareCatalogKeys(nodeBuf, recOff, targetParent, targetName);
+                if (cmp <= 0)
+                    bestChild = childNode;
+                else
+                    break;
+            }
+
+            if (bestChild == 0) return (_firstLeafNodeIndex, _rootNodeIndex);
+            currentNode = bestChild;
+            depth++;
+        }
+
+        return (_firstLeafNodeIndex, _rootNodeIndex);
     }
 
     private async Task<byte[]?> ReadCatalogNodeAsync(uint nodeIndex, CancellationToken ct)
