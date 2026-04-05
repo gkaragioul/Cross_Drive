@@ -508,7 +508,10 @@ public sealed class HfsPlusNativeReader : IDisposable
     private async Task<uint> AllocateBTreeNodeAsync(CancellationToken ct)
     {
         if (_freeNodes == 0)
-            throw new InvalidOperationException("No free B-tree nodes available.");
+        {
+            // Grow the catalog file to make room for more nodes
+            await GrowCatalogFileAsync(ct).ConfigureAwait(false);
+        }
 
         // The bitmap is stored in the header node, starting after the 3 standard records
         // (header record, user data record, map record). The map record typically starts at
@@ -547,6 +550,112 @@ public sealed class HfsPlusNativeReader : IDisposable
         }
 
         throw new InvalidOperationException("No free B-tree nodes found in bitmap.");
+    }
+
+    /// <summary>
+    /// Grow the catalog file by allocating more disk blocks and adding new empty B-tree nodes.
+    /// Also extends the header node's map record (bitmap) if it's too small to track the new nodes.
+    /// </summary>
+    private async Task GrowCatalogFileAsync(CancellationToken ct)
+    {
+        // Allocate enough blocks for 16 new nodes
+        var nodesPerBlock = _header.BlockSize / _nodeSize;
+        if (nodesPerBlock == 0) nodesPerBlock = 1;
+        var newNodeCount = (uint)Math.Max(16, nodesPerBlock);
+        var blocksNeeded = (uint)((newNodeCount * _nodeSize + _header.BlockSize - 1) / _header.BlockSize);
+
+        var startBlock = await AllocateBlocksAsync(blocksNeeded, ct).ConfigureAwait(false);
+        var byteOff = _partitionOffset + (long)startBlock * _header.BlockSize;
+        var byteLen = (long)blocksNeeded * _header.BlockSize;
+
+        // Zero-fill the new blocks
+        var zeroBuf = new byte[Math.Min(byteLen, 65536)];
+        for (long written = 0; written < byteLen; written += zeroBuf.Length)
+        {
+            var chunk = (int)Math.Min(zeroBuf.Length, byteLen - written);
+            await _device.WriteAsync(byteOff + written, zeroBuf, chunk, ct).ConfigureAwait(false);
+        }
+
+        // Add to catalog extent list
+        _catalogExtents.Add((byteOff, byteLen));
+
+        // Update counts
+        var addedNodes = (uint)(byteLen / _nodeSize);
+        _totalNodes += addedNodes;
+        _freeNodes += addedNodes;
+
+        // Extend the header node's map record (bitmap) if it can't cover totalNodes.
+        // The map record stores one bit per node; if totalNodes exceeds the bitmap capacity,
+        // we must rebuild the header node with a larger map record.
+        await ExtendMapRecordIfNeededAsync(ct).ConfigureAwait(false);
+
+        // Flush the B-tree header with new totalNodes/freeNodes
+        await UpdateBTreeHeaderAsync(ct).ConfigureAwait(false);
+
+        // Update the volume header catalog fork to include the new extent
+        await FlushVolumeHeaderAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Ensure the header node's map record (record index 2) is large enough to cover _totalNodes bits.
+    /// If the existing map record is too small, rebuild the header node with a larger bitmap.
+    /// </summary>
+    private async Task ExtendMapRecordIfNeededAsync(CancellationToken ct)
+    {
+        var headerBuf = await ReadCatalogNodeAsync(0, ct).ConfigureAwait(false);
+        if (headerBuf is null) return;
+
+        var numRecords = BinaryPrimitives.ReadUInt16BigEndian(headerBuf.AsSpan(10, 2));
+        if (numRecords < 3) return;
+
+        var (mapOffset, mapLen) = GetRecordOffsetAndLength(headerBuf, 2, numRecords);
+        if (mapOffset < 14 || mapLen <= 0) return;
+
+        // Current bitmap can track mapLen * 8 nodes
+        var currentCapacity = (uint)(mapLen * 8);
+        if (currentCapacity >= _totalNodes) return; // bitmap is already large enough
+
+        // Calculate the new map record size needed (round up to cover _totalNodes, plus 25% headroom)
+        var requiredBits = _totalNodes + (_totalNodes / 4); // 25% headroom for future growth
+        var newMapLen = (int)((requiredBits + 7) / 8);
+
+        // Ensure the new map record fits in the header node alongside records 0 and 1.
+        // Record 0 = BTHeaderRec (starts at offset 14), Record 1 = user data (128 bytes typically).
+        // We need: 14 (node descriptor) + record0Len + record1Len + newMapLen + offsetTable(4 entries * 2 bytes)
+        var (rec0Off, rec0Len) = GetRecordOffsetAndLength(headerBuf, 0, numRecords);
+        var (rec1Off, rec1Len) = GetRecordOffsetAndLength(headerBuf, 1, numRecords);
+
+        // Clamp newMapLen so the 3 records + offset table fit in the node
+        var fixedOverhead = 14 + rec0Len + rec1Len + 2 * (3 + 1); // 3 records + 1 free-space entry
+        var maxMapLen = (int)_nodeSize - fixedOverhead;
+        if (newMapLen > maxMapLen) newMapLen = maxMapLen;
+
+        if (newMapLen <= mapLen) return; // can't grow further within this node
+
+        // Build new map record: copy existing bitmap data, zero-fill the extension
+        var newMapRecord = new byte[newMapLen];
+        Buffer.BlockCopy(headerBuf, mapOffset, newMapRecord, 0, Math.Min(mapLen, newMapLen));
+        // Extension bytes are already zero (= free nodes), which is correct
+
+        // Rebuild the header node with the 3 records: headerRec, userData, expanded mapRecord
+        var rec0Data = new byte[rec0Len];
+        Buffer.BlockCopy(headerBuf, rec0Off, rec0Data, 0, rec0Len);
+        var rec1Data = new byte[rec1Len];
+        Buffer.BlockCopy(headerBuf, rec1Off, rec1Data, 0, rec1Len);
+
+        var records = new List<byte[]> { rec0Data, rec1Data, newMapRecord };
+
+        // Preserve node descriptor fields (fLink, bLink, kind=1 header, height=0)
+        // but numRecords will be updated by RebuildNodeRecords
+        var savedDescriptor = new byte[14];
+        Buffer.BlockCopy(headerBuf, 0, savedDescriptor, 0, 14);
+
+        // Clear and rebuild
+        Array.Clear(headerBuf, 0, headerBuf.Length);
+        Buffer.BlockCopy(savedDescriptor, 0, headerBuf, 0, 14);
+        RebuildNodeRecords(headerBuf, records);
+
+        await WriteCatalogNodeAsync(0, headerBuf, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -786,9 +895,30 @@ public sealed class HfsPlusNativeReader : IDisposable
         // Keep the node descriptor (first 14 bytes) intact except numRecords
         BinaryPrimitives.WriteUInt16BigEndian(nodeBuf.AsSpan(10, 2), newNumRecords);
 
-        // Clear data area (from offset 14 to start of offset table)
+        // Compute available space: between the 14-byte node descriptor and the offset table.
+        // The offset table has (numRecords + 1) entries of 2 bytes each, growing backwards from the end.
         var dataStart = 14;
-        var offsetTableStart = (int)_nodeSize - 2 * (newNumRecords + 1);
+        var offsetTableSize = 2 * (newNumRecords + 1);
+        var offsetTableStart = (int)_nodeSize - offsetTableSize;
+        var availableSpace = offsetTableStart - dataStart;
+
+        // Pre-check: verify all records + alignment fit within the available space.
+        // If they don't, the caller should have split before reaching this point.
+        int totalRecordBytes = 0;
+        for (int i = 0; i < records.Count; i++)
+        {
+            totalRecordBytes += records[i].Length;
+            // Account for 2-byte alignment padding (except after the last record)
+            if (i < records.Count - 1 && totalRecordBytes % 2 != 0) totalRecordBytes++;
+        }
+        if (totalRecordBytes > availableSpace)
+        {
+            throw new InvalidOperationException(
+                $"RebuildNodeRecords: records ({totalRecordBytes} bytes) exceed available node space ({availableSpace} bytes). " +
+                $"Node should have been split first. Records={records.Count}, nodeSize={_nodeSize}.");
+        }
+
+        // Clear data area (from offset 14 to start of offset table)
         Array.Clear(nodeBuf, dataStart, offsetTableStart - dataStart);
 
         // Write records sequentially starting at offset 14
@@ -796,12 +926,23 @@ public sealed class HfsPlusNativeReader : IDisposable
         for (int i = 0; i < records.Count; i++)
         {
             var rec = records[i];
+
+            // Bounds check: ensure the record fits before the offset table
+            if (currentOffset + rec.Length > offsetTableStart)
+            {
+                throw new InvalidOperationException(
+                    $"RebuildNodeRecords: record {i} (length {rec.Length}) at offset {currentOffset} would overlap offset table at {offsetTableStart}.");
+            }
+
             Buffer.BlockCopy(rec, 0, nodeBuf, currentOffset, rec.Length);
 
             // Write offset entry for this record
             // Offset table: entry for record i is at nodeSize - 2*(numRecords+1 - i)
             var entryPos = (int)_nodeSize - 2 * (newNumRecords + 1 - i);
-            BinaryPrimitives.WriteUInt16BigEndian(nodeBuf.AsSpan(entryPos, 2), (ushort)currentOffset);
+            if (entryPos >= dataStart && entryPos + 2 <= nodeBuf.Length)
+            {
+                BinaryPrimitives.WriteUInt16BigEndian(nodeBuf.AsSpan(entryPos, 2), (ushort)currentOffset);
+            }
 
             currentOffset += rec.Length;
             // Align to 2-byte boundary
@@ -809,7 +950,11 @@ public sealed class HfsPlusNativeReader : IDisposable
         }
 
         // Write free-space offset (last entry in offset table, at nodeSize-2)
-        BinaryPrimitives.WriteUInt16BigEndian(nodeBuf.AsSpan((int)_nodeSize - 2, 2), (ushort)currentOffset);
+        var freeSpaceEntryPos = (int)_nodeSize - 2;
+        if (freeSpaceEntryPos >= dataStart && freeSpaceEntryPos + 2 <= nodeBuf.Length)
+        {
+            BinaryPrimitives.WriteUInt16BigEndian(nodeBuf.AsSpan(freeSpaceEntryPos, 2), (ushort)currentOffset);
+        }
     }
 
     private async Task<(bool Split, uint NewNodeIndex, byte[] NewNodeFirstKey)?> SplitLeafAndInsertAsync(

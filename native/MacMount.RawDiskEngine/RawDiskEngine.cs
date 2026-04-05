@@ -689,13 +689,11 @@ internal sealed class HfsPlusRawFileSystemProvider : IRawFileSystemProvider
             {
                 foreach (var item in items)
                 {
-                    // Skip Mac metadata entries
-                    if (IsMacMetadata(item.Name)) continue;
-
                     var childPath = n == "\\" ? $"\\{item.Name}" : $"{n}\\{item.Name}";
                     var attrs = item.IsDirectory ? FileAttributes.Directory : (_writable ? FileAttributes.Normal : FileAttributes.ReadOnly);
                     var entry = new RawFsEntry(childPath, item.Name, item.IsDirectory, item.Size, item.ModifiedTime, attrs);
 
+                    // Always cache for internal lookups (GetEntry, WriteFile, etc.)
                     _entryCache[childPath] = entry;
                     if (item.IsDirectory)
                     {
@@ -706,7 +704,11 @@ internal sealed class HfsPlusRawFileSystemProvider : IRawFileSystemProvider
                         _forkByPath[childPath] = item.DataFork;
                     }
 
-                    results.Add(entry);
+                    // Only show non-metadata entries to Explorer
+                    if (!IsMacMetadata(item.Name))
+                    {
+                        results.Add(entry);
+                    }
                 }
             }
 
@@ -801,14 +803,18 @@ internal sealed class HfsPlusRawFileSystemProvider : IRawFileSystemProvider
         try
         {
             var cnid = _reader.CreateFileAsync(parentCnid, fileName).GetAwaiter().GetResult();
+
+            // Invalidate stale parent directory listing BEFORE adding the new entry to cache.
+            // If we add first then invalidate, InvalidateParent removes direct children of the
+            // parent — including the entry we just added, causing GetEntry to return null.
+            InvalidateParent(parentPath);
+
             lock (_sync)
             {
                 _cnidByPath[n] = cnid;
                 var entry = new RawFsEntry(n, fileName, false, 0, DateTimeOffset.UtcNow, FileAttributes.Normal);
                 _entryCache[n] = entry;
             }
-
-            InvalidateParent(parentPath);
         }
         catch (Exception ex)
         {
@@ -837,14 +843,18 @@ internal sealed class HfsPlusRawFileSystemProvider : IRawFileSystemProvider
         try
         {
             var cnid = _reader.CreateFolderAsync(parentCnid, dirName).GetAwaiter().GetResult();
+
+            // Invalidate stale parent directory listing BEFORE adding the new entry to cache.
+            // If we add first then invalidate, InvalidateParent removes direct children of the
+            // parent — including the entry we just added, causing GetEntry to return null.
+            InvalidateParent(parentPath);
+
             lock (_sync)
             {
                 _cnidByPath[n] = cnid;
                 var entry = new RawFsEntry(n, dirName, true, 0, DateTimeOffset.UtcNow, FileAttributes.Directory);
                 _entryCache[n] = entry;
             }
-
-            InvalidateParent(parentPath);
         }
         catch (Exception ex)
         {
@@ -1039,7 +1049,10 @@ internal sealed class HfsPlusRawFileSystemProvider : IRawFileSystemProvider
 
     private static bool IsMacMetadata(string name)
     {
-        return MacMetadataNames.Contains(name) || name.StartsWith("._", StringComparison.Ordinal);
+        if (MacMetadataNames.Contains(name)) return true;
+        if (name.StartsWith("._", StringComparison.Ordinal)) return true;
+        if (name.Contains("HFS+ Private", StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
     }
 
     private static string NormalizePath(string path)
