@@ -6,8 +6,8 @@
   "license": "MIT",
   "main": "main.js",
   "scripts": {
-    "dev": "vite --port 5173 --strictPort",
-    "build": "vite build",
+    "dev": "node ./node_modules/vite/bin/vite.js --port 5173 --strictPort",
+    "build": "node ./node_modules/vite/bin/vite.js build",
     "electron": "wait-on http://localhost:5173 && node scripts/start-electron.js",
     "electron:prod": "cross-env NODE_ENV=production electron .",
     "start": "concurrently \"npm run dev\" \"npm run electron\"",
@@ -15,7 +15,7 @@
     "test": "node scripts/self-test.js",
     "security:audit": "node scripts/security-audit.js",
     "commercial:gate": "node scripts/commercial-gate.js",
-    "package": "npm run release:win:full",
+    "package": "npm run release:win:unsigned",
     "native:run": "dotnet run --project native/MacMount.NativeService/MacMount.NativeService.csproj",
     "native:build": "dotnet build native/MacMount.NativeService/MacMount.NativeService.csproj -c Release",
     "raw:build": "dotnet build native/MacMount.RawDiskEngine/MacMount.RawDiskEngine.csproj -c Release",
@@ -25,6 +25,7 @@
     "release:win": "npm run release:prep && electron-builder --win portable --publish never",
     "release:win:full": "npm run release:prep && electron-builder --win nsis portable --publish never",
     "release:win:unsigned": "npm run release:prep && powershell -ExecutionPolicy Bypass -File scripts/build-release-unsigned.ps1",
+    "release:win:dev": "npm run release:win:unsigned",
     "release:audit": "powershell -ExecutionPolicy Bypass -File scripts/release-audit.ps1",
     "release:audit:unsigned": "powershell -ExecutionPolicy Bypass -File scripts/release-audit.ps1 -AllowUnsigned",
     "release:gate": "npm run test && npm run security:audit && npm run commercial:gate && npm run release:audit",
@@ -32,7 +33,8 @@
     "release:candidate": "powershell -ExecutionPolicy Bypass -File scripts/release-candidate.ps1",
     "signing:setup:test": "powershell -ExecutionPolicy Bypass -File scripts/setup-signing-env.ps1",
     "signing:setup:real": "powershell -ExecutionPolicy Bypass -File scripts/configure-real-signing.ps1",
-    "release:win:signed": "npm run release:win:full && npm run release:audit"
+    "release:win:signed": "npm run release:win:full && npm run release:audit",
+    "hfs:test": "dotnet run --project native/MacMount.HfsWriteTest/MacMount.HfsWriteTest.csproj"
   },
   "dependencies": {
     "cors": "^2.8.5",
@@ -67,12 +69,32 @@
         "to": "scripts/MacMount.ps1"
       },
       {
+        "from": "scripts/map-drive-user-session.ps1",
+        "to": "scripts/map-drive-user-session.ps1"
+      },
+      {
         "from": "prereqs",
         "to": "prereqs"
       },
       {
         "from": "native/bin",
         "to": "native-bin"
+      },
+      {
+        "from": "native-bridge-bin",
+        "to": "native-bridge-bin"
+      },
+      {
+        "from": "build/THIRD_PARTY_NOTICES.txt",
+        "to": "THIRD_PARTY_NOTICES.txt"
+      },
+      {
+        "from": "build/GPL_SOURCE_OFFER.txt",
+        "to": "GPL_SOURCE_OFFER.txt"
+      },
+      {
+        "from": "LICENSE",
+        "to": "LICENSE.txt"
       }
     ],
     "win": {
@@ -91,7 +113,8 @@
       "allowToChangeInstallationDirectory": false,
       "license": "build/EULA.txt",
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createStartMenuShortcut": true,
+      "include": "build/installer.nsh"
     }
   }
 }

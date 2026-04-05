@@ -41,6 +41,7 @@ public sealed class HfsPlusNativeReader : IDisposable
     private uint _freeNodes;
     private uint _leafRecords;
     private uint _lastLeafNode;
+    private ushort _treeDepth;
 
     // Thread safety: serialise all write operations (WinFsp callbacks are concurrent)
     private readonly SemaphoreSlim _writeLock = new(1, 1);
@@ -53,7 +54,7 @@ public sealed class HfsPlusNativeReader : IDisposable
         uint nodeSize, uint rootNodeIndex, uint firstLeafNodeIndex, List<(long, long)> catalogExtents,
         long catalogFileStart, List<(long, long)> allocationExtents, byte[] vhRawBuf,
         uint nextCatalogId, uint freeBlocks, uint volumeAttributes,
-        uint totalNodes, uint freeNodes, uint leafRecords, uint lastLeafNode)
+        uint totalNodes, uint freeNodes, uint leafRecords, uint lastLeafNode, ushort treeDepth)
     {
         _device = device;
         _partitionOffset = partitionOffset;
@@ -72,6 +73,7 @@ public sealed class HfsPlusNativeReader : IDisposable
         _freeNodes = freeNodes;
         _leafRecords = leafRecords;
         _lastLeafNode = lastLeafNode;
+        _treeDepth = treeDepth;
     }
 
     public static async Task<HfsPlusNativeReader?> OpenAsync(IRawBlockDevice device, long partitionOffset, CancellationToken ct = default)
@@ -129,15 +131,14 @@ public sealed class HfsPlusNativeReader : IDisposable
         if (nodeKind != 1) return null; // must be header node (kind=1)
 
         // BTHeaderRec starts at offset 14 in the header node
-        // treeDepth(2) rootNode(4) leafRecords(4) firstLeafNode(4) lastLeafNode(4) nodeSize(2)
+        // +0: treeDepth(2), +2: rootNode(4), +6: leafRecords(4), +10: firstLeafNode(4),
+        // +14: lastLeafNode(4), +18: nodeSize(2), +20: maxKeyLength(2), +22: totalNodes(4), +26: freeNodes(4)
+        var treeDepth = BinaryPrimitives.ReadUInt16BigEndian(headerNodeBuf.AsSpan(14, 2));
         var rootNode = BinaryPrimitives.ReadUInt32BigEndian(headerNodeBuf.AsSpan(16, 4));
         var leafRecords = BinaryPrimitives.ReadUInt32BigEndian(headerNodeBuf.AsSpan(20, 4));
         var firstLeafNode = BinaryPrimitives.ReadUInt32BigEndian(headerNodeBuf.AsSpan(24, 4));
         var lastLeafNode = BinaryPrimitives.ReadUInt32BigEndian(headerNodeBuf.AsSpan(28, 4));
         var nodeSize = BinaryPrimitives.ReadUInt16BigEndian(headerNodeBuf.AsSpan(32, 2));
-        // totalNodes at offset 14+18=32+2=34? Actually BTHeaderRec layout:
-        // +0: treeDepth(2), +2: rootNode(4), +6: leafRecords(4), +10: firstLeafNode(4),
-        // +14: lastLeafNode(4), +18: nodeSize(2), +20: maxKeyLength(2), +22: totalNodes(4), +26: freeNodes(4)
         var totalNodes = BinaryPrimitives.ReadUInt32BigEndian(headerNodeBuf.AsSpan(14 + 22, 4));
         var freeNodes = BinaryPrimitives.ReadUInt32BigEndian(headerNodeBuf.AsSpan(14 + 26, 4));
 
@@ -146,7 +147,7 @@ public sealed class HfsPlusNativeReader : IDisposable
         return new HfsPlusNativeReader(device, partitionOffset, header, nodeSize, rootNode, firstLeafNode,
             catalogExtents, catalogExtents[0].ByteOffset, allocationExtents, vhBuf,
             nextCatalogId, header.FreeBlocks, volumeAttributes,
-            totalNodes, freeNodes, leafRecords, lastLeafNode);
+            totalNodes, freeNodes, leafRecords, lastLeafNode, treeDepth);
     }
 
     /// <summary>
@@ -489,8 +490,9 @@ public sealed class HfsPlusNativeReader : IDisposable
         if (headerBuf is null) throw new InvalidOperationException("Cannot read B-tree header node.");
 
         // BTHeaderRec at offset 14:
-        // +2: rootNode(4), +6: leafRecords(4), +10: firstLeafNode(4), +14: lastLeafNode(4),
-        // +22: totalNodes(4), +26: freeNodes(4)
+        // +0: treeDepth(2), +2: rootNode(4), +6: leafRecords(4), +10: firstLeafNode(4),
+        // +14: lastLeafNode(4), +22: totalNodes(4), +26: freeNodes(4)
+        BinaryPrimitives.WriteUInt16BigEndian(headerBuf.AsSpan(14, 2), _treeDepth);
         BinaryPrimitives.WriteUInt32BigEndian(headerBuf.AsSpan(16, 4), _rootNodeIndex);
         BinaryPrimitives.WriteUInt32BigEndian(headerBuf.AsSpan(20, 4), _leafRecords);
         BinaryPrimitives.WriteUInt32BigEndian(headerBuf.AsSpan(24, 4), _firstLeafNodeIndex);
@@ -1310,8 +1312,9 @@ public sealed class HfsPlusNativeReader : IDisposable
         RebuildNodeRecords(newRootBuf, records);
         await WriteCatalogNodeAsync(newRootIndex, newRootBuf, ct).ConfigureAwait(false);
 
-        // Update tree depth in header
+        // Update tree state
         _rootNodeIndex = newRootIndex;
+        _treeDepth++;
         await UpdateBTreeHeaderAsync(ct).ConfigureAwait(false);
     }
 
@@ -1431,10 +1434,7 @@ public sealed class HfsPlusNativeReader : IDisposable
             var split = await InsertIntoLeafAsync(leafNode, fileKey, fileRecord, ct).ConfigureAwait(false);
             _leafRecords++;
 
-            if (split is not null)
-            {
-                await InsertIntoParentIndexAsync(parentIndex, split.Value.NewNodeIndex, split.Value.NewNodeFirstKey, ct).ConfigureAwait(false);
-            }
+            await HandleSplitAsync(split, leafNode, parentIndex, ct).ConfigureAwait(false);
 
             // Build and insert thread record: key=(cnid, ""), data=thread pointing back to parent
             var threadKey = BuildCatalogKey(cnid, "");
@@ -1445,10 +1445,7 @@ public sealed class HfsPlusNativeReader : IDisposable
             var threadSplit = await InsertIntoLeafAsync(threadLeaf, threadKey, threadRecord, ct).ConfigureAwait(false);
             _leafRecords++;
 
-            if (threadSplit is not null)
-            {
-                await InsertIntoParentIndexAsync(threadParentIndex, threadSplit.Value.NewNodeIndex, threadSplit.Value.NewNodeFirstKey, ct).ConfigureAwait(false);
-            }
+            await HandleSplitAsync(threadSplit, threadLeaf, threadParentIndex, ct).ConfigureAwait(false);
 
             // Update B-tree header
             await UpdateBTreeHeaderAsync(ct).ConfigureAwait(false);
@@ -1483,10 +1480,7 @@ public sealed class HfsPlusNativeReader : IDisposable
             var split = await InsertIntoLeafAsync(leafNode, folderKey, folderRecord, ct).ConfigureAwait(false);
             _leafRecords++;
 
-            if (split is not null)
-            {
-                await InsertIntoParentIndexAsync(parentIndex, split.Value.NewNodeIndex, split.Value.NewNodeFirstKey, ct).ConfigureAwait(false);
-            }
+            await HandleSplitAsync(split, leafNode, parentIndex, ct).ConfigureAwait(false);
 
             // Thread record: type 3 = folder thread
             var threadKey = BuildCatalogKey(cnid, "");
@@ -1497,10 +1491,7 @@ public sealed class HfsPlusNativeReader : IDisposable
             var threadSplit = await InsertIntoLeafAsync(threadLeaf, threadKey, threadRecord, ct).ConfigureAwait(false);
             _leafRecords++;
 
-            if (threadSplit is not null)
-            {
-                await InsertIntoParentIndexAsync(threadParentIndex, threadSplit.Value.NewNodeIndex, threadSplit.Value.NewNodeFirstKey, ct).ConfigureAwait(false);
-            }
+            await HandleSplitAsync(threadSplit, threadLeaf, threadParentIndex, ct).ConfigureAwait(false);
 
             await UpdateBTreeHeaderAsync(ct).ConfigureAwait(false);
             await FlushVolumeHeaderAsync(ct).ConfigureAwait(false);
@@ -1510,6 +1501,26 @@ public sealed class HfsPlusNativeReader : IDisposable
         finally
         {
             _writeLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Handle a leaf or index node split result. If the split leaf was the root (parentIndex == splitNode),
+    /// create a new root index node. Otherwise insert into the parent index.
+    /// </summary>
+    private async Task HandleSplitAsync((bool Split, uint NewNodeIndex, byte[] NewNodeFirstKey)? split,
+        uint splitNode, uint parentIndex, CancellationToken ct)
+    {
+        if (split is null) return;
+
+        if (parentIndex == splitNode)
+        {
+            // The node that split WAS the root — create a new root above both halves
+            await CreateNewRootAsync(splitNode, split.Value.NewNodeIndex, split.Value.NewNodeFirstKey, ct).ConfigureAwait(false);
+        }
+        else
+        {
+            await InsertIntoParentIndexAsync(parentIndex, split.Value.NewNodeIndex, split.Value.NewNodeFirstKey, ct).ConfigureAwait(false);
         }
     }
 
@@ -1995,55 +2006,12 @@ public sealed class HfsPlusNativeReader : IDisposable
 
     private async Task<uint> FindFirstLeafForParentAsync(uint parentCnid, CancellationToken ct)
     {
-        var currentNode = _rootNodeIndex;
-        var depth = 0;
-
-        while (depth < 20) // safety limit
-        {
-            var nodeBuf = await ReadCatalogNodeAsync(currentNode, ct).ConfigureAwait(false);
-            if (nodeBuf is null) return 0;
-
-            var kind = (sbyte)nodeBuf[8];
-            if (kind == -1) return currentNode; // leaf node
-
-            if (kind != 0) return 0; // must be index node
-
-            var numRecords = BinaryPrimitives.ReadUInt16BigEndian(nodeBuf.AsSpan(10, 2));
-            uint bestChild = 0;
-
-            for (int i = 0; i < numRecords; i++)
-            {
-                var (recOffset, recLen) = GetRecordOffsetAndLength(nodeBuf, i, numRecords);
-                if (recOffset < 14 || recOffset + 6 > nodeBuf.Length) continue;
-
-                var keyLen = BinaryPrimitives.ReadUInt16BigEndian(nodeBuf.AsSpan(recOffset, 2));
-                if (keyLen < 6) continue;
-
-                var recParentCnid = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(recOffset + 2, 4));
-
-                // Data after key is the child node pointer (uint32 BE)
-                var ptrOffset = recOffset + 2 + keyLen;
-                if (ptrOffset % 2 != 0) ptrOffset++;
-                if (ptrOffset + 4 > nodeBuf.Length) continue;
-
-                var childNode = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(ptrOffset, 4));
-
-                if (recParentCnid <= parentCnid)
-                {
-                    bestChild = childNode;
-                }
-                else
-                {
-                    break;
-                }
-            }
-
-            if (bestChild == 0) return 0;
-            currentNode = bestChild;
-            depth++;
-        }
-
-        return 0;
+        // Use the full key comparison with (parentCnid, "") to find the FIRST leaf
+        // that could contain records for this parent. The empty name sorts before all
+        // real names, so this finds the correct starting position.
+        var searchKey = BuildCatalogKey(parentCnid, "");
+        var (leaf, _) = await FindLeafForKeyAsync(searchKey, ct).ConfigureAwait(false);
+        return leaf;
     }
 
     /// <summary>
@@ -2206,6 +2174,422 @@ public sealed class HfsPlusNativeReader : IDisposable
         return new HfsPlusVolumeHeader(signature, blockSize, totalBlocks, freeBlocks, catalogLogicalSize, catalogExtents);
     }
 
+    // ─── DIAGNOSTICS ──────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Dump B-tree structure for diagnostics. Returns info about nodes and records.
+    /// </summary>
+    public async Task<BTreeDiagnostics> GetBTreeDiagnosticsAsync(CancellationToken ct = default)
+    {
+        var diag = new BTreeDiagnostics
+        {
+            RootNodeIndex = _rootNodeIndex,
+            FirstLeafNodeIndex = _firstLeafNodeIndex,
+            LastLeafNode = _lastLeafNode,
+            TotalNodes = _totalNodes,
+            FreeNodes = _freeNodes,
+            LeafRecords = _leafRecords,
+            CatalogExtentCount = _catalogExtents.Count,
+        };
+
+        // Walk leaf chain from firstLeaf via fLink
+        var currentNode = _firstLeafNodeIndex;
+        var visited = new HashSet<uint>();
+        while (currentNode != 0)
+        {
+            if (!visited.Add(currentNode)) { diag.HasCycle = true; break; }
+            var nodeBuf = await ReadCatalogNodeAsync(currentNode, ct).ConfigureAwait(false);
+            if (nodeBuf is null) { diag.UnreadableNodes.Add(currentNode); break; }
+
+            var kind = (sbyte)nodeBuf[8];
+            var numRecords = BinaryPrimitives.ReadUInt16BigEndian(nodeBuf.AsSpan(10, 2));
+            var fLink = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(0, 4));
+
+            var nodeInfo = new BTreeNodeInfo
+            {
+                NodeIndex = currentNode,
+                Kind = kind,
+                NumRecords = numRecords,
+                FLink = fLink,
+            };
+
+            for (int i = 0; i < numRecords; i++)
+            {
+                var (recOff, recLen) = GetRecordOffsetAndLength(nodeBuf, i, numRecords);
+                if (recOff < 14 || recLen <= 0) continue;
+                var keyLen = BinaryPrimitives.ReadUInt16BigEndian(nodeBuf.AsSpan(recOff, 2));
+                if (keyLen >= 6)
+                {
+                    var parentCnid = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(recOff + 2, 4));
+                    nodeInfo.RecordParentCnids.Add(parentCnid);
+                }
+            }
+
+            diag.LeafNodes.Add(nodeInfo);
+            currentNode = fLink;
+        }
+
+        // Also walk index nodes from root
+        var indexQ = new Queue<uint>();
+        if (_rootNodeIndex != 0) indexQ.Enqueue(_rootNodeIndex);
+        var visitedIndex = new HashSet<uint>();
+        while (indexQ.Count > 0)
+        {
+            var nodeIdx = indexQ.Dequeue();
+            if (!visitedIndex.Add(nodeIdx)) continue;
+            var nodeBuf = await ReadCatalogNodeAsync(nodeIdx, ct).ConfigureAwait(false);
+            if (nodeBuf is null) continue;
+            var kind = (sbyte)nodeBuf[8];
+            if (kind != 0) continue; // only index nodes
+
+            var numRecords = BinaryPrimitives.ReadUInt16BigEndian(nodeBuf.AsSpan(10, 2));
+            var indexInfo = new BTreeIndexNodeInfo { NodeIndex = nodeIdx, NumRecords = numRecords };
+
+            for (int i = 0; i < numRecords; i++)
+            {
+                var (recOff, _) = GetRecordOffsetAndLength(nodeBuf, i, numRecords);
+                if (recOff < 14) continue;
+                var keyLen = BinaryPrimitives.ReadUInt16BigEndian(nodeBuf.AsSpan(recOff, 2));
+                if (keyLen < 6) continue;
+                var parentCnid = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(recOff + 2, 4));
+                var ptrOff = recOff + 2 + keyLen;
+                if (ptrOff % 2 != 0) ptrOff++;
+                if (ptrOff + 4 > nodeBuf.Length) continue;
+                var childNode = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(ptrOff, 4));
+
+                // Extract name from key
+                var nameLen = BinaryPrimitives.ReadUInt16BigEndian(nodeBuf.AsSpan(recOff + 6, 2));
+                var nameChars = new char[nameLen];
+                for (int c = 0; c < nameLen; c++)
+                    nameChars[c] = (char)BinaryPrimitives.ReadUInt16BigEndian(nodeBuf.AsSpan(recOff + 8 + c * 2, 2));
+                var name = new string(nameChars);
+
+                indexInfo.Children.Add((parentCnid, name, childNode));
+                indexQ.Enqueue(childNode);
+            }
+
+            diag.IndexNodes.Add(indexInfo);
+        }
+
+        return diag;
+    }
+
+    // ─── FORMAT SUPPORT ────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Write a fresh HFS+ filesystem to the device at the given partition offset.
+    /// Creates volume header, allocation bitmap, extents overflow B-tree,
+    /// and catalog B-tree with root folder (CNID 2).
+    /// </summary>
+    public static async Task FormatAsync(IRawBlockDevice device, long partitionOffset, long partitionSize,
+        string volumeName, CancellationToken ct = default)
+    {
+        if (!device.CanWrite) throw new InvalidOperationException("Device must be writable for format.");
+        if (partitionSize < 1024 * 1024)
+            throw new ArgumentException("Partition too small for HFS+; need at least 1 MB.", nameof(partitionSize));
+
+        const uint blockSize = 4096;
+        const uint nodeSize = 8192;
+        var totalBlocks = (uint)(partitionSize / blockSize);
+
+        // ── Layout plan ──
+        // Block 0: reserved (contains boot sectors at partition+0 and partition+1024 for VH)
+        // Block 1: allocation bitmap file (we allocate enough blocks)
+        // Then: extents overflow B-tree (1 block for header node only since nodeSize <= 2*blockSize)
+        // Then: catalog B-tree (128 nodes = 128*8192/4096 = 256 blocks)
+        // Rest: free space
+
+        // Allocation bitmap: needs ceil(totalBlocks / 8) bytes, stored in whole blocks
+        var bitmapBytes = (totalBlocks + 7) / 8;
+        var bitmapBlocks = (uint)((bitmapBytes + blockSize - 1) / blockSize);
+
+        // Extents overflow: 1 node = 8192 bytes = 2 blocks
+        var extentsBlocks = (uint)(nodeSize / blockSize);
+        if (extentsBlocks == 0) extentsBlocks = 1;
+        var extentsTotalNodes = 1u; // just header node
+
+        // Catalog: 128 nodes minimum = 128 * 8192 / 4096 = 256 blocks
+        var catalogNodeCount = 128u;
+        var catalogBlocks = (uint)(catalogNodeCount * nodeSize / blockSize);
+
+        // Block assignments:
+        // Block 0: reserved (VH lives at partitionOffset+1024, inside block 0 assuming blockSize>=2048)
+        // Block 1 .. 1+bitmapBlocks-1: allocation bitmap
+        var bitmapStartBlock = 1u;
+        var extentsStartBlock = bitmapStartBlock + bitmapBlocks;
+        var catalogStartBlock = extentsStartBlock + extentsBlocks;
+        var firstFreeBlock = catalogStartBlock + catalogBlocks;
+
+        // How many blocks are used by metadata
+        var usedBlocks = firstFreeBlock; // blocks 0..firstFreeBlock-1
+        var freeBlocks = totalBlocks - usedBlocks;
+
+        // ── Zero-fill metadata area ──
+        var zeroBuf = new byte[blockSize];
+        for (uint b = 0; b < firstFreeBlock && b < totalBlocks; b++)
+        {
+            var off = partitionOffset + (long)b * blockSize;
+            await device.WriteAsync(off, zeroBuf, (int)blockSize, ct).ConfigureAwait(false);
+        }
+
+        // ── 1. Write allocation bitmap ──
+        // Mark blocks 0..firstFreeBlock-1 as used (bit=1, MSB first)
+        var bitmap = new byte[bitmapBlocks * blockSize];
+        for (uint b = 0; b < usedBlocks; b++)
+        {
+            var byteIdx = b / 8;
+            var bitIdx = 7 - (int)(b % 8);
+            bitmap[byteIdx] |= (byte)(1 << bitIdx);
+        }
+
+        // Write bitmap to disk
+        for (uint i = 0; i < bitmapBlocks; i++)
+        {
+            var off = partitionOffset + (long)(bitmapStartBlock + i) * blockSize;
+            var chunk = new byte[blockSize];
+            Buffer.BlockCopy(bitmap, (int)(i * blockSize), chunk, 0, (int)blockSize);
+            await device.WriteAsync(off, chunk, (int)blockSize, ct).ConfigureAwait(false);
+        }
+
+        // ── 2. Write extents overflow B-tree (header node only) ──
+        var extentsNode = new byte[nodeSize];
+        // Node descriptor: fLink(4)=0, bLink(4)=0, kind(1)=1(header), height(1)=0, numRecords(2)=3, reserved(2)=0
+        extentsNode[8] = 1; // kind = header node
+        BinaryPrimitives.WriteUInt16BigEndian(extentsNode.AsSpan(10, 2), 3); // numRecords
+
+        // BTHeaderRec at offset 14 (record 0):
+        // treeDepth(2)=0, rootNode(4)=0, leafRecords(4)=0, firstLeafNode(4)=0, lastLeafNode(4)=0
+        // nodeSize(2), maxKeyLength(2)=10, totalNodes(4), freeNodes(4), reserved(2), clumpSize(4), btreeType(1), keyCompareType(1), attributes(4)
+        BinaryPrimitives.WriteUInt16BigEndian(extentsNode.AsSpan(14 + 18, 2), (ushort)nodeSize); // nodeSize
+        BinaryPrimitives.WriteUInt16BigEndian(extentsNode.AsSpan(14 + 20, 2), 10); // maxKeyLength for extents
+        BinaryPrimitives.WriteUInt32BigEndian(extentsNode.AsSpan(14 + 22, 4), extentsTotalNodes); // totalNodes
+        BinaryPrimitives.WriteUInt32BigEndian(extentsNode.AsSpan(14 + 26, 4), extentsTotalNodes - 1); // freeNodes (all but header)
+
+        // Record 0 = BTHeaderRec: 110 bytes (offsets 14..123)
+        // Record 1 = reserved user data record: 128 bytes (offsets 124..251)
+        // Record 2 = map record: rest of node up to offset table
+
+        // Offset table (at end of node, growing backwards):
+        // 4 entries: rec0, rec1, rec2, free-space
+        var extNumRec = 3;
+        var extRec0Off = 14;
+        var extRec1Off = 14 + 110; // 124
+        var extRec2Off = extRec1Off + 128; // 252
+
+        // Map record for extents: mark node 0 as used (bit 7 of byte 0)
+        extentsNode[extRec2Off] = 0x80; // node 0 allocated
+
+        // Free space offset: end of map record
+        var extMapLen = (int)nodeSize - (extNumRec + 1) * 2 - extRec2Off;
+        var extFreeOff = extRec2Off + extMapLen;
+
+        // Write offset table at end of node
+        // Entry positions: nodeSize - 2*(numRecords+1-i) for record i
+        // Record 0: nodeSize - 2*(3+1-0) = nodeSize - 8
+        // Record 1: nodeSize - 2*(3+1-1) = nodeSize - 6
+        // Record 2: nodeSize - 2*(3+1-2) = nodeSize - 4
+        // Free space: nodeSize - 2 = nodeSize - 2
+        BinaryPrimitives.WriteUInt16BigEndian(extentsNode.AsSpan((int)nodeSize - 8, 2), (ushort)extRec0Off);
+        BinaryPrimitives.WriteUInt16BigEndian(extentsNode.AsSpan((int)nodeSize - 6, 2), (ushort)extRec1Off);
+        BinaryPrimitives.WriteUInt16BigEndian(extentsNode.AsSpan((int)nodeSize - 4, 2), (ushort)extRec2Off);
+        BinaryPrimitives.WriteUInt16BigEndian(extentsNode.AsSpan((int)nodeSize - 2, 2), (ushort)extFreeOff);
+
+        // Write extents B-tree node to disk
+        var extDiskOff = partitionOffset + (long)extentsStartBlock * blockSize;
+        await device.WriteAsync(extDiskOff, extentsNode, (int)nodeSize, ct).ConfigureAwait(false);
+
+        // ── 3. Write catalog B-tree ──
+        // Node 0: header node
+        // Node 1: root leaf node with root folder records
+        var catHeaderNode = new byte[nodeSize];
+        catHeaderNode[8] = 1; // kind = header node
+        BinaryPrimitives.WriteUInt16BigEndian(catHeaderNode.AsSpan(10, 2), 3); // numRecords
+
+        // BTHeaderRec at offset 14:
+        var catTreeDepth = (ushort)1;
+        var catRootNode = 1u;
+        var catLeafRecords = 2u; // root folder record + thread record
+        var catFirstLeaf = 1u;
+        var catLastLeaf = 1u;
+
+        BinaryPrimitives.WriteUInt16BigEndian(catHeaderNode.AsSpan(14, 2), catTreeDepth);
+        BinaryPrimitives.WriteUInt32BigEndian(catHeaderNode.AsSpan(16, 4), catRootNode);
+        BinaryPrimitives.WriteUInt32BigEndian(catHeaderNode.AsSpan(20, 4), catLeafRecords);
+        BinaryPrimitives.WriteUInt32BigEndian(catHeaderNode.AsSpan(24, 4), catFirstLeaf);
+        BinaryPrimitives.WriteUInt32BigEndian(catHeaderNode.AsSpan(28, 4), catLastLeaf);
+        BinaryPrimitives.WriteUInt16BigEndian(catHeaderNode.AsSpan(14 + 18, 2), (ushort)nodeSize);
+        BinaryPrimitives.WriteUInt16BigEndian(catHeaderNode.AsSpan(14 + 20, 2), 516); // maxKeyLength for catalog
+        BinaryPrimitives.WriteUInt32BigEndian(catHeaderNode.AsSpan(14 + 22, 4), catalogNodeCount);
+        BinaryPrimitives.WriteUInt32BigEndian(catHeaderNode.AsSpan(14 + 26, 4), catalogNodeCount - 2); // header + root leaf used
+
+        // Record 0 = BTHeaderRec: 110 bytes (14..123)
+        // Record 1 = reserved: 128 bytes (124..251)
+        // Record 2 = map record: 252 to (nodeSize - 8)
+        var catRec0Off = 14;
+        var catRec1Off = 14 + 110; // 124
+        var catRec2Off = catRec1Off + 128; // 252
+        var catMapLen = (int)nodeSize - 4 * 2 - catRec2Off;
+        var catFreeOff = catRec2Off + catMapLen;
+
+        // Map record: mark nodes 0 and 1 as used
+        catHeaderNode[catRec2Off] = 0xC0; // bits 7 and 6 set = nodes 0 and 1
+
+        // Offset table
+        BinaryPrimitives.WriteUInt16BigEndian(catHeaderNode.AsSpan((int)nodeSize - 8, 2), (ushort)catRec0Off);
+        BinaryPrimitives.WriteUInt16BigEndian(catHeaderNode.AsSpan((int)nodeSize - 6, 2), (ushort)catRec1Off);
+        BinaryPrimitives.WriteUInt16BigEndian(catHeaderNode.AsSpan((int)nodeSize - 4, 2), (ushort)catRec2Off);
+        BinaryPrimitives.WriteUInt16BigEndian(catHeaderNode.AsSpan((int)nodeSize - 2, 2), (ushort)catFreeOff);
+
+        // Write catalog header node at node 0
+        var catDiskOff = partitionOffset + (long)catalogStartBlock * blockSize;
+        await device.WriteAsync(catDiskOff, catHeaderNode, (int)nodeSize, ct).ConfigureAwait(false);
+
+        // ── Catalog Root Leaf Node (node 1) ──
+        // Contains:
+        //   Record 0: thread record for root folder — key=(CNID=1, name=""), data=(type=3, parentID=1, name=volumeName)
+        //   Record 1: folder record for root folder — key=(CNID=1, name=volumeName), data=(type=1, folderID=2, timestamps)
+        var rootLeafNode = new byte[nodeSize];
+        // Node descriptor: fLink=0, bLink=0, kind=-1(leaf), height=1, numRecords=2
+        rootLeafNode[8] = unchecked((byte)(-1)); // kind = leaf
+        rootLeafNode[9] = 1; // height
+
+        var now = GetCurrentHfsTimestamp();
+
+        // Build Record 0: root parent thread
+        // Key: parentCNID=1 (root parent), name="" (thread records have empty name)
+        var threadKey = BuildCatalogKey(1, "");
+        // Thread record data: type=3 (folder thread), reserved=0, parentID=1, name=volumeName
+        var threadData = BuildThreadRecord(3, 1, volumeName);
+
+        // Build Record 1: root folder
+        // Key: parentCNID=1, name=volumeName
+        var folderKey = BuildCatalogKey(1, volumeName);
+        // Folder record data: type=1, folderID=2
+        var folderData = BuildFolderRecord(2, now);
+
+        // The records must be in key order. Thread key (CNID=1, name="") sorts before
+        // folder key (CNID=1, name=volumeName) because empty string < any string.
+        var records = new List<byte[]>();
+
+        // Record 0: thread (key + data)
+        var rec0 = new byte[threadKey.Length + threadData.Length];
+        Buffer.BlockCopy(threadKey, 0, rec0, 0, threadKey.Length);
+        Buffer.BlockCopy(threadData, 0, rec0, threadKey.Length, threadData.Length);
+        records.Add(rec0);
+
+        // Record 1: folder (key + data)
+        var rec1 = new byte[folderKey.Length + folderData.Length];
+        Buffer.BlockCopy(folderKey, 0, rec1, 0, folderKey.Length);
+        Buffer.BlockCopy(folderData, 0, rec1, folderKey.Length, folderData.Length);
+        records.Add(rec1);
+
+        // Write records into leaf node
+        BinaryPrimitives.WriteUInt16BigEndian(rootLeafNode.AsSpan(10, 2), (ushort)records.Count);
+        var dataStart = 14;
+        var leafOffsetTableSize = 2 * (records.Count + 1); // +1 for free-space entry
+        var currentOffset = dataStart;
+
+        for (int i = 0; i < records.Count; i++)
+        {
+            Buffer.BlockCopy(records[i], 0, rootLeafNode, currentOffset, records[i].Length);
+            // Write offset table entry
+            var entryPos = (int)nodeSize - 2 * (records.Count + 1 - i);
+            BinaryPrimitives.WriteUInt16BigEndian(rootLeafNode.AsSpan(entryPos, 2), (ushort)currentOffset);
+            currentOffset += records[i].Length;
+            // Align to 2-byte boundary
+            if (currentOffset % 2 != 0) currentOffset++;
+        }
+
+        // Write free-space offset
+        BinaryPrimitives.WriteUInt16BigEndian(rootLeafNode.AsSpan((int)nodeSize - 2, 2), (ushort)currentOffset);
+
+        // Write catalog root leaf node at node 1
+        var leafDiskOff = catDiskOff + nodeSize;
+        await device.WriteAsync(leafDiskOff, rootLeafNode, (int)nodeSize, ct).ConfigureAwait(false);
+
+        // ── 4. Write volume header ──
+        var vh = new byte[512];
+
+        // Signature: 0x482B ('H+')
+        BinaryPrimitives.WriteUInt16BigEndian(vh.AsSpan(0, 2), 0x482B);
+        // Version: 4
+        BinaryPrimitives.WriteUInt16BigEndian(vh.AsSpan(2, 2), 4);
+        // Attributes: kHFSVolumeUnmountedBit (bit 8)
+        BinaryPrimitives.WriteUInt32BigEndian(vh.AsSpan(4, 4), 1u << 8);
+
+        // createDate, modifyDate, backupDate, checkedDate at offsets 8,12,16,20 (each uint32 BE)
+        BinaryPrimitives.WriteUInt32BigEndian(vh.AsSpan(8, 4), now);
+        BinaryPrimitives.WriteUInt32BigEndian(vh.AsSpan(12, 4), now);
+
+        // fileCount at offset 24 = 0
+        // folderCount at offset 28 = 0 (we don't count root itself)
+        // blockSize at offset 40
+        BinaryPrimitives.WriteUInt32BigEndian(vh.AsSpan(40, 4), blockSize);
+        // totalBlocks at offset 44
+        BinaryPrimitives.WriteUInt32BigEndian(vh.AsSpan(44, 4), totalBlocks);
+        // freeBlocks at offset 48
+        BinaryPrimitives.WriteUInt32BigEndian(vh.AsSpan(48, 4), freeBlocks);
+
+        // nextAllocation at offset 52 = firstFreeBlock
+        BinaryPrimitives.WriteUInt32BigEndian(vh.AsSpan(52, 4), firstFreeBlock);
+        // rsrcClumpSize at offset 56 = blockSize
+        BinaryPrimitives.WriteUInt32BigEndian(vh.AsSpan(56, 4), blockSize);
+        // dataClumpSize at offset 60 = blockSize
+        BinaryPrimitives.WriteUInt32BigEndian(vh.AsSpan(60, 4), blockSize);
+        // nextCatalogID at offset 64 = 16 (CNIDs 1-15 reserved, but 2 is root folder)
+        BinaryPrimitives.WriteUInt32BigEndian(vh.AsSpan(64, 4), 16);
+
+        // ── Fork data for special files ──
+
+        // Allocation file fork at offset 112 (0x70): 80 bytes
+        WriteForkData(vh, 112, bitmapBlocks * blockSize, blockSize, bitmapBlocks,
+            new[] { (bitmapStartBlock, bitmapBlocks) });
+
+        // Extents file fork at offset 192 (0xC0): 80 bytes
+        WriteForkData(vh, 192, extentsBlocks * blockSize, blockSize, extentsBlocks,
+            new[] { (extentsStartBlock, extentsBlocks) });
+
+        // Catalog file fork at offset 272 (0x110): 80 bytes
+        WriteForkData(vh, 272, catalogBlocks * blockSize, blockSize, catalogBlocks,
+            new[] { (catalogStartBlock, catalogBlocks) });
+
+        // Attributes file fork at offset 352 (0x160): empty (all zeros)
+        // Startup file fork at offset 432 (0x1B0): empty (all zeros)
+
+        // Write primary volume header at partition + 1024
+        await device.WriteAsync(partitionOffset + 1024, vh, 512, ct).ConfigureAwait(false);
+
+        // Write alternate volume header at end of partition - 1024
+        var altOffset = partitionOffset + partitionSize - 1024;
+        if (altOffset > partitionOffset + 1024)
+        {
+            await device.WriteAsync(altOffset, vh, 512, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Write a HFS+ fork data structure (80 bytes) at the given offset in a buffer.
+    /// </summary>
+    private static void WriteForkData(byte[] buf, int offset, long logicalSize, uint clumpSize,
+        uint totalBlocks, (uint StartBlock, uint BlockCount)[] extents)
+    {
+        // logicalSize(8) + clumpSize(4) + totalBlocks(4) + extents[8](startBlock(4)+blockCount(4))
+        BinaryPrimitives.WriteUInt64BigEndian(buf.AsSpan(offset, 8), (ulong)logicalSize);
+        BinaryPrimitives.WriteUInt32BigEndian(buf.AsSpan(offset + 8, 4), clumpSize);
+        BinaryPrimitives.WriteUInt32BigEndian(buf.AsSpan(offset + 12, 4), totalBlocks);
+
+        for (int i = 0; i < 8; i++)
+        {
+            var extOff = offset + 16 + i * 8;
+            if (i < extents.Length)
+            {
+                BinaryPrimitives.WriteUInt32BigEndian(buf.AsSpan(extOff, 4), extents[i].StartBlock);
+                BinaryPrimitives.WriteUInt32BigEndian(buf.AsSpan(extOff + 4, 4), extents[i].BlockCount);
+            }
+            // else: already zero
+        }
+    }
+
     public void Dispose()
     {
         // Device is owned by the caller (HfsPlusRawFileSystemProvider)
@@ -2238,3 +2622,36 @@ public sealed record HfsPlusCatalogItem(
     uint Cnid,
     HfsPlusForkInfo? DataFork
 );
+
+// ─── Diagnostic types ────────────────────────────────────────────────────
+
+public class BTreeDiagnostics
+{
+    public uint RootNodeIndex;
+    public uint FirstLeafNodeIndex;
+    public uint LastLeafNode;
+    public uint TotalNodes;
+    public uint FreeNodes;
+    public uint LeafRecords;
+    public int CatalogExtentCount;
+    public bool HasCycle;
+    public List<uint> UnreadableNodes = new();
+    public List<BTreeNodeInfo> LeafNodes = new();
+    public List<BTreeIndexNodeInfo> IndexNodes = new();
+}
+
+public class BTreeNodeInfo
+{
+    public uint NodeIndex;
+    public sbyte Kind;
+    public int NumRecords;
+    public uint FLink;
+    public List<uint> RecordParentCnids = new();
+}
+
+public class BTreeIndexNodeInfo
+{
+    public uint NodeIndex;
+    public int NumRecords;
+    public List<(uint ParentCnid, string Name, uint ChildNode)> Children = new();
+}

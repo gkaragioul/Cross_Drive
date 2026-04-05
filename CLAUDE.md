@@ -59,6 +59,7 @@ native/
   MacMount.NativeService/   .NET named-pipe service
   MacMount.RawDiskEngine/   .NET raw disk parser
   MacMount.NativeBroker/    .NET privileged broker
+  MacMount.HfsWriteTest/    .NET HFS+ write test harness (file-backed, no real disk)
 native-bridge/       WinFsp port roadmap (future)
 docs/                Commercial readiness docs (GO_NO_GO, RISK_REGISTER, etc.)
 .github/workflows/   CI (macmount-ci.yml) + release (macmount-release.yml)
@@ -82,6 +83,7 @@ npm run native:build         # Build MacMount.NativeService
 npm run raw:build            # Build MacMount.RawDiskEngine
 npm run broker:build         # Build MacMount.NativeBroker
 npm run native:publish       # Publish all .NET binaries to native/bin/
+npm run hfs:test             # HFS+ write test harness (10 tests, file-backed image)
 ```
 
 ### Release
