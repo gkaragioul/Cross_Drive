@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO.Enumeration;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
+using System.Security.Principal;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -56,6 +57,20 @@ internal sealed class BrokerService
 {
     private readonly ConcurrentDictionary<string, MountedDrive> _mounted = new(StringComparer.OrdinalIgnoreCase);
     private readonly IRawDiskEngine _rawDiskEngine = new RawDiskEngine();
+
+    private static bool IsElevated()
+    {
+        try
+        {
+            using var identity = WindowsIdentity.GetCurrent();
+            var principal = new WindowsPrincipal(identity);
+            return principal.IsInRole(WindowsBuiltInRole.Administrator);
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     public async Task RunAsync()
     {
@@ -112,7 +127,7 @@ internal sealed class BrokerService
             object response;
             if (string.Equals(action, "ping", StringComparison.Ordinal))
             {
-                response = new { ok = true, requestId, service = "MacMount.NativeBroker", pid = Environment.ProcessId };
+                response = new { ok = true, requestId, service = "MacMount.NativeBroker", pid = Environment.ProcessId, elevated = IsElevated() };
             }
             else if (string.Equals(action, "status", StringComparison.Ordinal))
             {
@@ -120,6 +135,7 @@ internal sealed class BrokerService
                 {
                     ok = true,
                     requestId,
+                    elevated = IsElevated(),
                     mounted = _mounted.Values.Select(x => new { x.DriveId, x.Letter, x.Path, x.SourceSummary, x.MountedAtUtc })
                 };
             }
@@ -293,6 +309,7 @@ internal sealed class BrokerService
         var letter = root.TryGetProperty("letter", out var l) ? l.GetString() : null;
         var physicalDrivePath = root.TryGetProperty("physicalDrivePath", out var p) ? p.GetString() : null;
         var fileSystemHint = root.TryGetProperty("fileSystemHint", out var h) ? h.GetString() : null;
+        var password = root.TryGetProperty("password", out var pw) ? pw.GetString() : null;
 
         if (string.IsNullOrWhiteSpace(driveId) || string.IsNullOrWhiteSpace(letter) || string.IsNullOrWhiteSpace(physicalDrivePath))
         {
@@ -312,10 +329,84 @@ internal sealed class BrokerService
         try
         {
             var plan = await _rawDiskEngine.AnalyzeAsync(
-                new MountRequest(physicalDrivePath, fileSystemHint ?? string.Empty, ReadOnly: true)
+                new MountRequest(physicalDrivePath, fileSystemHint ?? string.Empty, ReadOnly: false)
             ).ConfigureAwait(false);
 
+            if (plan.NeedsPassword && string.IsNullOrWhiteSpace(password))
+            {
+                return new
+                {
+                    ok = false,
+                    requestId,
+                    error = "Encrypted APFS volume requires a password.",
+                    needsPassword = true,
+                    plan = new
+                    {
+                        plan.PhysicalDrivePath,
+                        plan.FileSystemType,
+                        plan.TotalBytes,
+                        plan.Writable,
+                        plan.Notes,
+                        plan.IsEncrypted,
+                        plan.NeedsPassword,
+                        plan.PartitionOffsetBytes,
+                        plan.PartitionLengthBytes
+                    }
+                };
+            }
+
+            if (plan.IsEncrypted && !string.IsNullOrWhiteSpace(password))
+            {
+                var vek = await TryUnlockEncryptedApfsAsync(plan, password).ConfigureAwait(false);
+                if (vek is null)
+                {
+                    return new
+                    {
+                        ok = false,
+                        requestId,
+                        error = "Failed to unlock encrypted APFS volume. Wrong password or unsupported encryption type.",
+                        needsPassword = true,
+                        plan = new
+                        {
+                            plan.PhysicalDrivePath,
+                            plan.FileSystemType,
+                            plan.TotalBytes,
+                            plan.Writable,
+                            plan.Notes,
+                            plan.IsEncrypted,
+                            plan.NeedsPassword,
+                            plan.PartitionOffsetBytes,
+                            plan.PartitionLengthBytes
+                        }
+                    };
+                }
+                plan = plan with { IsEncrypted = false, NeedsPassword = false, EncryptionKey = vek, Notes = $"{plan.Notes} Encrypted volume unlocked." };
+            }
+
             var fsType = plan.FileSystemType ?? string.Empty;
+            if (string.Equals(fsType, "CoreStorage", StringComparison.OrdinalIgnoreCase))
+            {
+                return new
+                {
+                    ok = false,
+                    requestId,
+                    error = "CoreStorage/FileVault 1 drives are not yet supported.",
+                    suggestion = "This is an older Mac encryption format. Use a Mac to decrypt the drive first (diskutil cs revert), or use APFS encryption on newer macOS versions.",
+                    plan = new
+                    {
+                        plan.PhysicalDrivePath,
+                        plan.FileSystemType,
+                        plan.TotalBytes,
+                        plan.Writable,
+                        plan.Notes,
+                        plan.IsEncrypted,
+                        plan.NeedsPassword,
+                        plan.PartitionOffsetBytes,
+                        plan.PartitionLengthBytes
+                    }
+                };
+            }
+
             var supportsRawProvider =
                 string.Equals(fsType, "HFS+", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(fsType, "HFSX", StringComparison.OrdinalIgnoreCase) ||
@@ -442,6 +533,42 @@ internal sealed class BrokerService
 
         return inputPath;
     }
+
+    private async Task<byte[]?> TryUnlockEncryptedApfsAsync(MountPlan plan, string password)
+    {
+        try
+        {
+            var drivePath = plan.PhysicalDrivePath;
+            var hashIdx = drivePath.IndexOf("#part", StringComparison.OrdinalIgnoreCase);
+            if (hashIdx > 0) drivePath = drivePath[..hashIdx];
+
+            var device = await new WindowsRawBlockDeviceFactory().OpenReadOnlyAsync(drivePath).ConfigureAwait(false);
+            using (device)
+            {
+                var offset = Math.Max(0L, plan.PartitionOffsetBytes);
+                var blockSize = 4096u;
+                var keyManager = new ApfsKeyManager(device, (ulong)offset, blockSize);
+
+                var volumeUuid = Guid.Empty;
+                if (!string.IsNullOrEmpty(plan.Notes))
+                {
+                    var uuidMatch = System.Text.RegularExpressions.Regex.Match(plan.Notes, @"VolumeUuid=([0-9a-fA-F-]{36})");
+                    if (uuidMatch.Success)
+                    {
+                        Guid.TryParse(uuidMatch.Groups[1].Value, out volumeUuid);
+                    }
+                }
+
+                if (volumeUuid == Guid.Empty) return null;
+
+                return await keyManager.TryUnlockVolumeAsync(volumeUuid, password).ConfigureAwait(false);
+            }
+        }
+        catch
+        {
+            return null;
+        }
+    }
 }
 
 internal sealed class BrokerProbeFileSystem : FileSystemBase
@@ -560,6 +687,11 @@ internal sealed class BrokerRawProviderFileSystem : FileSystemBase
     private readonly IRawFileSystemProvider _provider;
     private readonly DirectoryBuffer _dirBuffer = new();
 
+    // WinFsp constants for Create disposition
+    private const uint FILE_CREATE = 0x00000002;
+    private const uint FILE_OVERWRITE_IF = 0x00000005;
+    // FILE_DIRECTORY_FILE and FILE_DELETE_ON_CLOSE are inherited from FileSystemBase
+
     public BrokerRawProviderFileSystem(IRawFileSystemProvider provider)
     {
         _provider = provider;
@@ -588,6 +720,46 @@ internal sealed class BrokerRawProviderFileSystem : FileSystemBase
         return 0;
     }
 
+    public override int Create(string fileName, uint createOptions, uint grantedAccess, uint fileAttributes, byte[] securityDescriptor, ulong allocationSize, out object fileNode, out object fileDesc, out Fsp.Interop.FileInfo fileInfo, out string normalizedName)
+    {
+        fileInfo = default;
+        var path = Normalize(fileName);
+        fileNode = null!;
+        fileDesc = null!;
+        normalizedName = path;
+
+        if (!_provider.IsWritable)
+            return unchecked((int)0xC00000BB); // STATUS_MEDIA_WRITE_PROTECTED
+
+        try
+        {
+            if ((createOptions & FILE_DIRECTORY_FILE) != 0)
+            {
+                _provider.CreateDirectory(path);
+            }
+            else
+            {
+                _provider.CreateFile(path);
+                if (allocationSize > 0)
+                {
+                    try { _provider.SetFileSize(path, (long)allocationSize); } catch { }
+                }
+            }
+
+            var entry = _provider.GetEntry(path);
+            if (entry is null) return unchecked((int)0xC0000001); // STATUS_UNSUCCESSFUL
+
+            fileNode = entry;
+            fileDesc = entry;
+            PopulateInfo(entry, ref fileInfo);
+            return 0;
+        }
+        catch
+        {
+            return unchecked((int)0xC0000001);
+        }
+    }
+
     public override int Open(string fileName, uint createOptions, uint grantedAccess, out object fileNode, out object fileDesc, out Fsp.Interop.FileInfo fileInfo, out string normalizedName)
     {
         fileInfo = default;
@@ -606,6 +778,32 @@ internal sealed class BrokerRawProviderFileSystem : FileSystemBase
         normalizedName = path;
         PopulateInfo(entry, ref fileInfo);
         return 0;
+    }
+
+    public override int Overwrite(object fileNode, object fileDesc, uint fileAttributes, bool replaceFileAttributes, ulong allocationSize, out Fsp.Interop.FileInfo fileInfo)
+    {
+        fileInfo = default;
+        if (!_provider.IsWritable)
+            return unchecked((int)0xC00000BB);
+
+        if (fileNode is not RawFsEntry entry)
+            return unchecked((int)0xC000000D);
+
+        try
+        {
+            _provider.SetFileSize(entry.Path, 0); // truncate
+            if (allocationSize > 0)
+                _provider.SetFileSize(entry.Path, (long)allocationSize);
+
+            var updated = _provider.GetEntry(entry.Path);
+            if (updated != null) PopulateInfo(updated, ref fileInfo);
+            else PopulateInfo(entry, ref fileInfo);
+            return 0;
+        }
+        catch
+        {
+            return unchecked((int)0xC0000001);
+        }
     }
 
     public override int GetFileInfo(object fileNode, object fileDesc, out Fsp.Interop.FileInfo fileInfo)
@@ -650,11 +848,77 @@ internal sealed class BrokerRawProviderFileSystem : FileSystemBase
     }
 
     public override int Write(object fileNode, object fileDesc, IntPtr buffer, ulong offset, uint length, bool writeToEndOfFile, bool constrainedIo, out uint bytesTransferred, out Fsp.Interop.FileInfo fileInfo)
-    { bytesTransferred = 0; fileInfo = default; return unchecked((int)0xC00000BB); }
+    {
+        bytesTransferred = 0;
+        fileInfo = default;
+
+        if (!_provider.IsWritable)
+            return unchecked((int)0xC00000BB);
+
+        if (fileNode is not RawFsEntry entry || entry.IsDirectory)
+            return unchecked((int)0xC00000BA);
+
+        try
+        {
+            var temp = ArrayPool<byte>.Shared.Rent((int)length);
+            try
+            {
+                Marshal.Copy(buffer, temp, 0, (int)length);
+                var writeOffset = writeToEndOfFile ? entry.Size : (long)offset;
+                var written = _provider.WriteFile(entry.Path, writeOffset, temp.AsSpan(0, (int)length));
+                bytesTransferred = (uint)Math.Max(0, written);
+
+                var updated = _provider.GetEntry(entry.Path);
+                if (updated != null) PopulateInfo(updated, ref fileInfo);
+                else PopulateInfo(entry, ref fileInfo);
+
+                return 0;
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(temp);
+            }
+        }
+        catch
+        {
+            return unchecked((int)0xC0000001);
+        }
+    }
+
     public override int SetBasicInfo(object fileNode, object fileDesc, uint fileAttributes, ulong creationTime, ulong lastAccessTime, ulong lastWriteTime, ulong changeTime, out Fsp.Interop.FileInfo fileInfo)
-    { fileInfo = default; return unchecked((int)0xC00000BB); }
+    {
+        fileInfo = default;
+        if (fileNode is RawFsEntry entry)
+        {
+            PopulateInfo(entry, ref fileInfo);
+            return 0;
+        }
+        return unchecked((int)0xC000000D);
+    }
+
     public override int SetFileSize(object fileNode, object fileDesc, ulong newSize, bool setAllocationSize, out Fsp.Interop.FileInfo fileInfo)
-    { fileInfo = default; return unchecked((int)0xC00000BB); }
+    {
+        fileInfo = default;
+
+        if (!_provider.IsWritable)
+            return unchecked((int)0xC00000BB);
+
+        if (fileNode is not RawFsEntry entry)
+            return unchecked((int)0xC000000D);
+
+        try
+        {
+            _provider.SetFileSize(entry.Path, (long)newSize);
+            var updated = _provider.GetEntry(entry.Path);
+            if (updated != null) PopulateInfo(updated, ref fileInfo);
+            else PopulateInfo(entry, ref fileInfo);
+            return 0;
+        }
+        catch
+        {
+            return unchecked((int)0xC0000001);
+        }
+    }
 
     public override int ReadDirectory(object fileNode, object fileDesc, string pattern, string marker, IntPtr buffer, uint length, out uint bytesTransferred)
     {
@@ -688,8 +952,65 @@ internal sealed class BrokerRawProviderFileSystem : FileSystemBase
         return true;
     }
 
-    public override int CanDelete(object fileNode, object fileDesc, string fileName) => unchecked((int)0xC00000BB);
-    public override int Rename(object fileNode, object fileDesc, string fileName, string newFileName, bool replaceIfExists) => unchecked((int)0xC00000BB);
+    public override int CanDelete(object fileNode, object fileDesc, string fileName)
+    {
+        if (!_provider.IsWritable) return unchecked((int)0xC00000BB);
+        return 0; // allow deletion
+    }
+
+    public override void Cleanup(object fileNode, object fileDesc, string fileName, uint flags)
+    {
+        // If DELETE_ON_CLOSE flag is set, delete the file/directory
+        if ((flags & 1) != 0 && _provider.IsWritable) // FspCleanupDelete = 1
+        {
+            try
+            {
+                var path = Normalize(fileName);
+                _provider.Delete(path);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[WinFsp] Cleanup delete failed: {ex.Message}");
+            }
+        }
+    }
+
+    public override int Rename(object fileNode, object fileDesc, string fileName, string newFileName, bool replaceIfExists)
+    {
+        if (!_provider.IsWritable) return unchecked((int)0xC00000BB);
+
+        try
+        {
+            var oldPath = Normalize(fileName);
+            var newPath = Normalize(newFileName);
+            _provider.Rename(oldPath, newPath);
+            return 0;
+        }
+        catch
+        {
+            return unchecked((int)0xC0000001);
+        }
+    }
+
+    public override int Flush(object fileNode, object fileDesc, out Fsp.Interop.FileInfo fileInfo)
+    {
+        fileInfo = default;
+        try
+        {
+            _provider.Flush();
+            if (fileNode is RawFsEntry entry)
+            {
+                var updated = _provider.GetEntry(entry.Path);
+                if (updated != null) PopulateInfo(updated, ref fileInfo);
+                else PopulateInfo(entry, ref fileInfo);
+            }
+            return 0;
+        }
+        catch
+        {
+            return unchecked((int)0xC0000001);
+        }
+    }
 
     private static string Normalize(string? p)
     {

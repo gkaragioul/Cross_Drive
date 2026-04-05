@@ -6,7 +6,7 @@ namespace MacMount.RawDiskEngine;
 
 public sealed class HfsPlusParser : IFileSystemParser
 {
-    public string Name => "HFS+";
+    public string Name => "HFS+/HFSX";
 
     public async Task<bool> CanHandleAsync(IRawBlockDevice device, CancellationToken cancellationToken = default)
     {
@@ -22,12 +22,13 @@ public sealed class HfsPlusParser : IFileSystemParser
 
     public Task<MountPlan> BuildMountPlanAsync(IRawBlockDevice device, CancellationToken cancellationToken = default)
     {
+        var format = DetectFormat(device, cancellationToken);
         var plan = new MountPlan(
             device.DevicePath,
-            "HFS+",
+            format,
             device.Length,
-            Writable: false,
-            Notes: "HFS+/HFSX signature detected. Metadata parser not implemented yet."
+            Writable: true,
+            Notes: $"{format} signature detected. Read-write capable."
         );
         return Task.FromResult(plan);
     }
@@ -36,5 +37,19 @@ public sealed class HfsPlusParser : IFileSystemParser
     {
         await Task.CompletedTask;
         yield break;
+    }
+
+    private static string DetectFormat(IRawBlockDevice device, CancellationToken cancellationToken)
+    {
+        var block = new byte[4096];
+        var read = RawReadUtil.ReadExactlyAtAsync(device, 0, block, block.Length, cancellationToken).GetAwaiter().GetResult();
+        if (read >= 1026)
+        {
+            if (block[1024] == (byte)'H' && block[1025] == (byte)'X')
+            {
+                return "HFSX";
+            }
+        }
+        return "HFS+";
     }
 }

@@ -10,17 +10,20 @@ namespace MacMount.RawDiskEngine;
 public sealed class WindowsRawBlockDevice : IRawBlockDevice, IDisposable
 {
     private readonly SafeFileHandle _handle;
+    private readonly bool _writable;
     private bool _disposed;
 
-    private WindowsRawBlockDevice(string devicePath, SafeFileHandle handle, long length)
+    private WindowsRawBlockDevice(string devicePath, SafeFileHandle handle, long length, bool writable = false)
     {
         DevicePath = devicePath;
         _handle = handle;
         Length = length;
+        _writable = writable;
     }
 
     public string DevicePath { get; }
     public long Length { get; }
+    public bool CanWrite => _writable;
 
     public static WindowsRawBlockDevice OpenReadOnly(string physicalDrivePath)
     {
@@ -52,7 +55,40 @@ public sealed class WindowsRawBlockDevice : IRawBlockDevice, IDisposable
             throw;
         }
 
-        return new WindowsRawBlockDevice(normalizedPath, handle, length);
+        return new WindowsRawBlockDevice(normalizedPath, handle, length, writable: false);
+    }
+
+    public static WindowsRawBlockDevice OpenReadWrite(string physicalDrivePath)
+    {
+        var normalizedPath = PhysicalDrivePath.Normalize(physicalDrivePath);
+        var handle = NativeMethods.CreateFile(
+            normalizedPath,
+            NativeMethods.GENERIC_READ | NativeMethods.GENERIC_WRITE,
+            NativeMethods.FILE_SHARE_READ | NativeMethods.FILE_SHARE_WRITE,
+            IntPtr.Zero,
+            NativeMethods.OPEN_EXISTING,
+            NativeMethods.FILE_ATTRIBUTE_NORMAL,
+            IntPtr.Zero
+        );
+
+        if (handle.IsInvalid)
+        {
+            var win32 = Marshal.GetLastWin32Error();
+            throw new IOException($"CreateFile (read-write) failed for {normalizedPath} (win32={win32}).");
+        }
+
+        long length;
+        try
+        {
+            length = NativeMethods.GetDiskLength(handle);
+        }
+        catch
+        {
+            handle.Dispose();
+            throw;
+        }
+
+        return new WindowsRawBlockDevice(normalizedPath, handle, length, writable: true);
     }
 
     private const int SectorSize = 512;
@@ -107,6 +143,76 @@ public sealed class WindowsRawBlockDevice : IRawBlockDevice, IDisposable
         return new ValueTask<int>(available);
     }
 
+    public ValueTask WriteAsync(long offset, byte[] buffer, int count, CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        if (!_writable)
+            throw new InvalidOperationException("Device was opened read-only. Use OpenReadWrite for write access.");
+
+        if (offset < 0) throw new ArgumentOutOfRangeException(nameof(offset));
+        if (buffer is null) throw new ArgumentNullException(nameof(buffer));
+        if (count < 0 || count > buffer.Length) throw new ArgumentOutOfRangeException(nameof(count));
+        if (count == 0) return ValueTask.CompletedTask;
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // Raw physical drives require sector-aligned offset and count.
+        var alignedOffset = (offset / SectorSize) * SectorSize;
+        var skipBytes = (int)(offset - alignedOffset);
+
+        if (skipBytes == 0 && count % SectorSize == 0)
+        {
+            // Already aligned — write directly from caller's buffer
+            if (!NativeMethods.SetFilePointerEx(_handle, alignedOffset, out _, 0))
+            {
+                var win32 = Marshal.GetLastWin32Error();
+                throw new IOException($"SetFilePointerEx failed at offset {alignedOffset} (win32={win32}).");
+            }
+
+            if (!NativeMethods.WriteFile(_handle, buffer, count, out _, IntPtr.Zero))
+            {
+                var win32 = Marshal.GetLastWin32Error();
+                throw new IOException($"WriteFile failed at offset {alignedOffset}, count {count} (win32={win32}).");
+            }
+
+            return ValueTask.CompletedTask;
+        }
+
+        // Unaligned — read-modify-write
+        var alignedCount = ((skipBytes + count + SectorSize - 1) / SectorSize) * SectorSize;
+        var alignedBuffer = new byte[alignedCount];
+
+        // Read existing data
+        if (!NativeMethods.SetFilePointerEx(_handle, alignedOffset, out _, 0))
+        {
+            var win32 = Marshal.GetLastWin32Error();
+            throw new IOException($"SetFilePointerEx (RMW read) failed at offset {alignedOffset} (win32={win32}).");
+        }
+
+        if (!NativeMethods.ReadFile(_handle, alignedBuffer, alignedCount, out _, IntPtr.Zero))
+        {
+            var win32 = Marshal.GetLastWin32Error();
+            throw new IOException($"ReadFile (RMW) failed at offset {alignedOffset}, count {alignedCount} (win32={win32}).");
+        }
+
+        // Overlay the caller's data
+        Buffer.BlockCopy(buffer, 0, alignedBuffer, skipBytes, count);
+
+        // Write back the full aligned buffer
+        if (!NativeMethods.SetFilePointerEx(_handle, alignedOffset, out _, 0))
+        {
+            var win32 = Marshal.GetLastWin32Error();
+            throw new IOException($"SetFilePointerEx (RMW write) failed at offset {alignedOffset} (win32={win32}).");
+        }
+
+        if (!NativeMethods.WriteFile(_handle, alignedBuffer, alignedCount, out _, IntPtr.Zero))
+        {
+            var win32 = Marshal.GetLastWin32Error();
+            throw new IOException($"WriteFile (RMW) failed at offset {alignedOffset}, count {alignedCount} (win32={win32}).");
+        }
+
+        return ValueTask.CompletedTask;
+    }
+
     public void Dispose()
     {
         if (_disposed) return;
@@ -151,6 +257,7 @@ internal static class PhysicalDrivePath
 internal static class NativeMethods
 {
     public const uint GENERIC_READ = 0x80000000;
+    public const uint GENERIC_WRITE = 0x40000000;
     public const uint FILE_SHARE_READ = 0x00000001;
     public const uint FILE_SHARE_WRITE = 0x00000002;
     public const uint OPEN_EXISTING = 3;
@@ -214,6 +321,9 @@ internal static class NativeMethods
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern bool ReadFile(SafeFileHandle hFile, byte[] lpBuffer, int nNumberOfBytesToRead, out int lpNumberOfBytesRead, IntPtr lpOverlapped);
 
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool WriteFile(SafeFileHandle hFile, byte[] lpBuffer, int nNumberOfBytesToWrite, out int lpNumberOfBytesWritten, IntPtr lpOverlapped);
+
     [StructLayout(LayoutKind.Sequential)]
     private struct GET_LENGTH_INFORMATION
     {
@@ -227,6 +337,13 @@ public sealed class WindowsRawBlockDeviceFactory : IRawBlockDeviceFactory
     {
         cancellationToken.ThrowIfCancellationRequested();
         IRawBlockDevice device = WindowsRawBlockDevice.OpenReadOnly(physicalDrivePath);
+        return Task.FromResult(device);
+    }
+
+    public Task<IRawBlockDevice> OpenReadWriteAsync(string physicalDrivePath, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        IRawBlockDevice device = WindowsRawBlockDevice.OpenReadWrite(physicalDrivePath);
         return Task.FromResult(device);
     }
 }

@@ -126,6 +126,21 @@ The native engine supports password-based APFS encrypted volume unlock:
 - Inline uncompressed (type 1) served directly
 - **Not yet supported:** LZVN (type 7), LZFSE (type 11), resource-fork types (4, 8, 12)
 
+## HFS+ Read-Write Support
+
+The native engine supports full HFS+ read-write for external Mac drives:
+- Block device opened with GENERIC_READ|GENERIC_WRITE via `WindowsRawBlockDevice.OpenReadWrite`
+- Allocation bitmap management: `AllocateBlocksAsync`/`FreeBlocksAsync` (contiguous block allocation, bit-level bitmap)
+- Catalog B-tree insertion with automatic node splitting and index propagation
+- Catalog B-tree deletion with record removal
+- File data write with extent allocation (`WriteFileDataAsync`)
+- File size set/truncate (`SetFileSizeAsync`) with block free on shrink
+- Volume header flush to both primary (partition+1024) and alternate (end of volume) locations
+- Journal disable on mount (`DisableJournalAsync`) for safe external drive writes
+- WinFsp Create/Write/Delete/Rename/SetFileSize/Flush callbacks via `BrokerRawProviderFileSystem`
+- HFS+ drives mount read-write by default; APFS remains read-only
+- **Not supported:** Extents overflow file, hard links, resource forks on write, T2/hardware-bound volumes
+
 ## Known Gotchas
 
 - WinFsp must be installed before native mount engine works. Bundled in installer via `prereqs/winfsp.msi`.

@@ -1,12 +1,11 @@
 using System;
 using System.Buffers;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using DiscUtils;
-using DiscUtils.HfsPlus;
 
 namespace MacMount.RawDiskEngine;
 
@@ -16,6 +15,9 @@ public sealed class RawDiskEngine : IRawDiskEngine
     private const int LbaSize = 512;
     private static readonly Guid GptTypeApfs = new("7C3457EF-0000-11AA-AA11-00306543ECAC");
     private static readonly Guid GptTypeHfs = new("48465300-0000-11AA-AA11-00306543ECAC");
+    private static readonly Guid GptTypeCoreStorage = new("53746F72-6167-11AA-AA11-00306543ECAC");
+    private const ushort ApmDriverDescriptorSignature = 0x4552; // "ER"
+    private const ushort ApmPartitionSignature = 0x504D; // "PM"
 
     private readonly IReadOnlyList<IFileSystemParser> _parsers;
     private readonly IRawBlockDeviceFactory _deviceFactory;
@@ -70,22 +72,12 @@ public sealed class RawDiskEngine : IRawDiskEngine
                 );
             }
 
-            // Attempt direct parser detection on whole device first.
-            foreach (var parser in _parsers)
-            {
-                if (await parser.CanHandleAsync(rawDevice, cancellationToken).ConfigureAwait(false))
-                {
-                    var parserPlan = await parser.BuildMountPlanAsync(rawDevice, cancellationToken).ConfigureAwait(false);
-                    return parserPlan with
-                    {
-                        Notes = $"{parserPlan.Notes} ProbeBytes={read}, Header32={headerHex}, Source=whole-disk",
-                        PartitionOffsetBytes = 0,
-                        PartitionLengthBytes = rawDevice.Length
-                    };
-                }
-            }
+            // Inspect partition tables first (GPT, MBR, APM) so that the correct
+            // partition offset is used.  Fall back to whole-device probe only when
+            // no partition table is found — some Mac disks write an HFS+ signature
+            // at device byte 1024 even though the real partition starts at 1 MB+.
 
-            // Then inspect GPT partitions and probe parser on each Apple partition slice.
+            // Inspect GPT partitions and probe parser on each Apple partition slice.
             var candidates = await ReadGptMacPartitionCandidatesAsync(rawDevice, cancellationToken).ConfigureAwait(false);
             foreach (var candidate in candidates)
             {
@@ -136,6 +128,19 @@ public sealed class RawDiskEngine : IRawDiskEngine
                         PartitionLengthBytes: candidate.Length
                     );
                 }
+
+                if (candidate.TypeGuid == GptTypeCoreStorage)
+                {
+                    return new MountPlan(
+                        slice.DevicePath,
+                        "CoreStorage",
+                        slice.Length,
+                        Writable: false,
+                        Notes: $"GPT Apple CoreStorage partition detected at part {candidate.Index}; unlock/decryption is not implemented yet.",
+                        PartitionOffsetBytes: candidate.StartOffset,
+                        PartitionLengthBytes: candidate.Length
+                    );
+                }
             }
 
             // Inspect MBR partitions for Apple HFS+ (type 0xAF).
@@ -175,12 +180,79 @@ public sealed class RawDiskEngine : IRawDiskEngine
                 );
             }
 
+            // Inspect Apple Partition Map (APM) disks for HFS+/CoreStorage layouts.
+            var apmCandidates = await ReadApmMacPartitionCandidatesAsync(rawDevice, cancellationToken).ConfigureAwait(false);
+            foreach (var apm in apmCandidates)
+            {
+                using var slice = new PartitionSliceRawBlockDevice(
+                    rawDevice,
+                    devicePath: $"{rawDevice.DevicePath}#apmpart{apm.Index}",
+                    baseOffset: apm.StartOffset,
+                    length: apm.Length
+                );
+
+                foreach (var parser in _parsers)
+                {
+                    if (await parser.CanHandleAsync(slice, cancellationToken).ConfigureAwait(false))
+                    {
+                        var parserPlan = await parser.BuildMountPlanAsync(slice, cancellationToken).ConfigureAwait(false);
+                        return parserPlan with
+                        {
+                            Notes = $"{parserPlan.Notes} Source=APM part {apm.Index}, Type={apm.TypeName}, Name={apm.Name}, StartOffset={apm.StartOffset}",
+                            PartitionOffsetBytes = apm.StartOffset,
+                            PartitionLengthBytes = apm.Length
+                        };
+                    }
+                }
+
+                if (string.Equals(apm.TypeName, "Apple_HFS", StringComparison.OrdinalIgnoreCase))
+                {
+                    return new MountPlan(
+                        slice.DevicePath,
+                        "HFS+",
+                        slice.Length,
+                        Writable: false,
+                        Notes: $"APM HFS partition detected at part {apm.Index}; Name={apm.Name}, StartOffset={apm.StartOffset}",
+                        PartitionOffsetBytes: apm.StartOffset,
+                        PartitionLengthBytes: apm.Length
+                    );
+                }
+
+                if (string.Equals(apm.TypeName, "Apple_CoreStorage", StringComparison.OrdinalIgnoreCase))
+                {
+                    return new MountPlan(
+                        slice.DevicePath,
+                        "CoreStorage",
+                        slice.Length,
+                        Writable: false,
+                        Notes: $"APM Apple CoreStorage partition detected at part {apm.Index}; Name={apm.Name}. Unlock/decryption is not implemented yet.",
+                        PartitionOffsetBytes: apm.StartOffset,
+                        PartitionLengthBytes: apm.Length
+                    );
+                }
+            }
+
+            // No partition table found — try whole-device direct parser probe as fallback.
+            foreach (var parser in _parsers)
+            {
+                if (await parser.CanHandleAsync(rawDevice, cancellationToken).ConfigureAwait(false))
+                {
+                    var parserPlan = await parser.BuildMountPlanAsync(rawDevice, cancellationToken).ConfigureAwait(false);
+                    return parserPlan with
+                    {
+                        Notes = $"{parserPlan.Notes} ProbeBytes={read}, Header32={headerHex}, Source=whole-disk",
+                        PartitionOffsetBytes = 0,
+                        PartitionLengthBytes = rawDevice.Length
+                    };
+                }
+            }
+
             return new MountPlan(
                 rawDevice.DevicePath,
                 "unknown",
                 TotalBytes: rawDevice.Length,
                 Writable: false,
-                Notes: $"Raw-disk reader active. ProbeBytes={read}, Header32={headerHex}. No APFS/HFS+ partition detected.",
+                Notes: $"Raw-disk reader active. ProbeBytes={read}, Header32={headerHex}. No APFS/HFS+/CoreStorage/APM partition detected.",
                 PartitionOffsetBytes: 0,
                 PartitionLengthBytes: rawDevice.Length
             );
@@ -195,7 +267,7 @@ public sealed class RawDiskEngine : IRawDiskEngine
         if (string.Equals(plan.FileSystemType, "HFS+", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(plan.FileSystemType, "HFSX", StringComparison.OrdinalIgnoreCase))
         {
-            provider = HfsPlusRawFileSystemProvider.Create(plan);
+            provider = await HfsPlusRawFileSystemProvider.CreateAsync(plan, cancellationToken).ConfigureAwait(false);
         }
         else if (string.Equals(plan.FileSystemType, "APFS", StringComparison.OrdinalIgnoreCase))
         {
@@ -252,7 +324,7 @@ public sealed class RawDiskEngine : IRawDiskEngine
             Buffer.BlockCopy(entryBuffer, 0, typeBytes, 0, 16);
             var typeGuid = new Guid(typeBytes);
 
-            if (typeGuid != GptTypeApfs && typeGuid != GptTypeHfs)
+            if (typeGuid != GptTypeApfs && typeGuid != GptTypeHfs && typeGuid != GptTypeCoreStorage)
             {
                 continue;
             }
@@ -275,6 +347,8 @@ public sealed class RawDiskEngine : IRawDiskEngine
     private readonly record struct GptPartitionCandidate(int Index, Guid TypeGuid, long StartOffset, long Length);
 
     private readonly record struct MbrPartitionCandidate(int Index, long StartOffset, long Length);
+
+    private readonly record struct ApmPartitionCandidate(int Index, string Name, string TypeName, long StartOffset, long Length);
 
     private static IReadOnlyList<MbrPartitionCandidate> ReadMbrHfsCandidates(byte[] mbrBuffer)
     {
@@ -303,6 +377,120 @@ public sealed class RawDiskEngine : IRawDiskEngine
 
         return result;
     }
+
+    private static async Task<IReadOnlyList<ApmPartitionCandidate>> ReadApmMacPartitionCandidatesAsync(IRawBlockDevice device, CancellationToken cancellationToken)
+    {
+        var ddrBuffer = new byte[512];
+        var ddrRead = await RawReadUtil.ReadExactlyAtAsync(device, 0, ddrBuffer, ddrBuffer.Length, cancellationToken).ConfigureAwait(false);
+        if (ddrRead < ddrBuffer.Length)
+        {
+            return Array.Empty<ApmPartitionCandidate>();
+        }
+
+        var signature = BinaryPrimitives.ReadUInt16BigEndian(ddrBuffer.AsSpan(0, 2));
+        if (signature != ApmDriverDescriptorSignature)
+        {
+            return Array.Empty<ApmPartitionCandidate>();
+        }
+
+        var blockSize = BinaryPrimitives.ReadUInt16BigEndian(ddrBuffer.AsSpan(2, 2));
+        if (blockSize < 512 || blockSize > 4096 || (blockSize & (blockSize - 1)) != 0)
+        {
+            blockSize = 512;
+        }
+
+        var entryBuffer = new byte[blockSize];
+        var firstEntryRead = await RawReadUtil.ReadExactlyAtAsync(device, blockSize, entryBuffer, entryBuffer.Length, cancellationToken).ConfigureAwait(false);
+        if (firstEntryRead < entryBuffer.Length ||
+            BinaryPrimitives.ReadUInt16BigEndian(entryBuffer.AsSpan(0, 2)) != ApmPartitionSignature)
+        {
+            return Array.Empty<ApmPartitionCandidate>();
+        }
+
+        var mapEntryCount = BinaryPrimitives.ReadUInt32BigEndian(entryBuffer.AsSpan(4, 4));
+        if (mapEntryCount == 0)
+        {
+            return Array.Empty<ApmPartitionCandidate>();
+        }
+
+        var result = new List<ApmPartitionCandidate>(capacity: 8);
+        var maxEntries = (int)Math.Min(mapEntryCount, 256u);
+        for (var i = 0; i < maxEntries; i++)
+        {
+            if (i > 0)
+            {
+                var entryOffset = checked((long)(i + 1) * blockSize);
+                var entryRead = await RawReadUtil.ReadExactlyAtAsync(device, entryOffset, entryBuffer, entryBuffer.Length, cancellationToken).ConfigureAwait(false);
+                if (entryRead < entryBuffer.Length)
+                {
+                    break;
+                }
+            }
+
+            if (BinaryPrimitives.ReadUInt16BigEndian(entryBuffer.AsSpan(0, 2)) != ApmPartitionSignature)
+            {
+                continue;
+            }
+
+            var startBlock = BinaryPrimitives.ReadUInt32BigEndian(entryBuffer.AsSpan(8, 4));
+            var blockCount = BinaryPrimitives.ReadUInt32BigEndian(entryBuffer.AsSpan(12, 4));
+            if (startBlock == 0 || blockCount == 0)
+            {
+                continue;
+            }
+
+            var name = DecodeApmString(entryBuffer.AsSpan(16, 32));
+            var typeName = DecodeApmString(entryBuffer.AsSpan(48, 32));
+            if (!IsInterestingApmPartitionType(typeName))
+            {
+                continue;
+            }
+
+            var startOffset = checked((long)startBlock * blockSize);
+            var length = checked((long)blockCount * blockSize);
+            if (startOffset >= device.Length || length <= 0)
+            {
+                continue;
+            }
+
+            if (startOffset + length > device.Length)
+            {
+                length = device.Length - startOffset;
+            }
+
+            if (length <= 0)
+            {
+                continue;
+            }
+
+            result.Add(new ApmPartitionCandidate(i + 1, name, typeName, startOffset, length));
+        }
+
+        return result;
+    }
+
+    private static bool IsInterestingApmPartitionType(string typeName)
+    {
+        if (string.IsNullOrWhiteSpace(typeName))
+        {
+            return false;
+        }
+
+        return string.Equals(typeName, "Apple_HFS", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(typeName, "Apple_CoreStorage", StringComparison.OrdinalIgnoreCase) ||
+               typeName.Contains("APFS", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string DecodeApmString(ReadOnlySpan<byte> bytes)
+    {
+        var zeroIndex = bytes.IndexOf((byte)0);
+        if (zeroIndex >= 0)
+        {
+            bytes = bytes[..zeroIndex];
+        }
+
+        return Encoding.ASCII.GetString(bytes).Trim();
+    }
 }
 
 internal sealed class ProbeRawFileSystemProvider : IRawFileSystemProvider
@@ -323,6 +511,8 @@ internal sealed class ProbeRawFileSystemProvider : IRawFileSystemProvider
             $"FileSystemType: {plan.FileSystemType}{Environment.NewLine}" +
             $"TotalBytes: {plan.TotalBytes}{Environment.NewLine}" +
             $"Writable: {plan.Writable}{Environment.NewLine}" +
+            $"IsEncrypted: {plan.IsEncrypted}{Environment.NewLine}" +
+            $"NeedsPassword: {plan.NeedsPassword}{Environment.NewLine}" +
             $"Notes: {plan.Notes}{Environment.NewLine}";
         _infoBytes = Encoding.UTF8.GetBytes(infoText);
 
@@ -386,19 +576,25 @@ internal sealed class ProbeRawFileSystemProvider : IRawFileSystemProvider
 internal sealed class HfsPlusRawFileSystemProvider : IRawFileSystemProvider
 {
     private readonly IRawBlockDevice _device;
-    private readonly RawBlockDeviceStream _stream;
-    private readonly HfsPlusFileSystem _fs;
+    private readonly HfsPlusNativeReader _reader;
+    private readonly bool _writable;
     private readonly object _sync = new();
 
-    private HfsPlusRawFileSystemProvider(IRawBlockDevice device, RawBlockDeviceStream stream, HfsPlusFileSystem fs)
+    // Path-to-entry and path-to-CNID caches, built lazily as directories are listed
+    private readonly Dictionary<string, RawFsEntry> _entryCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, uint> _cnidByPath = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, HfsPlusForkInfo> _forkByPath = new(StringComparer.OrdinalIgnoreCase);
+
+    private HfsPlusRawFileSystemProvider(IRawBlockDevice device, HfsPlusNativeReader reader, string fsType, bool writable)
     {
         _device = device;
-        _stream = stream;
-        _fs = fs;
-        FileSystemType = "HFS+";
+        _reader = reader;
+        _writable = writable;
+        FileSystemType = fsType;
+        _cnidByPath["\\"] = 2; // root folder CNID
     }
 
-    public static HfsPlusRawFileSystemProvider Create(MountPlan plan)
+    public static async Task<HfsPlusRawFileSystemProvider> CreateAsync(MountPlan plan, CancellationToken ct = default)
     {
         var basePath = plan.PhysicalDrivePath;
         var hashIdx = basePath.IndexOf('#');
@@ -407,132 +603,456 @@ internal sealed class HfsPlusRawFileSystemProvider : IRawFileSystemProvider
             basePath = basePath[..hashIdx];
         }
 
-        var device = WindowsRawBlockDevice.OpenReadOnly(basePath);
+        var factory = new WindowsRawBlockDeviceFactory();
+        IRawBlockDevice device;
+        if (plan.Writable)
+        {
+            device = await factory.OpenReadWriteAsync(basePath, ct).ConfigureAwait(false);
+        }
+        else
+        {
+            device = await factory.OpenReadOnlyAsync(basePath, ct).ConfigureAwait(false);
+        }
+
         var start = Math.Max(0, plan.PartitionOffsetBytes);
-        var length = plan.PartitionLengthBytes > 0 ? plan.PartitionLengthBytes : Math.Max(0, device.Length - start);
-        var stream = new RawBlockDeviceStream(device, start, length, ownsDevice: false);
-        var fs = new HfsPlusFileSystem(stream);
-        return new HfsPlusRawFileSystemProvider(device, stream, fs);
+
+        var reader = await HfsPlusNativeReader.OpenAsync(device, start, ct).ConfigureAwait(false);
+        if (reader is null)
+        {
+            device.Dispose();
+            throw new InvalidOperationException("Failed to open HFS+ volume header or catalog B-tree.");
+        }
+
+        // If writable, disable journaling so writes are safe on external drives
+        if (plan.Writable && reader.IsWritable)
+        {
+            await reader.DisableJournalAsync(ct).ConfigureAwait(false);
+        }
+
+        // Probe the root catalog up front so broken HFS+ parses fail before Explorer
+        // gets an apparently mounted but empty shell drive.
+        await reader.ListDirectoryAsync(2, ct).ConfigureAwait(false);
+
+        var fsType = string.IsNullOrWhiteSpace(plan.FileSystemType) ? "HFS+" : plan.FileSystemType;
+        return new HfsPlusRawFileSystemProvider(device, reader, fsType, plan.Writable && reader.IsWritable);
     }
 
     public string FileSystemType { get; }
-    public long TotalBytes => _fs.Size;
-    public long FreeBytes => _fs.AvailableSpace;
+    public long TotalBytes => _reader.VolumeHeader.TotalBytes;
+    public long FreeBytes => _reader.VolumeHeader.FreeBytes;
+    public bool IsWritable => _writable;
 
     public RawFsEntry? GetEntry(string path)
     {
-        var p = Normalize(path);
+        var n = NormalizePath(path);
         lock (_sync)
         {
-            try
-            {
-                if (p == "/")
-                {
-                    return new RawFsEntry("\\", "ROOT", true, 0, DateTimeOffset.UtcNow, FileAttributes.Directory);
-                }
+            if (_entryCache.TryGetValue(n, out var cached)) return cached;
 
-                if (_fs.DirectoryExists(p))
-                {
-                    var di = _fs.GetDirectoryInfo(p);
-                    return new RawFsEntry(ToWinPath(p), di.Name, true, 0, di.LastWriteTimeUtc, FileAttributes.Directory);
-                }
-
-                if (_fs.FileExists(p))
-                {
-                    var fi = _fs.GetFileInfo(p);
-                    return new RawFsEntry(ToWinPath(p), fi.Name, false, fi.Length, fi.LastWriteTimeUtc, FileAttributes.ReadOnly);
-                }
-            }
-            catch
+            if (n == "\\")
             {
-                return null;
+                var root = new RawFsEntry("\\", "ROOT", true, 0, DateTimeOffset.UtcNow, FileAttributes.Directory);
+                _entryCache[n] = root;
+                return root;
             }
         }
-        return null;
+
+        // If not cached, try listing the parent to populate
+        var parentPath = GetParentPath(n);
+        ListDirectory(parentPath);
+
+        lock (_sync)
+        {
+            return _entryCache.TryGetValue(n, out var entry) ? entry : null;
+        }
     }
 
     public IReadOnlyList<RawFsEntry> ListDirectory(string path)
     {
-        var p = Normalize(path);
-        var list = new List<RawFsEntry>();
+        var n = NormalizePath(path);
+        uint cnid;
+
         lock (_sync)
         {
-            try
-            {
-                // Use GetFileSystemInfos() to batch-fetch all child metadata in one directory
-                // traversal instead of calling GetEntry() (2-4 disk reads) per entry.
-                var dir = _fs.GetDirectoryInfo(p);
-                foreach (var fsi in dir.GetFileSystemInfos())
-                {
-                    if (fsi is DiscDirectoryInfo)
-                    {
-                        list.Add(new RawFsEntry(ToWinPath(fsi.FullName), fsi.Name, true, 0, fsi.LastWriteTimeUtc, FileAttributes.Directory));
-                    }
-                    else if (fsi is DiscFileInfo dfi)
-                    {
-                        list.Add(new RawFsEntry(ToWinPath(fsi.FullName), fsi.Name, false, dfi.Length, fsi.LastWriteTimeUtc, FileAttributes.ReadOnly));
-                    }
-                }
-            }
-            catch
+            if (!_cnidByPath.TryGetValue(n, out cnid))
             {
                 return Array.Empty<RawFsEntry>();
             }
         }
-        return list;
+
+        try
+        {
+            var items = _reader.ListDirectoryAsync(cnid).GetAwaiter().GetResult();
+            var results = new List<RawFsEntry>(items.Count);
+
+            lock (_sync)
+            {
+                foreach (var item in items)
+                {
+                    // Skip Mac metadata entries
+                    if (IsMacMetadata(item.Name)) continue;
+
+                    var childPath = n == "\\" ? $"\\{item.Name}" : $"{n}\\{item.Name}";
+                    var attrs = item.IsDirectory ? FileAttributes.Directory : (_writable ? FileAttributes.Normal : FileAttributes.ReadOnly);
+                    var entry = new RawFsEntry(childPath, item.Name, item.IsDirectory, item.Size, item.ModifiedTime, attrs);
+
+                    _entryCache[childPath] = entry;
+                    if (item.IsDirectory)
+                    {
+                        _cnidByPath[childPath] = item.Cnid;
+                    }
+                    if (item.DataFork is not null)
+                    {
+                        _forkByPath[childPath] = item.DataFork;
+                    }
+
+                    results.Add(entry);
+                }
+            }
+
+            return results;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[HFS+ Native] ListDirectory({path}) error: {ex.GetType().Name}: {ex.Message}");
+            return Array.Empty<RawFsEntry>();
+        }
     }
 
     public int ReadFile(string path, long offset, Span<byte> destination)
     {
         if (destination.Length == 0) return 0;
-        var p = Normalize(path);
+        var n = NormalizePath(path);
+
+        HfsPlusForkInfo? fork;
         lock (_sync)
         {
-            try
+            if (!_forkByPath.TryGetValue(n, out fork)) return 0;
+        }
+
+        try
+        {
+            var buf = new byte[destination.Length];
+            var read = _reader.ReadFileAsync(fork, offset, buf, destination.Length).GetAwaiter().GetResult();
+            if (read > 0)
             {
-                using var s = _fs.OpenFile(p, FileMode.Open, FileAccess.Read);
-                if (offset < 0 || offset >= s.Length) return 0;
-                s.Position = offset;
-                var rented = ArrayPool<byte>.Shared.Rent(destination.Length);
-                try
+                buf.AsSpan(0, read).CopyTo(destination);
+            }
+            return read;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    public int WriteFile(string path, long offset, ReadOnlySpan<byte> source)
+    {
+        if (!_writable) throw new InvalidOperationException("Provider is read-only.");
+        if (source.Length == 0) return 0;
+
+        var n = NormalizePath(path);
+        uint cnid;
+        lock (_sync)
+        {
+            if (!_cnidByPath.TryGetValue(n, out cnid))
+            {
+                // Try to resolve via parent listing
+                var parent = GetParentPath(n);
+                ListDirectory(parent);
+                if (!_cnidByPath.TryGetValue(n, out cnid)) return 0;
+            }
+        }
+
+        try
+        {
+            var buf = source.ToArray();
+            _reader.WriteFileDataAsync(cnid, offset, buf, buf.Length).GetAwaiter().GetResult();
+
+            // Invalidate caches for this path
+            InvalidatePath(n);
+
+            return buf.Length;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[HFS+ Native] WriteFile({path}) error: {ex.GetType().Name}: {ex.Message}");
+            return 0;
+        }
+    }
+
+    public void CreateFile(string path)
+    {
+        if (!_writable) throw new InvalidOperationException("Provider is read-only.");
+
+        var n = NormalizePath(path);
+        var parentPath = GetParentPath(n);
+        var fileName = n[(n.LastIndexOf('\\') + 1)..];
+
+        uint parentCnid;
+        lock (_sync)
+        {
+            if (!_cnidByPath.TryGetValue(parentPath, out parentCnid))
+            {
+                throw new DirectoryNotFoundException($"Parent directory not found: {parentPath}");
+            }
+        }
+
+        try
+        {
+            var cnid = _reader.CreateFileAsync(parentCnid, fileName).GetAwaiter().GetResult();
+            lock (_sync)
+            {
+                _cnidByPath[n] = cnid;
+                var entry = new RawFsEntry(n, fileName, false, 0, DateTimeOffset.UtcNow, FileAttributes.Normal);
+                _entryCache[n] = entry;
+            }
+
+            InvalidateParent(parentPath);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[HFS+ Native] CreateFile({path}) error: {ex.GetType().Name}: {ex.Message}");
+            throw;
+        }
+    }
+
+    public void CreateDirectory(string path)
+    {
+        if (!_writable) throw new InvalidOperationException("Provider is read-only.");
+
+        var n = NormalizePath(path);
+        var parentPath = GetParentPath(n);
+        var dirName = n[(n.LastIndexOf('\\') + 1)..];
+
+        uint parentCnid;
+        lock (_sync)
+        {
+            if (!_cnidByPath.TryGetValue(parentPath, out parentCnid))
+            {
+                throw new DirectoryNotFoundException($"Parent directory not found: {parentPath}");
+            }
+        }
+
+        try
+        {
+            var cnid = _reader.CreateFolderAsync(parentCnid, dirName).GetAwaiter().GetResult();
+            lock (_sync)
+            {
+                _cnidByPath[n] = cnid;
+                var entry = new RawFsEntry(n, dirName, true, 0, DateTimeOffset.UtcNow, FileAttributes.Directory);
+                _entryCache[n] = entry;
+            }
+
+            InvalidateParent(parentPath);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[HFS+ Native] CreateDirectory({path}) error: {ex.GetType().Name}: {ex.Message}");
+            throw;
+        }
+    }
+
+    public void Delete(string path)
+    {
+        if (!_writable) throw new InvalidOperationException("Provider is read-only.");
+
+        var n = NormalizePath(path);
+        var parentPath = GetParentPath(n);
+        var entryName = n[(n.LastIndexOf('\\') + 1)..];
+
+        uint parentCnid;
+        lock (_sync)
+        {
+            if (!_cnidByPath.TryGetValue(parentPath, out parentCnid))
+            {
+                throw new DirectoryNotFoundException($"Parent directory not found: {parentPath}");
+            }
+        }
+
+        try
+        {
+            _reader.DeleteEntryAsync(parentCnid, entryName).GetAwaiter().GetResult();
+            InvalidatePath(n);
+            InvalidateParent(parentPath);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[HFS+ Native] Delete({path}) error: {ex.GetType().Name}: {ex.Message}");
+            throw;
+        }
+    }
+
+    public void Rename(string oldPath, string newPath)
+    {
+        if (!_writable) throw new InvalidOperationException("Provider is read-only.");
+
+        var oldN = NormalizePath(oldPath);
+        var newN = NormalizePath(newPath);
+        var oldParent = GetParentPath(oldN);
+        var newParent = GetParentPath(newN);
+        var oldName = oldN[(oldN.LastIndexOf('\\') + 1)..];
+        var newName = newN[(newN.LastIndexOf('\\') + 1)..];
+
+        // Get existing entry info
+        var existing = GetEntry(oldPath);
+        if (existing is null) throw new FileNotFoundException($"Entry not found: {oldPath}");
+
+        uint oldParentCnid, newParentCnid;
+        lock (_sync)
+        {
+            if (!_cnidByPath.TryGetValue(oldParent, out oldParentCnid))
+                throw new DirectoryNotFoundException($"Old parent not found: {oldParent}");
+            if (!_cnidByPath.TryGetValue(newParent, out newParentCnid))
+                throw new DirectoryNotFoundException($"New parent not found: {newParent}");
+        }
+
+        try
+        {
+            // HFS+ doesn't have a native rename — delete old + create new with same data
+            // For files, read data first, then delete, then recreate
+            if (existing.IsDirectory)
+            {
+                _reader.DeleteEntryAsync(oldParentCnid, oldName).GetAwaiter().GetResult();
+                _reader.CreateFolderAsync(newParentCnid, newName).GetAwaiter().GetResult();
+            }
+            else
+            {
+                // Read existing file data
+                byte[]? fileData = null;
+                HfsPlusForkInfo? fork;
+                lock (_sync) { _forkByPath.TryGetValue(oldN, out fork); }
+                if (fork is not null && fork.LogicalSize > 0)
                 {
-                    var read = s.Read(rented, 0, destination.Length);
-                    if (read > 0)
-                    {
-                        rented.AsSpan(0, read).CopyTo(destination);
-                    }
-                    return read;
+                    fileData = new byte[fork.LogicalSize];
+                    _reader.ReadFileAsync(fork, 0, fileData, fileData.Length).GetAwaiter().GetResult();
                 }
-                finally
+
+                _reader.DeleteEntryAsync(oldParentCnid, oldName).GetAwaiter().GetResult();
+                _reader.CreateFileAsync(newParentCnid, newName, fileData).GetAwaiter().GetResult();
+            }
+
+            InvalidatePath(oldN);
+            InvalidatePath(newN);
+            InvalidateParent(oldParent);
+            if (!string.Equals(oldParent, newParent, StringComparison.OrdinalIgnoreCase))
+            {
+                InvalidateParent(newParent);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[HFS+ Native] Rename({oldPath} -> {newPath}) error: {ex.GetType().Name}: {ex.Message}");
+            throw;
+        }
+    }
+
+    public void SetFileSize(string path, long newSize)
+    {
+        if (!_writable) throw new InvalidOperationException("Provider is read-only.");
+
+        var n = NormalizePath(path);
+        uint cnid;
+        lock (_sync)
+        {
+            if (!_cnidByPath.TryGetValue(n, out cnid))
+            {
+                var parent = GetParentPath(n);
+                ListDirectory(parent);
+                if (!_cnidByPath.TryGetValue(n, out cnid))
+                    throw new FileNotFoundException($"File not found: {path}");
+            }
+        }
+
+        try
+        {
+            _reader.SetFileSizeAsync(cnid, newSize).GetAwaiter().GetResult();
+            InvalidatePath(n);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[HFS+ Native] SetFileSize({path}, {newSize}) error: {ex.GetType().Name}: {ex.Message}");
+            throw;
+        }
+    }
+
+    public void Flush()
+    {
+        if (!_writable) return;
+        try
+        {
+            _reader.FlushVolumeHeaderAsync().GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[HFS+ Native] Flush error: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private void InvalidatePath(string normalizedPath)
+    {
+        lock (_sync)
+        {
+            _entryCache.Remove(normalizedPath);
+            _forkByPath.Remove(normalizedPath);
+            // Don't remove CNID mapping — it stays valid
+        }
+    }
+
+    private void InvalidateParent(string normalizedParentPath)
+    {
+        // Remove all children from cache — force re-listing from disk
+        lock (_sync)
+        {
+            var prefix = normalizedParentPath == "\\" ? "\\" : normalizedParentPath + "\\";
+            var toRemove = new List<string>();
+            foreach (var key in _entryCache.Keys)
+            {
+                if (key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) &&
+                    key.IndexOf('\\', prefix.Length) < 0) // direct children only
                 {
-                    ArrayPool<byte>.Shared.Return(rented);
+                    toRemove.Add(key);
                 }
             }
-            catch
+            foreach (var key in toRemove)
             {
-                return 0;
+                _entryCache.Remove(key);
+                _forkByPath.Remove(key);
             }
         }
     }
 
     public void Dispose()
     {
-        try { _fs.Dispose(); } catch {}
-        try { _stream.Dispose(); } catch {}
+        try { _reader.Dispose(); } catch {}
         try { _device.Dispose(); } catch {}
     }
 
-    private static string Normalize(string path)
+    private static readonly HashSet<string> MacMetadataNames = new(StringComparer.OrdinalIgnoreCase)
     {
-        if (string.IsNullOrWhiteSpace(path) || path == "\\") return "/";
-        var p = path.Replace('\\', '/');
-        if (!p.StartsWith('/')) p = "/" + p.TrimStart('/');
+        ".fseventsd", ".Spotlight-V100", ".Trashes", ".TemporaryItems",
+        ".DocumentRevisions-V100", ".vol", ".com.apple.timemachine.donotpresent",
+        ".journal", ".journal_info_block",
+        ".HFS+ Private Directory Data", "\x00\x00\x00\x00HFS+ Private Data",
+        ".DS_Store"
+    };
+
+    private static bool IsMacMetadata(string name)
+    {
+        return MacMetadataNames.Contains(name) || name.StartsWith("._", StringComparison.Ordinal);
+    }
+
+    private static string NormalizePath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || path == "/" || path == "\\") return "\\";
+        var p = path.Replace('/', '\\');
+        if (!p.StartsWith('\\')) p = "\\" + p;
         return p;
     }
 
-    private static string ToWinPath(string path)
+    private static string GetParentPath(string path)
     {
-        if (string.IsNullOrWhiteSpace(path) || path == "/") return "\\";
-        return "\\" + path.Trim('/').Replace('/', '\\');
+        var lastSep = path.LastIndexOf('\\');
+        return lastSep <= 0 ? "\\" : path[..lastSep];
     }
 }

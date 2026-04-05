@@ -8,12 +8,17 @@ public interface IRawBlockDevice : IDisposable
 {
     string DevicePath { get; }
     long Length { get; }
+    bool CanWrite { get; }
     ValueTask<int> ReadAsync(long offset, byte[] buffer, int count, CancellationToken cancellationToken = default);
+    ValueTask WriteAsync(long offset, byte[] buffer, int count, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("This device is read-only.");
 }
 
 public interface IRawBlockDeviceFactory
 {
     Task<IRawBlockDevice> OpenReadOnlyAsync(string physicalDrivePath, CancellationToken cancellationToken = default);
+    Task<IRawBlockDevice> OpenReadWriteAsync(string physicalDrivePath, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("Read-write access is not supported by this factory.");
 }
 
 public interface IFileSystemParser

@@ -61,6 +61,7 @@ public sealed class CachedRawFileSystemProvider : IRawFileSystemProvider
     public string FileSystemType => _inner.FileSystemType;
     public long TotalBytes => _inner.TotalBytes;
     public long FreeBytes => _inner.FreeBytes;
+    public bool IsWritable => _inner.IsWritable;
 
     public RawFsEntry? GetEntry(string path)
     {
@@ -341,23 +342,89 @@ public sealed class CachedRawFileSystemProvider : IRawFileSystemProvider
         }
     }
 
+    public int WriteFile(string path, long offset, ReadOnlySpan<byte> source)
+    {
+        var result = _inner.WriteFile(path, offset, source);
+        // Invalidate caches for modified file
+        var normalized = NormalizePath(path);
+        _entryCache.TryRemove(normalized, out _);
+        // Invalidate all block cache entries for this path
+        foreach (var key in _blockCache.Keys.Where(k => string.Equals(k.Path, normalized, StringComparison.OrdinalIgnoreCase)).ToList())
+            _blockCache.TryRemove(key, out _);
+        return result;
+    }
+
+    public void CreateFile(string path)
+    {
+        _inner.CreateFile(path);
+        InvalidateDirectoryCache(path);
+    }
+
+    public void CreateDirectory(string path)
+    {
+        _inner.CreateDirectory(path);
+        InvalidateDirectoryCache(path);
+    }
+
+    public void Delete(string path)
+    {
+        _inner.Delete(path);
+        var normalized = NormalizePath(path);
+        _entryCache.TryRemove(normalized, out _);
+        foreach (var key in _blockCache.Keys.Where(k => string.Equals(k.Path, normalized, StringComparison.OrdinalIgnoreCase)).ToList())
+            _blockCache.TryRemove(key, out _);
+        InvalidateDirectoryCache(path);
+    }
+
+    public void Rename(string oldPath, string newPath)
+    {
+        _inner.Rename(oldPath, newPath);
+        var oldNorm = NormalizePath(oldPath);
+        var newNorm = NormalizePath(newPath);
+        _entryCache.TryRemove(oldNorm, out _);
+        _entryCache.TryRemove(newNorm, out _);
+        InvalidateDirectoryCache(oldPath);
+        InvalidateDirectoryCache(newPath);
+    }
+
+    public void SetFileSize(string path, long newSize)
+    {
+        _inner.SetFileSize(path, newSize);
+        var normalized = NormalizePath(path);
+        _entryCache.TryRemove(normalized, out _);
+        foreach (var key in _blockCache.Keys.Where(k => string.Equals(k.Path, normalized, StringComparison.OrdinalIgnoreCase)).ToList())
+            _blockCache.TryRemove(key, out _);
+    }
+
+    public void Flush()
+    {
+        _inner.Flush();
+    }
+
+    private void InvalidateDirectoryCache(string path)
+    {
+        var normalized = NormalizePath(path);
+        var parent = normalized.LastIndexOf('\\') <= 0 ? "\\" : normalized[..normalized.LastIndexOf('\\')];
+        _dirCache.TryRemove(parent, out _);
+    }
+
     public void Dispose()
     {
         _readAheadCts.Cancel();
         _readAheadChannel.Writer.Complete();
-        
+
         try
         {
             _readAheadTask.Wait(TimeSpan.FromSeconds(5));
         }
         catch { }
-        
+
         _dirCache.Clear();
         _entryCache.Clear();
         _blockCache.Clear();
         _readAheadCursor.Clear();
         _inner.Dispose();
-        
+
         _readAheadCts.Dispose();
     }
 

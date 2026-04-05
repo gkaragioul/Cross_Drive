@@ -10,6 +10,7 @@ internal sealed class DecryptingRawBlockDevice : IRawBlockDevice
 
     public string DevicePath => _inner.DevicePath;
     public long Length => _inner.Length;
+    public bool CanWrite => false; // Encrypted devices are read-only
 
     public DecryptingRawBlockDevice(IRawBlockDevice inner, byte[] vek, uint containerBlockSize)
     {
