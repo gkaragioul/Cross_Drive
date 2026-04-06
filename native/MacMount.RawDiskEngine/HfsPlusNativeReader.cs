@@ -447,6 +447,39 @@ public sealed class HfsPlusNativeReader : IDisposable
         BinaryPrimitives.WriteUInt32BigEndian(_vhRawBuf.AsSpan(48, 4), _freeBlocks);
         BinaryPrimitives.WriteUInt32BigEndian(_vhRawBuf.AsSpan(64, 4), _nextCatalogId);
 
+        // Update catalog file fork extents in the volume header (offset 272 = 0x110).
+        // This MUST be done after GrowCatalogFileAsync adds new extents, otherwise
+        // a reopen would lose access to catalog nodes in the grown extents.
+        const int catalogForkOffset = 272;
+        // Compute total catalog logical size and total blocks from _catalogExtents
+        long catalogLogicalSize = 0;
+        uint catalogTotalBlocks = 0;
+        foreach (var (_, byteLen) in _catalogExtents)
+        {
+            catalogLogicalSize += byteLen;
+            catalogTotalBlocks += (uint)(byteLen / _header.BlockSize);
+        }
+        BinaryPrimitives.WriteUInt64BigEndian(_vhRawBuf.AsSpan(catalogForkOffset, 8), (ulong)catalogLogicalSize);
+        BinaryPrimitives.WriteUInt32BigEndian(_vhRawBuf.AsSpan(catalogForkOffset + 12, 4), catalogTotalBlocks);
+        // Write up to 8 inline extents
+        for (int i = 0; i < 8; i++)
+        {
+            var extOff = catalogForkOffset + 16 + i * 8;
+            if (i < _catalogExtents.Count)
+            {
+                var (byteOff, byteLen) = _catalogExtents[i];
+                var startBlock = (uint)((byteOff - _partitionOffset) / _header.BlockSize);
+                var blockCount = (uint)(byteLen / _header.BlockSize);
+                BinaryPrimitives.WriteUInt32BigEndian(_vhRawBuf.AsSpan(extOff, 4), startBlock);
+                BinaryPrimitives.WriteUInt32BigEndian(_vhRawBuf.AsSpan(extOff + 4, 4), blockCount);
+            }
+            else
+            {
+                BinaryPrimitives.WriteUInt32BigEndian(_vhRawBuf.AsSpan(extOff, 4), 0);
+                BinaryPrimitives.WriteUInt32BigEndian(_vhRawBuf.AsSpan(extOff + 4, 4), 0);
+            }
+        }
+
         // Write primary volume header at partition + 1024
         await _device.WriteAsync(_partitionOffset + 1024, _vhRawBuf, 512, ct).ConfigureAwait(false);
 
@@ -526,7 +559,13 @@ public sealed class HfsPlusNativeReader : IDisposable
         if (numRecords < 3) throw new InvalidOperationException("B-tree header node has fewer than 3 records.");
 
         var (mapOffset, mapLen) = GetRecordOffsetAndLength(headerBuf, 2, numRecords);
-        if (mapOffset < 14 || mapLen <= 0) throw new InvalidOperationException("Cannot locate B-tree node bitmap.");
+        if (mapOffset < 14 || mapLen <= 0)
+        {
+            var hex = Convert.ToHexString(headerBuf.AsSpan(0, Math.Min(64, headerBuf.Length)));
+            throw new InvalidOperationException(
+                $"Cannot locate B-tree node bitmap. numRecords={numRecords}, mapOffset={mapOffset}, mapLen={mapLen}, " +
+                $"nodeSize={_nodeSize}, totalNodes={_totalNodes}, freeNodes={_freeNodes}, headerHex={hex}");
+        }
 
         // Search for a free bit (0-bit) in the bitmap. Bit N=1 means node N is allocated.
         for (int byteIdx = 0; byteIdx < mapLen; byteIdx++)
@@ -627,8 +666,10 @@ public sealed class HfsPlusNativeReader : IDisposable
         var (rec0Off, rec0Len) = GetRecordOffsetAndLength(headerBuf, 0, numRecords);
         var (rec1Off, rec1Len) = GetRecordOffsetAndLength(headerBuf, 1, numRecords);
 
-        // Clamp newMapLen so the 3 records + offset table fit in the node
-        var fixedOverhead = 14 + rec0Len + rec1Len + 2 * (3 + 1); // 3 records + 1 free-space entry
+        // Clamp newMapLen so the 3 records + offset table + alignment padding fit in the node.
+        // RebuildNodeRecords adds up to 1 byte padding after each record except the last,
+        // so we need 2 extra bytes (padding after rec0 and rec1) in the worst case.
+        var fixedOverhead = 14 + rec0Len + rec1Len + 2 * (3 + 1) + 2; // 3 records + free-space entry + alignment
         var maxMapLen = (int)_nodeSize - fixedOverhead;
         if (newMapLen > maxMapLen) newMapLen = maxMapLen;
 
@@ -815,8 +856,8 @@ public sealed class HfsPlusNativeReader : IDisposable
 
         var numRecords = BinaryPrimitives.ReadUInt16BigEndian(nodeBuf.AsSpan(10, 2));
         var recordLen = key.Length + data.Length;
-        // Each record also needs 2 bytes in the offset table
-        var totalNeeded = recordLen + 2;
+        // Each record needs 2 bytes in the offset table + up to 1 byte alignment padding
+        var totalNeeded = recordLen + 2 + 1;
 
         var freeSpace = GetNodeFreeSpace(nodeBuf, numRecords);
 
@@ -1003,8 +1044,25 @@ public sealed class HfsPlusNativeReader : IDisposable
             allRecords.Add(newRec);
         }
 
-        // Split: first half stays in old node, second half goes to new node
-        var splitPoint = allRecords.Count / 2;
+        // Split by size: find the point where the left half fills roughly half the node.
+        // This handles variable-size records (long filenames) correctly.
+        var halfCapacity = ((int)_nodeSize - 14 - 4) / 2; // rough half of usable space
+        var accumulated = 0;
+        var splitPoint = allRecords.Count / 2; // default midpoint
+        for (int i = 0; i < allRecords.Count; i++)
+        {
+            accumulated += allRecords[i].Length + 2; // record + offset table entry
+            if (accumulated % 2 != 0) accumulated++; // alignment
+            if (accumulated >= halfCapacity && i > 0)
+            {
+                splitPoint = i;
+                break;
+            }
+        }
+        // Ensure at least 1 record on each side
+        if (splitPoint < 1) splitPoint = 1;
+        if (splitPoint >= allRecords.Count) splitPoint = allRecords.Count - 1;
+
         var leftRecords = allRecords.GetRange(0, splitPoint);
         var rightRecords = allRecords.GetRange(splitPoint, allRecords.Count - splitPoint);
 
@@ -1076,7 +1134,7 @@ public sealed class HfsPlusNativeReader : IDisposable
         BinaryPrimitives.WriteUInt32BigEndian(ptrData.AsSpan(0, 4), childNodeIndex);
 
         var freeSpace = GetNodeFreeSpace(parentBuf, parentNumRecords);
-        var totalNeeded = childFirstKey.Length + ptrData.Length + 2;
+        var totalNeeded = childFirstKey.Length + ptrData.Length + 2 + 1; // +1 for alignment padding
 
         if (freeSpace >= totalNeeded)
         {
@@ -1217,8 +1275,23 @@ public sealed class HfsPlusNativeReader : IDisposable
             allRecords.Add(newRec);
         }
 
-        // Split at midpoint
+        // Split by size: find the point where the left half fills roughly half the node.
+        var halfCapacity = ((int)_nodeSize - 14 - 4) / 2;
+        var accumulated = 0;
         var splitPoint = allRecords.Count / 2;
+        for (int i = 0; i < allRecords.Count; i++)
+        {
+            accumulated += allRecords[i].Length + 2;
+            if (accumulated % 2 != 0) accumulated++;
+            if (accumulated >= halfCapacity && i > 0)
+            {
+                splitPoint = i;
+                break;
+            }
+        }
+        if (splitPoint < 1) splitPoint = 1;
+        if (splitPoint >= allRecords.Count) splitPoint = allRecords.Count - 1;
+
         var leftRecords = allRecords.GetRange(0, splitPoint);
         var rightRecords = allRecords.GetRange(splitPoint, allRecords.Count - splitPoint);
 

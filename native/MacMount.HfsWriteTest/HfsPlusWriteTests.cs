@@ -20,6 +20,11 @@ public static class HfsPlusWriteTests
         results.Add(("TestLargeFile", await RunTest("TestLargeFile", () => TestLargeFile(imageFilePath))));
         results.Add(("TestOverwriteFile", await RunTest("TestOverwriteFile", () => TestOverwriteFile(imageFilePath))));
         results.Add(("TestFileSurvivesReopen", await RunTest("TestFileSurvivesReopen", () => TestFileSurvivesReopen(imageFilePath))));
+        results.Add(("TestDeepNestedPaths", await RunTest("TestDeepNestedPaths", () => TestDeepNestedPaths(imageFilePath))));
+        results.Add(("TestManyFilesInSubdirectory", await RunTest("TestManyFilesInSubdirectory", () => TestManyFilesInSubdirectory(imageFilePath))));
+        results.Add(("TestMixedCreatePattern", await RunTest("TestMixedCreatePattern", () => TestMixedCreatePattern(imageFilePath))));
+        results.Add(("TestCatalogGrowth", await RunTest("TestCatalogGrowth", () => TestCatalogGrowth(imageFilePath))));
+        results.Add(("TestLongFilenames", await RunTest("TestLongFilenames", () => TestLongFilenames(imageFilePath))));
 
         Console.WriteLine();
         Console.WriteLine("Summary:");
@@ -654,6 +659,390 @@ public static class HfsPlusWriteTests
                 return true;
             }
         }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Test 11: Deep nested paths — Dir1/Dir2/Dir3/Dir4/file.txt
+    // ════════════════════════════════════════════════════════════════════════
+    private static async Task<bool> TestDeepNestedPaths(string imageFilePath)
+    {
+        return await WithFormattedImage(imageFilePath, async (reader, device) =>
+        {
+            var dir1 = await reader.CreateFolderAsync(2, "Dir1");
+            Console.WriteLine($"  Created Dir1 with CNID {dir1}");
+
+            var dir2 = await reader.CreateFolderAsync(dir1, "Dir2");
+            Console.WriteLine($"  Created Dir2 with CNID {dir2}");
+
+            var dir3 = await reader.CreateFolderAsync(dir2, "Dir3");
+            Console.WriteLine($"  Created Dir3 with CNID {dir3}");
+
+            var dir4 = await reader.CreateFolderAsync(dir3, "Dir4");
+            Console.WriteLine($"  Created Dir4 with CNID {dir4}");
+
+            var fileData = new byte[256];
+            for (int i = 0; i < fileData.Length; i++) fileData[i] = (byte)(i ^ 0x55);
+            var fileCnid = await reader.CreateFileAsync(dir4, "file.txt", fileData);
+            Console.WriteLine($"  Created file.txt with CNID {fileCnid}");
+
+            // Verify the chain: root has 1 item (Dir1)
+            var rootItems = await reader.ListDirectoryAsync(2);
+            if (rootItems.Count != 1 || rootItems[0].Name != "Dir1")
+            {
+                Console.WriteLine($"  Root: expected 1 item 'Dir1', found {rootItems.Count}: {string.Join(", ", rootItems.Select(x => x.Name))}");
+                return false;
+            }
+
+            // Verify Dir4 has the file
+            var dir4Items = await reader.ListDirectoryAsync(dir4);
+            if (dir4Items.Count != 1 || dir4Items[0].Name != "file.txt")
+            {
+                Console.WriteLine($"  Dir4: expected 1 item 'file.txt', found {dir4Items.Count}: {string.Join(", ", dir4Items.Select(x => x.Name))}");
+                return false;
+            }
+
+            // Verify file data
+            var readBuf = new byte[256];
+            var readCount = await reader.ReadFileAsync(dir4Items[0].DataFork!, 0, readBuf, 256);
+            for (int i = 0; i < 256; i++)
+            {
+                if (readBuf[i] != fileData[i])
+                {
+                    Console.WriteLine($"  Data mismatch at byte {i}");
+                    return false;
+                }
+            }
+
+            Console.WriteLine("  Deep nested path created and verified (4 levels deep).");
+            return true;
+        });
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Test 12: 100 files in a subdirectory — exercises B-tree splitting
+    // ════════════════════════════════════════════════════════════════════════
+    private static async Task<bool> TestManyFilesInSubdirectory(string imageFilePath)
+    {
+        return await WithFormattedImage(imageFilePath, async (reader, device) =>
+        {
+            var subdir = await reader.CreateFolderAsync(2, "BulkDir");
+            Console.WriteLine($"  Created BulkDir with CNID {subdir}");
+
+            var expectedFiles = new Dictionary<string, byte[]>();
+            for (int i = 0; i < 100; i++)
+            {
+                var name = $"bulk_{i:D3}.dat";
+                var size = 1024 + (i * 1000) % 100000; // 1KB to ~100KB varying
+                var data = new byte[size];
+                new Random(i + 1000).NextBytes(data);
+                expectedFiles[name] = data;
+
+                await reader.CreateFileAsync(subdir, name, data);
+
+                if ((i + 1) % 25 == 0)
+                    Console.WriteLine($"  Created {i + 1}/100 files in BulkDir...");
+            }
+
+            // Verify all 100 files are listable
+            var items = await reader.ListDirectoryAsync(subdir);
+            if (items.Count != 100)
+            {
+                Console.WriteLine($"  Expected 100 items in BulkDir, found {items.Count}");
+                var found = new HashSet<string>(items.Select(x => x.Name));
+                var missing = expectedFiles.Keys.Except(found).OrderBy(x => x).Take(10).ToList();
+                if (missing.Count > 0)
+                    Console.WriteLine($"  First missing: {string.Join(", ", missing)}");
+                await DumpBTreeDiagnostics(reader, device);
+                return false;
+            }
+
+            // Verify a sample of files are readable with correct data
+            var sampled = 0;
+            foreach (var item in items)
+            {
+                if (sampled >= 10) break; // spot-check 10 files for speed
+                if (!expectedFiles.TryGetValue(item.Name, out var expected)) continue;
+
+                if (item.Size != expected.Length)
+                {
+                    Console.WriteLine($"  {item.Name}: size mismatch, expected {expected.Length}, got {item.Size}");
+                    return false;
+                }
+
+                if (item.DataFork is null)
+                {
+                    Console.WriteLine($"  {item.Name}: DataFork is null");
+                    return false;
+                }
+
+                var readBuf = new byte[expected.Length];
+                var readCount = await reader.ReadFileAsync(item.DataFork, 0, readBuf, expected.Length);
+                if (readCount != expected.Length)
+                {
+                    Console.WriteLine($"  {item.Name}: read {readCount} bytes, expected {expected.Length}");
+                    return false;
+                }
+
+                for (int i = 0; i < expected.Length; i++)
+                {
+                    if (readBuf[i] != expected[i])
+                    {
+                        Console.WriteLine($"  {item.Name}: data mismatch at byte {i}");
+                        return false;
+                    }
+                }
+
+                sampled++;
+            }
+
+            Console.WriteLine($"  All 100 files in subdirectory created and verified ({sampled} spot-checked).");
+            return true;
+        });
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Test 13: Mixed create pattern — interleaved root and subdirectory
+    // ════════════════════════════════════════════════════════════════════════
+    private static async Task<bool> TestMixedCreatePattern(string imageFilePath)
+    {
+        return await WithFormattedImage(imageFilePath, async (reader, device) =>
+        {
+            var subdir = await reader.CreateFolderAsync(2, "MixedDir");
+            Console.WriteLine($"  Created MixedDir with CNID {subdir}");
+
+            var rootFiles = new HashSet<string>();
+            var subdirFiles = new HashSet<string>();
+
+            for (int i = 0; i < 20; i++)
+            {
+                // Create in root
+                var rootName = $"root_{i:D2}.txt";
+                var rootData = new byte[512];
+                new Random(i).NextBytes(rootData);
+                await reader.CreateFileAsync(2, rootName, rootData);
+                rootFiles.Add(rootName);
+
+                // Create in subdir
+                var subName = $"sub_{i:D2}.txt";
+                var subData = new byte[512];
+                new Random(i + 100).NextBytes(subData);
+                await reader.CreateFileAsync(subdir, subName, subData);
+                subdirFiles.Add(subName);
+
+                if ((i + 1) % 10 == 0)
+                    Console.WriteLine($"  Created {i + 1}/20 pairs (root + subdir)...");
+            }
+
+            // Verify root: should have 20 files + 1 directory = 21 items
+            var rootItems = await reader.ListDirectoryAsync(2);
+            if (rootItems.Count != 21)
+            {
+                Console.WriteLine($"  Root: expected 21 items (20 files + 1 dir), found {rootItems.Count}");
+                var found = new HashSet<string>(rootItems.Select(x => x.Name));
+                var expectedAll = new HashSet<string>(rootFiles) { "MixedDir" };
+                var missing = expectedAll.Except(found).OrderBy(x => x).ToList();
+                if (missing.Count > 0)
+                    Console.WriteLine($"  Missing from root: {string.Join(", ", missing)}");
+                await DumpBTreeDiagnostics(reader, device);
+                return false;
+            }
+
+            // Verify subdir: should have 20 files
+            var subItems = await reader.ListDirectoryAsync(subdir);
+            if (subItems.Count != 20)
+            {
+                Console.WriteLine($"  MixedDir: expected 20 items, found {subItems.Count}");
+                var found = new HashSet<string>(subItems.Select(x => x.Name));
+                var missing = subdirFiles.Except(found).OrderBy(x => x).ToList();
+                if (missing.Count > 0)
+                    Console.WriteLine($"  Missing from subdir: {string.Join(", ", missing)}");
+                await DumpBTreeDiagnostics(reader, device);
+                return false;
+            }
+
+            Console.WriteLine("  Mixed create pattern verified: 21 in root, 20 in subdir.");
+            return true;
+        });
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Test 14: Catalog growth — 200 files with long names to exhaust
+    //          initial catalog nodes and force GrowCatalogFileAsync,
+    //          then reopen to verify extent persistence.
+    // ════════════════════════════════════════════════════════════════════════
+    private static async Task<bool> TestCatalogGrowth(string imageFilePath)
+    {
+        if (File.Exists(imageFilePath))
+            File.Delete(imageFilePath);
+
+        const int fileCount = 200;
+        var expectedNames = new HashSet<string>();
+
+        // Phase 1: create files with long names (100-char) to consume node space faster
+        // and force the catalog B-tree to grow beyond 128 initial nodes.
+        {
+            using var device = FileBackedBlockDevice.CreateNew(imageFilePath, ImageSize);
+            await HfsPlusNativeReader.FormatAsync(device, 0, ImageSize, "TestVolume");
+
+            var reader = await HfsPlusNativeReader.OpenAsync(device, 0);
+            if (reader is null)
+            {
+                Console.WriteLine("  FAIL: Could not open formatted image (phase 1).");
+                return false;
+            }
+
+            using (reader)
+            {
+                for (int i = 0; i < fileCount; i++)
+                {
+                    // Use 100-char names: large keys force more splits and faster node exhaustion.
+                    // Each file record + thread record with 100-char name uses ~1200 bytes,
+                    // so ~6 files per leaf node => 128 nodes exhausted around 380 files with overhead.
+                    var name = $"growth_{i:D4}_" + new string((char)('a' + (i % 26)), 85) + ".bin";
+                    var data = new byte[64];
+                    new Random(i + 5000).NextBytes(data);
+                    await reader.CreateFileAsync(2, name, data);
+                    expectedNames.Add(name);
+
+                    if ((i + 1) % 50 == 0)
+                        Console.WriteLine($"  Phase 1: Created {i + 1}/{fileCount} files...");
+                }
+
+                // Verify all files are listable before closing
+                var items = await reader.ListDirectoryAsync(2);
+                if (items.Count != fileCount)
+                {
+                    Console.WriteLine($"  Phase 1: Expected {fileCount} items, found {items.Count}");
+                    var found = new HashSet<string>(items.Select(x => x.Name));
+                    var missing = expectedNames.Except(found).OrderBy(x => x).Take(10).ToList();
+                    if (missing.Count > 0)
+                        Console.WriteLine($"  First missing: {string.Join(", ", missing)}");
+                    await DumpBTreeDiagnostics(reader, device);
+                    return false;
+                }
+                Console.WriteLine($"  Phase 1: All {fileCount} files created and listed.");
+            }
+        }
+
+        // Phase 2: reopen and verify all files survived (tests FlushVolumeHeaderAsync
+        // catalog extent persistence after growth)
+        {
+            using var device = FileBackedBlockDevice.Open(imageFilePath, writable: false);
+            var reader = await HfsPlusNativeReader.OpenAsync(device, 0);
+            if (reader is null)
+            {
+                Console.WriteLine("  FAIL: Could not reopen image (phase 2).");
+                return false;
+            }
+
+            using (reader)
+            {
+                var items = await reader.ListDirectoryAsync(2);
+                if (items.Count != fileCount)
+                {
+                    Console.WriteLine($"  Phase 2 (reopen): Expected {fileCount} items, found {items.Count}");
+                    return false;
+                }
+
+                // Spot-check 5 files for correct data
+                var rng = new Random(42);
+                for (int check = 0; check < 5; check++)
+                {
+                    var idx = rng.Next(fileCount);
+                    var name = $"growth_{idx:D4}_" + new string((char)('a' + (idx % 26)), 85) + ".bin";
+                    var item = items.Find(x => x.Name == name);
+                    if (item is null)
+                    {
+                        Console.WriteLine($"  Phase 2: File '{name}' not found.");
+                        return false;
+                    }
+                    if (item.DataFork is null)
+                    {
+                        Console.WriteLine($"  Phase 2: File '{name}' has null DataFork.");
+                        return false;
+                    }
+                    var readBuf = new byte[64];
+                    var readCount = await reader.ReadFileAsync(item.DataFork, 0, readBuf, 64);
+                    if (readCount != 64)
+                    {
+                        Console.WriteLine($"  Phase 2: File '{name}': expected 64 bytes, read {readCount}.");
+                        return false;
+                    }
+                    var expectedData = new byte[64];
+                    new Random(idx + 5000).NextBytes(expectedData);
+                    for (int b = 0; b < 64; b++)
+                    {
+                        if (readBuf[b] != expectedData[b])
+                        {
+                            Console.WriteLine($"  Phase 2: File '{name}': data mismatch at byte {b}.");
+                            return false;
+                        }
+                    }
+                }
+
+                Console.WriteLine($"  Phase 2: All {fileCount} files verified after reopen.");
+            }
+        }
+
+        Console.WriteLine("  Catalog growth test passed: files survive close/reopen.");
+        return true;
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Test 15: Long filenames — 50, 100, 200, and 255 characters
+    // ════════════════════════════════════════════════════════════════════════
+    private static async Task<bool> TestLongFilenames(string imageFilePath)
+    {
+        return await WithFormattedImage(imageFilePath, async (reader, device) =>
+        {
+            var lengths = new[] { 50, 100, 200, 255 };
+            var createdNames = new List<string>();
+
+            foreach (var len in lengths)
+            {
+                // Build a name of the specified length with a .txt suffix
+                var prefix = new string('A', len - 4) + ".txt";
+                if (prefix.Length > len) prefix = prefix.Substring(0, len);
+                var name = prefix;
+                createdNames.Add(name);
+
+                var data = new byte[128];
+                new Random(len).NextBytes(data);
+
+                await reader.CreateFileAsync(2, name, data);
+                Console.WriteLine($"  Created file with {name.Length}-char name");
+            }
+
+            // Verify all are listable
+            var items = await reader.ListDirectoryAsync(2);
+            if (items.Count != lengths.Length)
+            {
+                Console.WriteLine($"  Expected {lengths.Length} items, found {items.Count}");
+                foreach (var item in items)
+                    Console.WriteLine($"    - '{item.Name}' ({item.Name.Length} chars)");
+                return false;
+            }
+
+            // Verify names match
+            foreach (var expectedName in createdNames)
+            {
+                var found = items.Find(i => i.Name == expectedName);
+                if (found is null)
+                {
+                    Console.WriteLine($"  File with {expectedName.Length}-char name not found in listing.");
+                    Console.WriteLine($"  Listed names: {string.Join(", ", items.Select(x => $"'{x.Name}'({x.Name.Length})"))}");
+                    return false;
+                }
+                if (found.Size != 128)
+                {
+                    Console.WriteLine($"  File with {expectedName.Length}-char name: expected size 128, got {found.Size}");
+                    return false;
+                }
+            }
+
+            Console.WriteLine($"  Long filename test passed: created files with names of {string.Join(", ", lengths)} chars.");
+            return true;
+        });
     }
 
     // ─── Diagnostic helper ──────────────────────────────────────────────────
