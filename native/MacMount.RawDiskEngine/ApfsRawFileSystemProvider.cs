@@ -42,9 +42,14 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
             _allocator = spaceman is not null
                 ? new ApfsBlockAllocator(spaceman)
                 : new ApfsBlockAllocator(device, _blockSize, summary.BlockCount, _partitionOffsetBytes);
-            // Get the first volume OID for the writer (simplified - should use the mounted volume)
+            // Get the first volume OID and its physical superblock block for the writer.
             var volumeOid = summary.VolumeObjectIds.FirstOrDefault();
-            _writer = new ApfsWriter(device, _allocator, _blockSize, _partitionOffsetBytes, volumeOid);
+            var volumePtr = summary.ResolvedVolumePointers.FirstOrDefault();
+            _writer = new ApfsWriter(
+                device, _allocator, _blockSize, _partitionOffsetBytes,
+                volumeOid,
+                volumeSuperblockBlock: volumePtr?.PhysicalBlockNumber,
+                currentXid: summary.TransactionId);
         }
 
         var now = DateTimeOffset.UtcNow;

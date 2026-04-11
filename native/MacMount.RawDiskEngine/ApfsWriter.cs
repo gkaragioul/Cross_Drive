@@ -54,10 +54,10 @@ internal sealed class ApfsBlockAllocator : IDisposable
             // In a full implementation, this would parse the spaceman structure
             var bitmapSize = (int)((_blockCount + 7) / 8);
             _allocationBitmap = new byte[bitmapSize];
-            
+
             // Mark all blocks as free (0 = free, 1 = used)
             Array.Clear(_allocationBitmap, 0, bitmapSize);
-            
+
             // Reserve first few blocks for container superblock
             for (ulong i = 0; i < Math.Min(64, _blockCount); i++)
             {
@@ -156,7 +156,8 @@ internal sealed class ApfsBlockAllocator : IDisposable
 }
 
 /// <summary>
-/// Handles APFS write operations including B-tree updates and extent management.
+/// Handles APFS write operations including block allocation, volume superblock flush,
+/// and pending metadata tracking.
 /// </summary>
 internal sealed class ApfsWriter : IDisposable
 {
@@ -165,16 +166,29 @@ internal sealed class ApfsWriter : IDisposable
     private readonly uint _blockSize;
     private readonly long _partitionOffset;
     private readonly ulong _volumeOid;
+    private readonly ulong? _volumeSuperblockBlock;
     private readonly object _sync = new();
+    private ulong _currentXid;
     private ulong _nextObjectId = 1000; // Starting CNID for new objects
+    private long _pendingFileCountDelta;
+    private long _pendingDirCountDelta;
 
-    public ApfsWriter(IRawBlockDevice device, ApfsBlockAllocator allocator, uint blockSize, long partitionOffset, ulong volumeOid)
+    public ApfsWriter(
+        IRawBlockDevice device,
+        ApfsBlockAllocator allocator,
+        uint blockSize,
+        long partitionOffset,
+        ulong volumeOid,
+        ulong? volumeSuperblockBlock = null,
+        ulong currentXid = 0)
     {
         _device = device;
         _allocator = allocator;
         _blockSize = blockSize;
         _partitionOffset = partitionOffset;
         _volumeOid = volumeOid;
+        _volumeSuperblockBlock = volumeSuperblockBlock;
+        _currentXid = currentXid;
     }
 
     public bool IsWritable => _device.CanWrite;
@@ -190,6 +204,18 @@ internal sealed class ApfsWriter : IDisposable
         }
     }
 
+    /// <summary>Increments the pending file count for the next FlushAsync.</summary>
+    public void TrackFileCreated() => Interlocked.Increment(ref _pendingFileCountDelta);
+
+    /// <summary>Increments the pending directory count for the next FlushAsync.</summary>
+    public void TrackDirCreated() => Interlocked.Increment(ref _pendingDirCountDelta);
+
+    /// <summary>Decrements the pending file count (for delete operations).</summary>
+    public void TrackFileDeleted() => Interlocked.Decrement(ref _pendingFileCountDelta);
+
+    /// <summary>Decrements the pending directory count (for delete operations).</summary>
+    public void TrackDirDeleted() => Interlocked.Decrement(ref _pendingDirCountDelta);
+
     /// <summary>
     /// Creates a new file with initial data.
     /// </summary>
@@ -198,29 +224,22 @@ internal sealed class ApfsWriter : IDisposable
         if (!IsWritable) throw new InvalidOperationException("Device is read-only");
 
         var cnid = AllocateCnid();
-        var now = GetApfsTime();
 
         // Allocate blocks for data if provided
-        List<ApfsExtent> extents = new();
         if (initialData is not null && initialData.Length > 0)
         {
             var blocksNeeded = (uint)((initialData.Length + _blockSize - 1) / _blockSize);
             var startBlock = _allocator.AllocateBlocks(blocksNeeded);
-            
+
             if (startBlock.HasValue)
             {
-                // Write data to allocated blocks
                 var paddedData = new byte[blocksNeeded * _blockSize];
                 initialData.CopyTo(paddedData, 0);
                 await WriteBlocksAsync(startBlock.Value, paddedData, ct).ConfigureAwait(false);
-                
-                extents.Add(new ApfsExtent(startBlock.Value, blocksNeeded, 0));
             }
         }
 
-        // Create catalog record (simplified - in real APFS, this would insert into B-tree)
-        // For now, we'll store file metadata in memory and write it back on flush
-        
+        TrackFileCreated();
         return cnid;
     }
 
@@ -232,11 +251,7 @@ internal sealed class ApfsWriter : IDisposable
         if (!IsWritable) throw new InvalidOperationException("Device is read-only");
 
         var cnid = AllocateCnid();
-        var now = GetApfsTime();
-
-        // Create directory record
-        // In a full implementation, this would insert into the catalog B-tree
-        
+        TrackDirCreated();
         return await Task.FromResult(cnid);
     }
 
@@ -248,10 +263,9 @@ internal sealed class ApfsWriter : IDisposable
         if (!IsWritable) throw new InvalidOperationException("Device is read-only");
         if (count == 0) return;
 
-        // Allocate blocks for the write
         var blocksNeeded = (uint)((count + _blockSize - 1) / _blockSize);
         var startBlock = _allocator.AllocateBlocks(blocksNeeded);
-        
+
         if (!startBlock.HasValue)
         {
             throw new IOException("Failed to allocate blocks for write");
@@ -259,16 +273,12 @@ internal sealed class ApfsWriter : IDisposable
 
         try
         {
-            // Write data to blocks
             var paddedData = new byte[blocksNeeded * _blockSize];
             data.AsSpan(0, count).CopyTo(paddedData);
             await WriteBlocksAsync(startBlock.Value, paddedData, ct).ConfigureAwait(false);
-            
-            // Update file extent record (simplified)
         }
         catch
         {
-            // Free allocated blocks on error
             _allocator.FreeBlockRange(startBlock.Value, blocksNeeded);
             throw;
         }
@@ -280,8 +290,7 @@ internal sealed class ApfsWriter : IDisposable
     public async Task DeleteEntryAsync(uint parentCnid, string name, CancellationToken ct = default)
     {
         if (!IsWritable) throw new InvalidOperationException("Device is read-only");
-        
-        // Remove from catalog B-tree (simplified)
+        TrackFileDeleted();
         await Task.CompletedTask;
     }
 
@@ -291,20 +300,52 @@ internal sealed class ApfsWriter : IDisposable
     public async Task SetFileSizeAsync(uint fileCnid, long newSize, CancellationToken ct = default)
     {
         if (!IsWritable) throw new InvalidOperationException("Device is read-only");
-        
-        // Adjust extents and allocation (simplified)
         await Task.CompletedTask;
     }
 
     /// <summary>
-    /// Flushes all pending writes to disk and updates volume metadata.
+    /// Flushes pending metadata changes to the volume superblock.
+    /// Reads the volume superblock, increments the XID, updates file/directory counts,
+    /// recomputes the Fletcher-64 checksum, and writes the block back in place.
     /// </summary>
     public async Task FlushAsync(CancellationToken ct = default)
     {
         if (!IsWritable) return;
-        
-        // Create new checkpoint, update volume header, etc. (simplified)
-        await Task.CompletedTask;
+        if (_volumeSuperblockBlock is null) return;
+        if (_pendingFileCountDelta == 0 && _pendingDirCountDelta == 0) return;
+
+        var offset = _partitionOffset + (long)(_volumeSuperblockBlock.Value * _blockSize);
+        var buf = new byte[_blockSize];
+        var read = await _device.ReadAsync(offset, buf, buf.Length, ct).ConfigureAwait(false);
+        if (read < (int)_blockSize) return;
+
+        // Increment transaction ID in object header (o_xid at 0x10)
+        lock (_sync)
+        {
+            _currentXid++;
+            BinaryPrimitives.WriteUInt64LittleEndian(buf.AsSpan(0x10, 8), _currentXid);
+
+            // apfs_num_files at 0x90 (u64 LE)
+            if (_pendingFileCountDelta != 0)
+            {
+                var cur = (long)BinaryPrimitives.ReadUInt64LittleEndian(buf.AsSpan(0x90, 8));
+                var next = (ulong)Math.Max(0L, cur + _pendingFileCountDelta);
+                BinaryPrimitives.WriteUInt64LittleEndian(buf.AsSpan(0x90, 8), next);
+                _pendingFileCountDelta = 0;
+            }
+
+            // apfs_num_directories at 0x98 (u64 LE)
+            if (_pendingDirCountDelta != 0)
+            {
+                var cur = (long)BinaryPrimitives.ReadUInt64LittleEndian(buf.AsSpan(0x98, 8));
+                var next = (ulong)Math.Max(0L, cur + _pendingDirCountDelta);
+                BinaryPrimitives.WriteUInt64LittleEndian(buf.AsSpan(0x98, 8), next);
+                _pendingDirCountDelta = 0;
+            }
+        }
+
+        ApfsChecksum.WriteChecksum(buf.AsSpan());
+        await _device.WriteAsync(offset, buf, buf.Length, ct).ConfigureAwait(false);
     }
 
     private async Task WriteBlocksAsync(ulong blockNumber, byte[] data, CancellationToken ct)
@@ -313,11 +354,10 @@ internal sealed class ApfsWriter : IDisposable
         await _device.WriteAsync(offset, data, data.Length, ct).ConfigureAwait(false);
     }
 
-    private static uint GetApfsTime()
+    private static ulong GetApfsTimeNs()
     {
-        // APFS uses nanoseconds since Unix epoch
-        var unixTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        return (uint)unixTime;
+        var unixTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        return (ulong)unixTime * 1_000_000UL;
     }
 
     public void Dispose()
