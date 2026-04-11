@@ -20,15 +20,30 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
     private readonly Dictionary<string, ApfsFileReadPlan> _fileReadPlans = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, (long Offset, byte[] Data)> _readCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly byte[] _infoBytes;
+    private readonly bool _writable;
+    private readonly ApfsWriter? _writer;
+    private readonly ApfsBlockAllocator? _allocator;
+    private readonly Dictionary<string, uint> _cnidByPath = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _sync = new();
 
-    private ApfsRawFileSystemProvider(IRawBlockDevice device, ApfsContainerSummary summary, MountPlan plan)
+    private ApfsRawFileSystemProvider(IRawBlockDevice device, ApfsContainerSummary summary, MountPlan plan, bool writable)
     {
         _device = device;
         _blockSize = summary.BlockSize;
         _partitionOffsetBytes = Math.Max(0, plan.PartitionOffsetBytes);
+        _writable = writable && device.CanWrite;
         FileSystemType = "APFS";
         TotalBytes = summary.EstimatedTotalBytes > 0 ? summary.EstimatedTotalBytes : Math.Max(1, plan.TotalBytes);
         FreeBytes = 0;
+
+        // Initialize write support if writable
+        if (_writable)
+        {
+            _allocator = new ApfsBlockAllocator(device, _blockSize, summary.BlockCount, _partitionOffsetBytes);
+            // Get the first volume OID for the writer (simplified - should use the mounted volume)
+            var volumeOid = summary.VolumeObjectIds.FirstOrDefault();
+            _writer = new ApfsWriter(device, _allocator, _blockSize, _partitionOffsetBytes, volumeOid);
+        }
 
         var now = DateTimeOffset.UtcNow;
         var infoText = BuildInfoText(summary, plan);
@@ -86,6 +101,7 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
     public string FileSystemType { get; }
     public long TotalBytes { get; }
     public long FreeBytes { get; }
+    public bool IsWritable => _writable;
 
     public static async Task<ApfsRawFileSystemProvider> CreateAsync(MountPlan plan, CancellationToken cancellationToken = default)
     {
@@ -96,7 +112,17 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
             basePath = basePath[..hashIdx];
         }
 
-        IRawBlockDevice device = await new WindowsRawBlockDeviceFactory().OpenReadOnlyAsync(basePath, cancellationToken).ConfigureAwait(false);
+        // Open device in read-write mode if plan is writable
+        IRawBlockDevice device;
+        var factory = new WindowsRawBlockDeviceFactory();
+        if (plan.Writable)
+        {
+            device = await factory.OpenReadWriteAsync(basePath, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            device = await factory.OpenReadOnlyAsync(basePath, cancellationToken).ConfigureAwait(false);
+        }
 
         if (plan.EncryptionKey is not null && plan.EncryptionKey.Length >= 32)
         {
@@ -108,7 +134,7 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
         {
             var reader = new ApfsMetadataReader(device, plan.PartitionOffsetBytes, plan.PartitionLengthBytes);
             var summary = await reader.ReadSummaryAsync(cancellationToken).ConfigureAwait(false);
-            return new ApfsRawFileSystemProvider(device, summary, plan);
+            return new ApfsRawFileSystemProvider(device, summary, plan, plan.Writable);
         }
         catch
         {
@@ -311,8 +337,256 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
         return null; // unsupported compression type (LZVN=7, LZFSE=11, resource-fork types 4/8/12)
     }
 
+    // Write operations
+    public int WriteFile(string path, long offset, ReadOnlySpan<byte> source)
+    {
+        if (!_writable || _writer is null) throw new InvalidOperationException("Provider is read-only.");
+        if (source.Length == 0) return 0;
+
+        var n = Normalize(path);
+        uint cnid;
+        lock (_sync)
+        {
+            if (!_cnidByPath.TryGetValue(n, out cnid))
+            {
+                // Try to resolve via parent listing
+                var parent = GetParentPath(n);
+                ListDirectory(parent);
+                if (!_cnidByPath.TryGetValue(n, out cnid)) return 0;
+            }
+        }
+
+        try
+        {
+            var buf = source.ToArray();
+            _writer.WriteFileDataAsync(cnid, offset, buf, buf.Length).GetAwaiter().GetResult();
+            return buf.Length;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[APFS] WriteFile({path}) error: {ex.GetType().Name}: {ex.Message}");
+            return 0;
+        }
+    }
+
+    public void CreateFile(string path)
+    {
+        if (!_writable || _writer is null) throw new InvalidOperationException("Provider is read-only.");
+
+        var n = Normalize(path);
+        var parentPath = GetParentPath(n);
+        var fileName = n[(n.LastIndexOf('\\') + 1)..];
+
+        uint parentCnid;
+        lock (_sync)
+        {
+            if (!_cnidByPath.TryGetValue(parentPath, out parentCnid))
+            {
+                throw new DirectoryNotFoundException($"Parent directory not found: {parentPath}");
+            }
+        }
+
+        try
+        {
+            var cnid = _writer.CreateFileAsync(parentCnid, fileName).GetAwaiter().GetResult();
+            lock (_sync)
+            {
+                _cnidByPath[n] = cnid;
+                var entry = new RawFsEntry(n, fileName, false, 0, DateTimeOffset.UtcNow, FileAttributes.Normal);
+                _entries[n] = entry;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[APFS] CreateFile({path}) error: {ex.GetType().Name}: {ex.Message}");
+            throw;
+        }
+    }
+
+    public void CreateDirectory(string path)
+    {
+        if (!_writable || _writer is null) throw new InvalidOperationException("Provider is read-only.");
+
+        var n = Normalize(path);
+        var parentPath = GetParentPath(n);
+        var dirName = n[(n.LastIndexOf('\\') + 1)..];
+
+        uint parentCnid;
+        lock (_sync)
+        {
+            if (!_cnidByPath.TryGetValue(parentPath, out parentCnid))
+            {
+                throw new DirectoryNotFoundException($"Parent directory not found: {parentPath}");
+            }
+        }
+
+        try
+        {
+            var cnid = _writer.CreateDirectoryAsync(parentCnid, dirName).GetAwaiter().GetResult();
+            lock (_sync)
+            {
+                _cnidByPath[n] = cnid;
+                var entry = new RawFsEntry(n, dirName, true, 0, DateTimeOffset.UtcNow, FileAttributes.Directory);
+                _entries[n] = entry;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[APFS] CreateDirectory({path}) error: {ex.GetType().Name}: {ex.Message}");
+            throw;
+        }
+    }
+
+    public void Delete(string path)
+    {
+        if (!_writable || _writer is null) throw new InvalidOperationException("Provider is read-only.");
+
+        var n = Normalize(path);
+        var parentPath = GetParentPath(n);
+        var entryName = n[(n.LastIndexOf('\\') + 1)..];
+
+        uint parentCnid;
+        lock (_sync)
+        {
+            if (!_cnidByPath.TryGetValue(parentPath, out parentCnid))
+            {
+                throw new DirectoryNotFoundException($"Parent directory not found: {parentPath}");
+            }
+        }
+
+        try
+        {
+            _writer.DeleteEntryAsync(parentCnid, entryName).GetAwaiter().GetResult();
+            lock (_sync)
+            {
+                _cnidByPath.Remove(n);
+                _entries.Remove(n);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[APFS] Delete({path}) error: {ex.GetType().Name}: {ex.Message}");
+            throw;
+        }
+    }
+
+    public void Rename(string oldPath, string newPath)
+    {
+        if (!_writable || _writer is null) throw new InvalidOperationException("Provider is read-only.");
+
+        var oldN = Normalize(oldPath);
+        var newN = Normalize(newPath);
+        var oldParent = GetParentPath(oldN);
+        var newParent = GetParentPath(newN);
+        var oldName = oldN[(oldN.LastIndexOf('\\') + 1)..];
+        var newName = newN[(newN.LastIndexOf('\\') + 1)..];
+
+        uint oldParentCnid, newParentCnid;
+        lock (_sync)
+        {
+            if (!_cnidByPath.TryGetValue(oldParent, out oldParentCnid))
+                throw new DirectoryNotFoundException($"Old parent not found: {oldParent}");
+            if (!_cnidByPath.TryGetValue(newParent, out newParentCnid))
+                throw new DirectoryNotFoundException($"New parent not found: {newParent}");
+        }
+
+        try
+        {
+            // APFS doesn't have native rename - delete old + create new
+            var existing = GetEntry(oldPath);
+            if (existing is null) throw new FileNotFoundException($"Entry not found: {oldPath}");
+
+            if (existing.IsDirectory)
+            {
+                _writer.DeleteEntryAsync(oldParentCnid, oldName).GetAwaiter().GetResult();
+                _writer.CreateDirectoryAsync(newParentCnid, newName).GetAwaiter().GetResult();
+            }
+            else
+            {
+                // Read existing file data
+                byte[]? fileData = null;
+                if (_fileReadPlans.TryGetValue(oldN, out var plan) && plan.TotalSize > 0)
+                {
+                    fileData = new byte[plan.TotalSize];
+                    ReadFile(oldPath, 0, fileData);
+                }
+
+                _writer.DeleteEntryAsync(oldParentCnid, oldName).GetAwaiter().GetResult();
+                _writer.CreateFileAsync(newParentCnid, newName, fileData).GetAwaiter().GetResult();
+            }
+
+            lock (_sync)
+            {
+                _cnidByPath.Remove(oldN);
+                if (_cnidByPath.TryGetValue(oldParent, out var cnid))
+                {
+                    _cnidByPath[newN] = cnid;
+                }
+                _entries.Remove(oldN);
+                var newEntry = new RawFsEntry(newN, newName, existing.IsDirectory, existing.Size, DateTimeOffset.UtcNow, existing.Attributes);
+                _entries[newN] = newEntry;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[APFS] Rename({oldPath} -> {newPath}) error: {ex.GetType().Name}: {ex.Message}");
+            throw;
+        }
+    }
+
+    public void SetFileSize(string path, long newSize)
+    {
+        if (!_writable || _writer is null) throw new InvalidOperationException("Provider is read-only.");
+
+        var n = Normalize(path);
+        uint cnid;
+        lock (_sync)
+        {
+            if (!_cnidByPath.TryGetValue(n, out cnid))
+            {
+                var parent = GetParentPath(n);
+                ListDirectory(parent);
+                if (!_cnidByPath.TryGetValue(n, out cnid))
+                    throw new FileNotFoundException($"File not found: {path}");
+            }
+        }
+
+        try
+        {
+            _writer.SetFileSizeAsync(cnid, newSize).GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[APFS] SetFileSize({path}, {newSize}) error: {ex.GetType().Name}: {ex.Message}");
+            throw;
+        }
+    }
+
+    public void Flush()
+    {
+        if (!_writable || _writer is null) return;
+        try
+        {
+            _writer.FlushAsync().GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[APFS] Flush error: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private static string GetParentPath(string path)
+    {
+        if (path == "\\") return "\\";
+        var lastSlash = path.LastIndexOf('\\');
+        if (lastSlash <= 0) return "\\";
+        return path[..lastSlash];
+    }
+
     public void Dispose()
     {
+        try { _writer?.Dispose(); } catch { }
+        try { _allocator?.Dispose(); } catch { }
         try { _device.Dispose(); } catch { }
     }
 
@@ -471,7 +745,9 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
         sb.AppendLine($"CheckpointDescBlocks: {summary.CheckpointDescriptorBlocks}");
         sb.AppendLine($"CheckpointDataBase: {summary.CheckpointDataBase}");
         sb.AppendLine($"CheckpointDataBlocks: {summary.CheckpointDataBlocks}");
-        sb.AppendLine($"ObjectMapOid: {summary.ObjectMapOid}");
+        sb.AppendLine($"SpacemanOid: {summary.SpacemanOid}");
+        sb.AppendLine($"OmapOid: {summary.OmapOid}");
+        sb.AppendLine($"SpacemanPhysicalBlock: {summary.SpacemanPhysicalBlock?.ToString() ?? "not found"}");
         sb.AppendLine($"ObjectMapBlockNumber: {summary.ObjectMapBlockNumber}");
         sb.AppendLine($"ObjectMapTreeOid: {summary.ObjectMapTreeOid}");
         sb.AppendLine($"ObjectMapTreeBlockNumber: {summary.ObjectMapTreeBlockNumber}");
@@ -566,11 +842,13 @@ internal sealed record ApfsContainerSummary(
     uint CheckpointDescriptorBlocks,
     ulong CheckpointDataBase,
     uint CheckpointDataBlocks,
-    ulong ObjectMapOid,
+    ulong SpacemanOid,
+    ulong OmapOid,
     ulong? ObjectMapBlockNumber,
     ulong? ObjectMapTreeOid,
     ulong? ObjectMapTreeBlockNumber,
     int IndexedObjectCount,
+    ulong? SpacemanPhysicalBlock,
     IReadOnlyList<ApfsResolvedObjectPointer> ResolvedVolumePointers,
     IReadOnlyDictionary<ulong, ApfsVolumePreview> VolumePreviewsByOid,
     IReadOnlyList<ulong> VolumeObjectIds,
@@ -703,7 +981,8 @@ internal sealed class ApfsMetadataReader
         }
 
         var objectIndex = await BuildLatestObjectIndexAsync(best, cancellationToken).ConfigureAwait(false);
-        objectIndex.TryGetValue(best.ObjectMapOid, out var omapPtr);
+        objectIndex.TryGetValue(best.OmapOid, out var omapPtr);
+        objectIndex.TryGetValue(best.SpacemanOid, out var spacemanPtr);
         var omapTreeOid = omapPtr is not null
             ? await TryReadOmapTreeOidAsync(omapPtr, best.BlockSize, cancellationToken).ConfigureAwait(false)
             : null;
@@ -758,11 +1037,13 @@ internal sealed class ApfsMetadataReader
             CheckpointDescriptorBlocks: best.CheckpointDescriptorBlocks,
             CheckpointDataBase: best.CheckpointDataBase,
             CheckpointDataBlocks: best.CheckpointDataBlocks,
-            ObjectMapOid: best.ObjectMapOid,
+            SpacemanOid: best.SpacemanOid,
+            OmapOid: best.OmapOid,
             ObjectMapBlockNumber: omapPtr?.BlockNumber,
             ObjectMapTreeOid: omapTreeOid,
             ObjectMapTreeBlockNumber: omapTreePtr?.BlockNumber,
             IndexedObjectCount: objectIndex.Count,
+            SpacemanPhysicalBlock: spacemanPtr?.BlockNumber,
             ResolvedVolumePointers: resolvedVolumePointers,
             VolumePreviewsByOid: volumePreviews,
             VolumeObjectIds: best.VolumeObjectIds,
@@ -810,7 +1091,8 @@ internal sealed class ApfsMetadataReader
         var descBlocks = BinaryPrimitives.ReadUInt32LittleEndian(buffer.AsSpan(120, 4));
         var dataBase = BinaryPrimitives.ReadUInt64LittleEndian(buffer.AsSpan(128, 8));
         var dataBlocks = BinaryPrimitives.ReadUInt32LittleEndian(buffer.AsSpan(136, 4));
-        var omapOid = BinaryPrimitives.ReadUInt64LittleEndian(buffer.AsSpan(152, 8));
+        var spacemanOid = BinaryPrimitives.ReadUInt64LittleEndian(buffer.AsSpan(152, 8)); // nx_spaceman_oid
+        var omapOid = BinaryPrimitives.ReadUInt64LittleEndian(buffer.AsSpan(160, 8));     // nx_omap_oid
 
         // nx_fs_oid[100] begins at offset 184 in nx_superblock (after +32 object header).
         // We only read until available bytes in current buffer.
@@ -834,7 +1116,8 @@ internal sealed class ApfsMetadataReader
             CheckpointDescriptorBlocks: descBlocks,
             CheckpointDataBase: dataBase,
             CheckpointDataBlocks: dataBlocks,
-            ObjectMapOid: omapOid,
+            SpacemanOid: spacemanOid,
+            OmapOid: omapOid,
             VolumeObjectIds: volumeIds
         );
     }
@@ -2515,7 +2798,8 @@ internal sealed class ApfsMetadataReader
         uint CheckpointDescriptorBlocks,
         ulong CheckpointDataBase,
         uint CheckpointDataBlocks,
-        ulong ObjectMapOid,
+        ulong SpacemanOid,   // nx_spaceman_oid @ offset 0x98 — OID of the space manager object
+        ulong OmapOid,       // nx_omap_oid @ offset 0xA0 — OID of the container object map
         IReadOnlyList<ulong> VolumeObjectIds
     );
 
