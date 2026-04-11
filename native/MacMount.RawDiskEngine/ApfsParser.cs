@@ -82,7 +82,7 @@ public sealed class ApfsParser : IFileSystemParser
                     device.DevicePath,
                     "APFS",
                     device.Length,
-                    Writable: experimentalWritable,
+                    Writable: experimentalWritable, // SAFETY: disabled unless MACMOUNT_EXPERIMENTAL_APFS_WRITES=1
                     Notes: "APFS detection uncertain (NXSB parse failed).",
                     IsEncrypted: false,
                     NeedsPassword: false
