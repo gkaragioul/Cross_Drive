@@ -71,7 +71,7 @@ module.exports = function mountMountRoutes(app, ctx) {
         addLog, inFlightOps, nativeMountState,
         shouldAttemptNativeMountForDrive, tryMountRawWithFallbackLetters, execPsMount, sendBrokerRequest,
         RUNTIME_MOUNT_MODE, RUNTIME_NATIVE_MOUNT_ENABLED, RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK,
-        PS_PATH, MAP_USER_SESSION_PS_PATH, hasRawDiskAccess, cleanupGhostDriveLetters
+        PS_PATH, MAP_USER_SESSION_PS_PATH, hasRawDiskAccess, cleanupGhostDriveLetters, cleanupSingleDriveLetter
     } = ctx;
 
     app.post('/api/mount', async (req, res) => {
@@ -290,7 +290,12 @@ module.exports = function mountMountRoutes(app, ctx) {
                 }
             }
 
-            // 4. Parse and return result
+            // 4. Clean up the drive letter from the user session immediately
+            if (/^[A-Z]$/.test(rememberedLetter)) {
+                try { cleanupSingleDriveLetter(rememberedLetter); } catch {}
+            }
+
+            // 5. Parse and return result
             try {
                 const jsonMatch = stdout.match(/\{[\s\S]*\}/);
                 const result = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(stdout);

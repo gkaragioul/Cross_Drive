@@ -17,10 +17,12 @@ const host = '127.0.0.1';
 let httpServer = null;
 
 let logs = [];
-const VALID_RUNTIME_MOUNT_MODES = new Set(['wsl_unc', 'hybrid_canary', 'experimental_raw', 'native_first']);
+const VALID_RUNTIME_MOUNT_MODES = new Set(['native_first', 'native_only']);
 const RUNTIME_MOUNT_MODE = (() => {
     const raw = String(process.env.MACMOUNT_MOUNT_MODE || '').trim().toLowerCase();
     if (!raw) return 'native_first';
+    if (raw === 'experimental_raw') return 'native_only';
+    if (raw === 'wsl_unc' || raw === 'hybrid_canary') return 'native_first';
     return VALID_RUNTIME_MOUNT_MODES.has(raw) ? raw : 'native_first';
 })();
 const RUNTIME_CANARY_PERCENT = (() => {
@@ -28,8 +30,8 @@ const RUNTIME_CANARY_PERCENT = (() => {
     if (!Number.isFinite(raw)) return 100;
     return Math.max(0, Math.min(100, raw));
 })();
-const RUNTIME_NATIVE_MOUNT_ENABLED = RUNTIME_MOUNT_MODE !== 'wsl_unc';
-const RUNTIME_ALLOW_WSL_FALLBACK = RUNTIME_MOUNT_MODE !== 'experimental_raw';
+const RUNTIME_NATIVE_MOUNT_ENABLED = true;
+const RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK = RUNTIME_MOUNT_MODE !== 'native_only';
 const PREFER_SUBST_LOCAL_FAST_PATH = true;
 const nativeMountState = new Map();
 const inFlightOps = new Set();
@@ -44,6 +46,19 @@ let setupState = {
     message: 'Core runtime ready.',
     ready: true
 };
+
+function isAdmin() {
+    try {
+        execSync('net session', { stdio: 'ignore' });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+function hasRawDiskAccess() {
+    return isAdmin();
+}
 
 function addLog(message, type = 'info') {
     const logEntry = {
@@ -84,7 +99,7 @@ function shouldAttemptNativeMountForDrive(driveId, forceNative = false) {
 
 function execPsMount(driveId, password = '', skipLetter = false) {
     const hasPassword = typeof password === 'string' && password.length > 0;
-    const args = ['-ExecutionPolicy', 'Bypass', '-File', PS_PATH, '-Action', 'Mount', '-DriveID', String(driveId)];
+    const args = ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', PS_PATH, '-Action', 'Mount', '-DriveID', String(driveId)];
     if (hasPassword) {
         args.push('-Password', String(password).replace(/'/g, "''"));
     }
@@ -185,7 +200,7 @@ async function sendNativeWithBoot(payload, timeoutMs = 5000, retries = 6) {
 async function getBrokerMountedMap() {
     const map = new Map();
     try {
-        const ready = await ensureBrokerReady(3);
+        const ready = await ensureBrokerReady(3, false);
         if (!ready) return map;
 
         const status = await sendBrokerRequest({
@@ -238,6 +253,75 @@ function getUsedDriveLetters() {
     }
 }
 
+function removeUserSessionDriveMapping(letter) {
+    const L = String(letter || '').trim().toUpperCase().replace(':', '');
+    if (!/^[A-Z]$/.test(L)) return;
+
+    const ps = [
+        `$letter='${L}';`,
+        "$scriptPath = Join-Path ($env:ProgramData ?? 'C:\\ProgramData') \"MacMount\\user-unmount-$letter.ps1\";",
+        "$script = @\"",
+        "Add-Type -TypeDefinition @'",
+        'using System;',
+        'using System.Runtime.InteropServices;',
+        'using System.Text;',
+        'public class UM {',
+        '    [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Auto)]',
+        '    public static extern bool DefineDosDevice(uint f, string d, string t);',
+        '    [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]',
+        '    public static extern uint QueryDosDevice(string d, StringBuilder buf, uint max);',
+        '}',
+        "'@ -ErrorAction SilentlyContinue",
+        '`$sb = New-Object System.Text.StringBuilder 512',
+        '`$qLen = [UM]::QueryDosDevice("$letter`:", `$sb, 512)',
+        'if (`$qLen -gt 0) {',
+        '    [UM]::DefineDosDevice(7, "$letter`:", `$sb.ToString()) | Out-Null',
+        '} else {',
+        '    [UM]::DefineDosDevice(2, "$letter`:", $null) | Out-Null',
+        '}',
+        '"@;',
+        'New-Item -ItemType Directory -Path (Split-Path $scriptPath) -Force | Out-Null;',
+        'Set-Content -Path $scriptPath -Value $script -Force -Encoding UTF8;',
+        "$taskName = \"MacMountUnmap$letter\";",
+        '$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument ("-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"" + $scriptPath + "`"");',
+        '$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited;',
+        '$task = New-ScheduledTask -Action $action -Principal $principal;',
+        'Register-ScheduledTask -TaskName $taskName -InputObject $task -Force | Out-Null;',
+        'Start-ScheduledTask -TaskName $taskName | Out-Null;',
+        'Start-Sleep -Milliseconds 800;',
+        'Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue | Out-Null;',
+        'Remove-Item -Path ("HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\DriveIcons\\" + $letter) -Recurse -Force -ErrorAction SilentlyContinue;'
+    ].join(' ');
+
+    exec(`powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "${ps}"`, {
+        timeout: 15000,
+        windowsHide: true
+    }, () => {});
+}
+
+function cleanupSingleDriveLetter(letter) {
+    const L = String(letter || '').trim().toUpperCase().replace(':', '');
+    if (!/^[A-Z]$/.test(L)) return;
+    try { removeUserSessionDriveMapping(L); } catch {}
+}
+
+let lastGhostCleanupAt = 0;
+function cleanupGhostDriveLetters(activeLetters = []) {
+    const now = Date.now();
+    if ((now - lastGhostCleanupAt) < 10000) return;
+    lastGhostCleanupAt = now;
+
+    const keep = new Set((Array.isArray(activeLetters) ? activeLetters : [])
+        .map((x) => String(x || '').trim().toUpperCase().replace(':', ''))
+        .filter((x) => /^[A-Z]$/.test(x)));
+
+    for (const letter of ['M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z']) {
+        if (keep.has(letter)) continue;
+        if (fs.existsSync(`${letter}:\\`)) continue;
+        try { removeUserSessionDriveMapping(letter); } catch {}
+    }
+}
+
 function resolveUserFacingSourcePath(sourcePath) {
     const p = String(sourcePath || '').trim();
     if (!p) return p;
@@ -255,20 +339,47 @@ function resolveUserFacingSourcePath(sourcePath) {
     return p;
 }
 
-async function tryMountRawWithFallbackLetters(driveId, preferred = '', sourcePath = '', totalBytesHint = 0, freeBytesHint = 0, physicalDrivePath = '') {
+function getPlanFromMountResult(result) {
+    return result?.plan ? { plan: result.plan } : null;
+}
+
+function isTerminalRawMountFailure(result) {
+    if (!result || result.ok) return false;
+    if (result.needsPassword === true) return true;
+
+    const fsType = String(result.plan?.FileSystemType || '').trim();
+    if (/^CoreStorage$/i.test(fsType)) return true;
+
+    const errorText = String(result.error || '');
+    if (/does not yet support filesystem/i.test(errorText)) return true;
+    // Native broker cannot decrypt; retrying other drive letters does not help — fall back to APFS bridge.
+    if (/cannot unlock encrypted APFS/i.test(errorText)) return true;
+
+    return false;
+}
+
+async function tryMountRawWithFallbackLetters(driveId, preferred = '', sourcePath = '', totalBytesHint = 0, freeBytesHint = 0, physicalDrivePath = '', password = '') {
     const pool = ['M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z'];
     const p = String(preferred || '').trim().toUpperCase().replace(':', '');
     const ordered = (/^[A-Z]$/.test(p) ? [p, ...pool.filter(x => x !== p)] : pool);
     const used = getUsedDriveLetters();
     let lastError = 'no free letters';
+    let lastAnalysis = null;
+    let lastNeedsPassword = false;
+    let lastSuggestion = '';
 
     for (const letter of ordered) {
         if (used.has(letter)) continue;
         try {
-            const brokerReady = await ensureBrokerReady();
+            const brokerReady = await ensureBrokerReady(8, true);
             if (!brokerReady) {
-                lastError = 'user-session broker unavailable';
-                continue;
+                return {
+                    ok: false,
+                    error: 'Native broker is unavailable or not elevated.',
+                    analysis: lastAnalysis,
+                    needsPassword: false,
+                    suggestion: 'Restart MacMount as Administrator so the elevated broker can mount raw disks.'
+                };
             }
 
             let result;
@@ -280,9 +391,23 @@ async function tryMountRawWithFallbackLetters(driveId, preferred = '', sourcePat
                         requestId: String(Date.now()),
                         driveId: String(driveId),
                         letter,
-                        physicalDrivePath: rawPath
+                        physicalDrivePath: rawPath,
+                        password: String(password || '')
                     }, 30000);
-                    if (result.ok) return { ok: true, letter, result, analysis: result.plan ? { plan: result.plan } : null };
+                    if (result.ok) return { ok: true, letter, result, analysis: getPlanFromMountResult(result) };
+                    lastAnalysis = getPlanFromMountResult(result) || lastAnalysis;
+                    lastNeedsPassword = Boolean(result.needsPassword);
+                    lastSuggestion = String(result.suggestion || lastSuggestion || '');
+                    lastError = result.error || lastError;
+                    if (isTerminalRawMountFailure(result)) {
+                        return {
+                            ok: false,
+                            error: lastError,
+                            analysis: lastAnalysis,
+                            needsPassword: lastNeedsPassword,
+                            suggestion: lastSuggestion
+                        };
+                    }
                     addLog(`Raw provider mount failed for drive ${driveId} at ${letter}: ${result.error || 'unknown error'}. Falling back to passthrough.`, 'warning');
                 } catch (e) {
                     addLog(`Raw provider mount exception for drive ${driveId} at ${letter}: ${e.message}. Falling back to passthrough.`, 'warning');
@@ -324,10 +449,23 @@ async function tryMountRawWithFallbackLetters(driveId, preferred = '', sourcePat
                         requestId: String(Date.now()),
                         driveId: String(driveId),
                         letter,
-                        physicalDrivePath: rawPath
+                        physicalDrivePath: rawPath,
+                        password: String(password || '')
                     }, 30000);
-                    if (result.ok) return { ok: true, letter, result, analysis: result.plan ? { plan: result.plan } : null };
+                    if (result.ok) return { ok: true, letter, result, analysis: getPlanFromMountResult(result) };
+                    lastAnalysis = getPlanFromMountResult(result) || lastAnalysis;
+                    lastNeedsPassword = Boolean(result.needsPassword);
+                    lastSuggestion = String(result.suggestion || lastSuggestion || '');
                     lastError = result.error || lastError;
+                    if (isTerminalRawMountFailure(result)) {
+                        return {
+                            ok: false,
+                            error: lastError,
+                            analysis: lastAnalysis,
+                            needsPassword: lastNeedsPassword,
+                            suggestion: lastSuggestion
+                        };
+                    }
                 } catch (e) {
                     lastError = e.message;
                 }
@@ -343,7 +481,13 @@ async function tryMountRawWithFallbackLetters(driveId, preferred = '', sourcePat
         }
     }
 
-    return { ok: false, error: lastError };
+    return {
+        ok: false,
+        error: lastError,
+        analysis: lastAnalysis,
+        needsPassword: lastNeedsPassword,
+        suggestion: lastSuggestion
+    };
 }
 
 // ─── Express setup ──────────────────────────────────────────────────────────
@@ -377,7 +521,7 @@ app.use((err, req, res, next) => {
 addLog("MacMount Backend started and logging initialized.");
 addLog(
     `Runtime mount mode: ${RUNTIME_MOUNT_MODE}` +
-    ` (nativeEnabled=${RUNTIME_NATIVE_MOUNT_ENABLED}, canaryPercent=${RUNTIME_CANARY_PERCENT}, allowWslFallback=${RUNTIME_ALLOW_WSL_FALLBACK})`
+    ` (nativeEnabled=${RUNTIME_NATIVE_MOUNT_ENABLED}, canaryPercent=${RUNTIME_CANARY_PERCENT}, allowBridgeFallback=${RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK})`
 );
 startNativeService();
 addLog("Native service started for raw-disk analysis endpoints.");
@@ -393,6 +537,19 @@ const PS_PATH = (() => {
         } catch { }
     }
     return path.join(__dirname, 'scripts', 'MacMount.ps1');
+})();
+
+const MAP_USER_SESSION_PS_PATH = (() => {
+    const candidates = [
+        process.resourcesPath ? path.join(process.resourcesPath, 'scripts', 'map-drive-user-session.ps1') : '',
+        path.join(__dirname, 'scripts', 'map-drive-user-session.ps1')
+    ].filter(Boolean);
+    for (const p of candidates) {
+        try {
+            if (fs.existsSync(p)) return p;
+        } catch { /* ignore */ }
+    }
+    return path.join(__dirname, 'scripts', 'map-drive-user-session.ps1');
 })();
 
 function runPsJson(action, extraArgs = '', timeout = 120000) {
@@ -413,11 +570,6 @@ function runPsJson(action, extraArgs = '', timeout = 120000) {
 }
 
 async function runRuntimeIntegrationChecks() {
-    if (!RUNTIME_NATIVE_MOUNT_ENABLED) {
-        addLog('Runtime integration checks skipped (mode=wsl_unc).');
-        return;
-    }
-
     let nativeServiceReachable = false;
     for (let attempt = 1; attempt <= 5; attempt += 1) {
         try {
@@ -456,14 +608,19 @@ const ctx = {
     addLog,
     logs,
     setupState,
+    isAdmin,
+    hasRawDiskAccess,
+    cleanupGhostDriveLetters,
+    cleanupSingleDriveLetter,
     nativeMountState,
     inFlightOps,
     RUNTIME_MOUNT_MODE,
     RUNTIME_NATIVE_MOUNT_ENABLED,
     RUNTIME_CANARY_PERCENT,
-    RUNTIME_ALLOW_WSL_FALLBACK,
+    RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK,
     PREFER_SUBST_LOCAL_FAST_PATH,
     PS_PATH,
+    MAP_USER_SESSION_PS_PATH,
     execPsMount,
     sendNativeWithBoot,
     getBrokerMountedMap,
