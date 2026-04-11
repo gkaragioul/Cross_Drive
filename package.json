@@ -34,7 +34,8 @@
     "signing:setup:test": "powershell -ExecutionPolicy Bypass -File scripts/setup-signing-env.ps1",
     "signing:setup:real": "powershell -ExecutionPolicy Bypass -File scripts/configure-real-signing.ps1",
     "release:win:signed": "npm run release:win:full && npm run release:audit",
-    "hfs:test": "dotnet run --project native/MacMount.HfsWriteTest/MacMount.HfsWriteTest.csproj"
+    "hfs:test": "dotnet run --project native/MacMount.HfsWriteTest/MacMount.HfsWriteTest.csproj",
+    "apfs:test": "dotnet run --project native/MacMount.ApfsWriteTest/MacMount.ApfsWriteTest.csproj"
   },
   "dependencies": {
     "cors": "^2.8.5",
