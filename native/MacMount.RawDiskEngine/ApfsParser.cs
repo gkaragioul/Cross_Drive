@@ -19,6 +19,9 @@ public sealed class ApfsParser : IFileSystemParser
 
     public async Task<MountPlan> BuildMountPlanAsync(IRawBlockDevice device, CancellationToken cancellationToken = default)
     {
+        // SAFETY: APFS write support is experimental. Disabled unless explicitly opted in.
+        var experimentalWritable = string.Equals(
+            Environment.GetEnvironmentVariable("MACMOUNT_EXPERIMENTAL_APFS_WRITES"), "1", StringComparison.Ordinal);
         try
         {
             var reader = new ApfsMetadataReader(device, 0, device.Length);
@@ -64,7 +67,7 @@ public sealed class ApfsParser : IFileSystemParser
                 device.DevicePath,
                 "APFS",
                 total,
-                Writable: false,
+                Writable: experimentalWritable, // SAFETY: disabled unless MACMOUNT_EXPERIMENTAL_APFS_WRITES=1
                 Notes: notes,
                 IsEncrypted: encryptedCount > 0,
                 NeedsPassword: needsPassword
@@ -79,7 +82,7 @@ public sealed class ApfsParser : IFileSystemParser
                     device.DevicePath,
                     "APFS",
                     device.Length,
-                    Writable: false,
+                    Writable: experimentalWritable,
                     Notes: "APFS detection uncertain (NXSB parse failed).",
                     IsEncrypted: false,
                     NeedsPassword: false
@@ -100,7 +103,7 @@ public sealed class ApfsParser : IFileSystemParser
                 device.DevicePath,
                 "APFS",
                 total,
-                Writable: false,
+                Writable: experimentalWritable, // SAFETY: disabled unless MACMOUNT_EXPERIMENTAL_APFS_WRITES=1
                 Notes: notes,
                 IsEncrypted: false,
                 NeedsPassword: false
