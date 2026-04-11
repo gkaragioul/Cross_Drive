@@ -26,7 +26,7 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
     private readonly Dictionary<string, uint> _cnidByPath = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _sync = new();
 
-    private ApfsRawFileSystemProvider(IRawBlockDevice device, ApfsContainerSummary summary, MountPlan plan, bool writable)
+    private ApfsRawFileSystemProvider(IRawBlockDevice device, ApfsContainerSummary summary, MountPlan plan, bool writable, ApfsSpacemanReader? spaceman = null)
     {
         _device = device;
         _blockSize = summary.BlockSize;
@@ -34,12 +34,14 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
         _writable = writable && device.CanWrite;
         FileSystemType = "APFS";
         TotalBytes = summary.EstimatedTotalBytes > 0 ? summary.EstimatedTotalBytes : Math.Max(1, plan.TotalBytes);
-        FreeBytes = 0;
+        FreeBytes = spaceman is not null ? (long)(spaceman.FreeBlockCount * _blockSize) : 0;
 
         // Initialize write support if writable
         if (_writable)
         {
-            _allocator = new ApfsBlockAllocator(device, _blockSize, summary.BlockCount, _partitionOffsetBytes);
+            _allocator = spaceman is not null
+                ? new ApfsBlockAllocator(spaceman)
+                : new ApfsBlockAllocator(device, _blockSize, summary.BlockCount, _partitionOffsetBytes);
             // Get the first volume OID for the writer (simplified - should use the mounted volume)
             var volumeOid = summary.VolumeObjectIds.FirstOrDefault();
             _writer = new ApfsWriter(device, _allocator, _blockSize, _partitionOffsetBytes, volumeOid);
@@ -134,7 +136,27 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
         {
             var reader = new ApfsMetadataReader(device, plan.PartitionOffsetBytes, plan.PartitionLengthBytes);
             var summary = await reader.ReadSummaryAsync(cancellationToken).ConfigureAwait(false);
-            return new ApfsRawFileSystemProvider(device, summary, plan, plan.Writable);
+
+            ApfsSpacemanReader? spaceman = null;
+            if (plan.Writable && summary.SpacemanPhysicalBlock.HasValue)
+            {
+                try
+                {
+                    spaceman = await ApfsSpacemanReader.LoadAsync(
+                        device,
+                        summary.SpacemanPhysicalBlock.Value,
+                        summary.BlockSize,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    // Non-fatal: fall back to fake allocator; writes will still work
+                    // but free-space reporting will be inaccurate.
+                    System.Diagnostics.Debug.WriteLine($"[ApfsRawFileSystemProvider] Spaceman load failed: {ex.Message}");
+                }
+            }
+
+            return new ApfsRawFileSystemProvider(device, summary, plan, plan.Writable, spaceman);
         }
         catch
         {
