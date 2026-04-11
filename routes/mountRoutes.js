@@ -273,6 +273,9 @@ module.exports = function mountMountRoutes(app, ctx) {
             } catch (execError) {
                 if (execError.stderr) addLog(`PS Unmount Info: ${execError.stderr}`, 'info');
                 addLog(`PS Unmount Error: ${execError.message}`, 'error');
+                if (/^\d+$/.test(driveId)) {
+                    try { syncAssignedLetter(driveId, null); } catch {}
+                }
                 return res.status(500).json({ error: execError.message });
             }
 
