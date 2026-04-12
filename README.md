@@ -1,6 +1,6 @@
 # MacMount — Mac Drive Manager for Windows
 
-MacMount is a Windows desktop application that lets you **mount, browse, and read** APFS and HFS+ formatted Mac drives directly on Windows — exposed as real local drive letters (e.g. `M:\`, `N:\`), not slow network shares.
+MacMount is a Windows desktop application that lets you **mount, browse, and read** APFS and HFS+ formatted Mac drives directly on Windows — exposed as real local drive letters (e.g. `M:\`, `N:\`), not network shares.
 
 Built on Electron + React + .NET, with a high-performance native caching engine and WinFsp for OS-level filesystem integration.
 
@@ -33,10 +33,10 @@ Built on Electron + React + .NET, with a high-performance native caching engine 
 | High-performance native caching engine | Stable |
 | Multi-tier block + directory cache | Stable |
 | Read-ahead prefetching | Stable |
-| WSL UNC fallback path | Stable |
+| Native bridge fallback path | In progress |
 | Native .NET raw disk service | Stable |
 | Electron UI + real-time dashboard | Stable |
-| Code-signed installer | Pending (real cert required) |
+| Unsigned dev installer | Stable |
 
 ### Performance highlights
 
@@ -64,7 +64,7 @@ Built on Electron + React + .NET, with a high-performance native caching engine 
     └────────┬──────────┘    └─────────────────────┘
              │
     ┌────────▼──────────┐
-    │  WinFsp  /  WSL   │  OS-level FUSE + UNC fallback
+    │  WinFsp / Bridge  │  OS-level filesystem host + native fallback
     └───────────────────┘
 ```
 
@@ -72,9 +72,8 @@ Built on Electron + React + .NET, with a high-performance native caching engine 
 
 | Mode | Description |
 |---|---|
-| `hybrid_canary` | Default. Routes a percentage of mounts through native engine, remainder via WSL UNC |
-| `wsl_unc` | All mounts via WSL (`\\wsl$\...`), maximum compatibility |
-| `experimental_raw` | All mounts via native raw disk engine, maximum performance |
+| `native_first` | Default. Try the raw-disk provider first, then fall back to the native bridge path when available |
+| `native_only` | Raw-disk provider only. Disables the native bridge fallback path |
 
 ---
 
@@ -87,7 +86,6 @@ Built on Electron + React + .NET, with a high-performance native caching engine 
 | **[WinFsp](https://github.com/winfsp/winfsp/releases)** | v1.10 or later — provides FUSE kernel driver |
 | **Node.js 20+** | For development only |
 | **[.NET 8 SDK](https://dotnet.microsoft.com/download)** | For building native services |
-| **WSL 2** | Required for `wsl_unc` and `hybrid_canary` mount modes |
 
 ---
 
@@ -120,8 +118,9 @@ The Vite dev server starts on `http://localhost:5173` and Electron loads it auto
 | `npm run commercial:gate` | Validate release documentation presence |
 | `npm run native:publish` | Publish all .NET binaries to `native/bin/` |
 | `npm run release:prep` | `native:publish` + `build` |
-| `npm run release:win:full` | Full NSIS installer + portable `.exe` |
-| `npm run release:win:unsigned` | CI/staging build without production signing |
+| `npm run release:win:full` | Build NSIS installer + portable `.exe` without signing |
+| `npm run release:win:unsigned` | Unsigned Windows build for local/dev distribution |
+| `npm run release:win:dev` | Alias for `release:win:unsigned` |
 | `npm run release:gate` | End-to-end gate: test + audit + signing |
 | `npm run release:candidate` | Full production release pipeline |
 | `npm run signing:setup:real` | Configure real Authenticode certificate |
@@ -131,7 +130,7 @@ The Vite dev server starts on `http://localhost:5173` and Electron loads it auto
 
 ## Build & Release
 
-### Development / staging build (no real cert)
+### Local / unsigned build
 
 ```bash
 npm run release:win:unsigned
@@ -139,7 +138,7 @@ npm run release:win:unsigned
 
 Outputs unsigned installer and portable artifacts to `dist/`.
 
-### Production build (requires real Authenticode certificate)
+### Optional signed production build
 
 ```bash
 # 1. Configure certificate
@@ -170,15 +169,11 @@ Place the offline WinFsp installer at `prereqs/winfsp.msi` before building the f
 Configure via environment variable before launching:
 
 ```powershell
-# Maximum compatibility (WSL UNC only)
-$env:MACMOUNT_MOUNT_MODE = "wsl_unc"
+# Default: raw provider first, then native bridge fallback if present
+$env:MACMOUNT_MOUNT_MODE = "native_first"
 
-# Default: split traffic — 10% native, 90% WSL
-$env:MACMOUNT_MOUNT_MODE = "hybrid_canary"
-$env:MACMOUNT_CANARY_PERCENT = "10"
-
-# Maximum performance (native raw disk engine only)
-$env:MACMOUNT_MOUNT_MODE = "experimental_raw"
+# Raw provider only
+$env:MACMOUNT_MOUNT_MODE = "native_only"
 ```
 
 ---
@@ -226,12 +221,12 @@ Mac_Opener/
 
 ## Commercial Readiness
 
-Current status: **NOT ready for public GA release.**
+Current status: **development-only / unsigned distribution ready, not public GA ready.**
 
 Blocking items before general availability:
 
 1. Configure a real Authenticode code-signing certificate (`CSC_LINK` / `WIN_CSC_LINK`).
-2. Produce and verify a `Valid` signed installer artifact (`npm run release:gate`).
+2. Produce and verify a `Valid` signed installer artifact (`npm run release:gate`) if you move to public distribution.
 3. Final smoke test on a clean Windows machine with a standard user workflow.
 
 See [`docs/COMMERCIAL_READINESS.md`](docs/COMMERCIAL_READINESS.md) and [`docs/GO_NO_GO.md`](docs/GO_NO_GO.md) for the full release gate matrix and approval checklist.
@@ -252,7 +247,7 @@ See [`docs/COMMERCIAL_READINESS.md`](docs/COMMERCIAL_READINESS.md) and [`docs/GO
 - **APFS write support is experimental.** Always keep backups before writing to an APFS volume.
 - **Administrator rights are mandatory.** Raw `\\.\PHYSICALDRIVE#` access is not available to standard users.
 - **WinFsp must be installed** before the native mount engine will work. The full installer bundles WinFsp automatically; dev setups require manual installation.
-- **WSL 2 required** for `wsl_unc` and `hybrid_canary` modes. WSL 1 is not supported.
+- **The raw APFS provider is still incomplete.** Some APFS volumes may expose only partial metadata or preview trees until parser work is finished.
 
 ---
 

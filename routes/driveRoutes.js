@@ -2,13 +2,46 @@ const { exec } = require('child_process');
 const fs = require('fs');
 
 module.exports = function mountDriveRoutes(app, ctx) {
-    const { addLog, nativeMountState, getBrokerMountedMap, PREFER_SUBST_LOCAL_FAST_PATH, PS_PATH } = ctx;
+    const { addLog, nativeMountState, getBrokerMountedMap, PREFER_SUBST_LOCAL_FAST_PATH, PS_PATH, sendNativeWithBoot, cleanupGhostDriveLetters } = ctx;
 
     // Cache to avoid spawning PowerShell on every 5-second poll
     let driveCache = { data: null, time: 0 };
+    const analysisCache = new Map();
     const CACHE_TTL_MS = 3000;
+    const ANALYSIS_CACHE_TTL_MS = 15000;
     // Expose invalidator so mount/unmount routes can force a fresh scan
-    ctx.invalidateDriveCache = () => { driveCache = { data: null, time: 0 }; };
+    ctx.invalidateDriveCache = () => {
+        driveCache = { data: null, time: 0 };
+        analysisCache.clear();
+    };
+
+    async function getNativeAnalysisForDrive(driveId) {
+        const cacheKey = String(driveId);
+        const now = Date.now();
+        const cached = analysisCache.get(cacheKey);
+        if (cached && (now - cached.time) < ANALYSIS_CACHE_TTL_MS) {
+            return cached.value;
+        }
+
+        if (typeof sendNativeWithBoot !== 'function') {
+            return null;
+        }
+
+        try {
+            const result = await sendNativeWithBoot({
+                action: 'analyze_raw',
+                requestId: String(Date.now()),
+                physicalDrivePath: `\\\\.\\PHYSICALDRIVE${cacheKey}`
+            }, 12000, 2);
+
+            const value = result?.ok && result?.plan ? result.plan : null;
+            analysisCache.set(cacheKey, { time: now, value });
+            return value;
+        } catch {
+            analysisCache.set(cacheKey, { time: now, value: null });
+            return null;
+        }
+    }
 
     app.get('/api/drives', (req, res) => {
         const now = Date.now();
@@ -17,7 +50,7 @@ module.exports = function mountDriveRoutes(app, ctx) {
         }
 
         addLog("Scanning for Mac-formatted drives...");
-        exec(`powershell -ExecutionPolicy Bypass -File "${PS_PATH}" -Action List`, { windowsHide: true }, async (error, stdout, stderr) => {
+        exec(`powershell -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${PS_PATH}" -Action List`, { windowsHide: true }, async (error, stdout, stderr) => {
             if (stderr) addLog(`PS Scan Output: ${stderr}`, 'warning');
             if (error) {
                 addLog(`PS Scan Failure: ${error.message}`, 'error');
@@ -27,9 +60,51 @@ module.exports = function mountDriveRoutes(app, ctx) {
                 const data = JSON.parse(stdout);
                 const macDrives = Array.isArray(data) ? data.filter(d => d.isMac) : [];
                 const brokerMounted = await getBrokerMountedMap();
+                const activeLetters = new Set();
+                for (const mounted of brokerMounted.values()) {
+                    const letter = String(mounted?.letter || '').trim().toUpperCase().replace(':', '');
+                    if (/^[A-Z]$/.test(letter)) activeLetters.add(letter);
+                }
+                const nativePlans = new Map(
+                    await Promise.all(
+                        macDrives.map(async (drive) => [String(drive.id), await getNativeAnalysisForDrive(drive.id)])
+                    )
+                );
 
                 for (const drive of macDrives) {
                     const id = String(drive.id);
+                    const plan = nativePlans.get(id) || null;
+                    if (plan) {
+                        const fsType = String(plan.FileSystemType || '').trim();
+                        if (fsType) {
+                            drive.format = fsType;
+                        }
+                        drive.isEncrypted = plan.IsEncrypted === true;
+                        drive.needsPassword = plan.NeedsPassword === true;
+                        drive.analysisNotes = String(plan.Notes || '');
+                        drive.supported =
+                            /^APFS$/i.test(fsType) ||
+                            /^HFS\+$/i.test(fsType) ||
+                            /^HFSX$/i.test(fsType);
+
+                        if (/^CoreStorage$/i.test(fsType)) {
+                            drive.supported = false;
+                            drive.mountHint = 'CoreStorage/FileVault unlock is not implemented yet.';
+                        } else if (drive.needsPassword) {
+                            drive.mountHint = 'Encrypted volume. Password required to unlock.';
+                        } else if (drive.supported) {
+                            drive.mountHint = '';
+                        } else if (fsType) {
+                            drive.mountHint = `Detected ${fsType}. Native support is not complete yet.`;
+                        }
+                    } else {
+                        drive.isEncrypted = false;
+                        drive.needsPassword = false;
+                        drive.supported = true;
+                        drive.mountHint = '';
+                        drive.analysisNotes = '';
+                    }
+
                     const broker = brokerMounted.get(id);
 
                     if (broker) {
@@ -38,6 +113,7 @@ module.exports = function mountDriveRoutes(app, ctx) {
                         drive.mountPath = broker.path;
                         drive.driveLetter = broker.letter;
                         drive.mountType = 'native_raw';
+                        activeLetters.add(String(broker.letter || '').trim().toUpperCase().replace(':', ''));
                         continue;
                     }
 
@@ -48,6 +124,7 @@ module.exports = function mountDriveRoutes(app, ctx) {
                         drive.mountPath = fs.existsSync(`${scriptLetter}:\\root`) ? `${scriptLetter}:\\root\\` : `${scriptLetter}:\\`;
                         drive.driveLetter = scriptLetter;
                         drive.mountType = 'subst_local';
+                        activeLetters.add(scriptLetter);
                         nativeMountState.delete(id);
                         continue;
                     }
@@ -60,6 +137,7 @@ module.exports = function mountDriveRoutes(app, ctx) {
                         drive.mountPath = fs.existsSync(`${rememberedLetter}:\\root`) ? `${rememberedLetter}:\\root\\` : `${rememberedLetter}:\\`;
                         drive.driveLetter = rememberedLetter;
                         drive.mountType = 'native_raw';
+                        activeLetters.add(rememberedLetter);
                         continue;
                     }
 
@@ -71,6 +149,7 @@ module.exports = function mountDriveRoutes(app, ctx) {
                     drive.driveLetter = null;
                     drive.mountType = 'not_mounted';
                 }
+                try { cleanupGhostDriveLetters?.([...activeLetters]); } catch {}
                 addLog(`Scan complete. Found ${Array.isArray(data) ? data.length : 0} disks. Showing ${macDrives.length} Mac drives.`);
                 driveCache = { data: macDrives, time: Date.now() };
                 res.json(macDrives);

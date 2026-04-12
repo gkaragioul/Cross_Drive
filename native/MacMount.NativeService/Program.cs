@@ -3,6 +3,8 @@ using System.Buffers;
 using System.IO;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 using Fsp;
@@ -54,6 +56,20 @@ internal sealed class NativeService
 {
     private readonly IMountEngine _engine;
     private readonly IRawDiskEngine _rawDiskEngine;
+
+    private static bool IsElevated()
+    {
+        try
+        {
+            using var identity = WindowsIdentity.GetCurrent();
+            var principal = new WindowsPrincipal(identity);
+            return principal.IsInRole(WindowsBuiltInRole.Administrator);
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     public NativeService(IMountEngine engine, IRawDiskEngine rawDiskEngine)
     {
@@ -143,7 +159,7 @@ internal sealed class NativeService
             switch (action)
             {
                 case "ping":
-                    response = new { ok = true, requestId, service = "MacMount.NativeService", version = "0.3.0-alpha", pid = Environment.ProcessId };
+                    response = new { ok = true, requestId, service = "MacMount.NativeService", version = "0.3.0-alpha", pid = Environment.ProcessId, elevated = IsElevated() };
                     break;
                 case "status":
                     response = BuildStatusResponse(requestId);
@@ -192,6 +208,7 @@ internal sealed class NativeService
         {
             ok = true,
             requestId,
+            elevated = IsElevated(),
             mounted,
             supportsLocalFixed = _engine.SupportsLocalFixed,
             engine = _engine.EngineName
@@ -261,6 +278,7 @@ internal sealed class NativeService
         var letter = root.TryGetProperty("letter", out var letEl) ? letEl.GetString() : null;
         var physicalDrivePath = root.TryGetProperty("physicalDrivePath", out var pathEl) ? pathEl.GetString() : null;
         var fileSystemHint = root.TryGetProperty("fileSystemHint", out var hintEl) ? hintEl.GetString() : null;
+        var password = root.TryGetProperty("password", out var passwordEl) ? passwordEl.GetString() : null;
 
         if (string.IsNullOrWhiteSpace(driveId) || string.IsNullOrWhiteSpace(letter) || string.IsNullOrWhiteSpace(physicalDrivePath))
         {
@@ -272,6 +290,30 @@ internal sealed class NativeService
             var plan = await _rawDiskEngine.AnalyzeAsync(
                 new MountRequest(physicalDrivePath, fileSystemHint ?? string.Empty, ReadOnly: true)
             ).ConfigureAwait(false);
+
+            if (plan.NeedsPassword && string.IsNullOrWhiteSpace(password))
+            {
+                return new
+                {
+                    ok = false,
+                    requestId,
+                    error = "Encrypted APFS volume requires a password.",
+                    needsPassword = true,
+                    plan = CreatePlanPayload(plan)
+                };
+            }
+
+            if (plan.IsEncrypted && !string.IsNullOrWhiteSpace(password))
+            {
+                return new
+                {
+                    ok = false,
+                    requestId,
+                    error = "Native raw provider cannot unlock encrypted APFS volumes yet.",
+                    suggestion = "Retry with bridge fallback enabled so the bundled APFS bridge can use the supplied password.",
+                    plan = CreatePlanPayload(plan)
+                };
+            }
 
             var provider = await _rawDiskEngine.CreateFileSystemProviderAsync(plan).ConfigureAwait(false);
             var result = _engine.MountRawProvider(driveId, letter, plan, provider);
@@ -289,14 +331,7 @@ internal sealed class NativeService
                 driveLetter = result.Letter,
                 engine = _engine.EngineName,
                 supportsLocalFixed = _engine.SupportsLocalFixed,
-                plan = new
-                {
-                    plan.PhysicalDrivePath,
-                    plan.FileSystemType,
-                    plan.TotalBytes,
-                    plan.Writable,
-                    plan.Notes
-                }
+                plan = CreatePlanPayload(plan)
             };
         }
         catch (Exception ex)
@@ -324,14 +359,7 @@ internal sealed class NativeService
             {
                 ok = true,
                 requestId,
-                plan = new
-                {
-                    plan.PhysicalDrivePath,
-                    plan.FileSystemType,
-                    plan.TotalBytes,
-                    plan.Writable,
-                    plan.Notes
-                }
+                plan = CreatePlanPayload(plan)
             };
         }
         catch (Exception ex)
@@ -339,6 +367,19 @@ internal sealed class NativeService
             return new { ok = false, requestId, error = ex.Message };
         }
     }
+
+    private static object CreatePlanPayload(MountPlan plan) => new
+    {
+        plan.PhysicalDrivePath,
+        plan.FileSystemType,
+        plan.TotalBytes,
+        plan.Writable,
+        plan.Notes,
+        plan.IsEncrypted,
+        plan.NeedsPassword,
+        plan.PartitionOffsetBytes,
+        plan.PartitionLengthBytes
+    };
 }
 
 internal interface IMountEngine

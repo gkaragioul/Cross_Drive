@@ -6,29 +6,53 @@ module.exports = function mountSystemRoutes(app, ctx) {
     const {
         addLog, logs, setupState, getNativeStatus,
         RUNTIME_MOUNT_MODE, RUNTIME_NATIVE_MOUNT_ENABLED,
-        RUNTIME_CANARY_PERCENT, RUNTIME_ALLOW_WSL_FALLBACK
+        RUNTIME_CANARY_PERCENT, RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK,
+        isAdmin, hasRawDiskAccess
     } = ctx;
 
+    function runPsScript(action, callback) {
+        const scriptPath = path.join(__dirname, '..', 'scripts', 'MacMount.ps1');
+        const cmd = `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}" -Action "${action}"`;
+        exec(cmd, { windowsHide: true, timeout: 60000 }, (err, stdout, stderr) => {
+            if (stderr) {
+                addLog(`Preflight stderr: ${stderr}`, 'warn');
+            }
+            try {
+                const result = JSON.parse(stdout);
+                callback(null, result);
+            } catch (e) {
+                callback(err || e, null);
+            }
+        });
+    }
+
     app.get('/api/status', (req, res) => {
-        res.json(setupState);
+        res.json({
+            ...setupState,
+            elevated: !!isAdmin?.(),
+            rawDiskAccess: !!hasRawDiskAccess?.()
+        });
     });
 
     app.get('/api/preflight/check', async (req, res) => {
-        return res.json({
-            success: true,
-            ready: true,
-            mode: RUNTIME_MOUNT_MODE,
-            note: 'Preflight checks are disabled in zero-setup runtime.'
+        runPsScript('PreflightCheck', (err, result) => {
+            if (err) {
+                addLog(`Preflight check error: ${err.message}`, 'error');
+                return res.status(500).json({ success: false, error: err.message });
+            }
+            res.json(result);
         });
     });
 
     app.post('/api/preflight/fix', async (req, res) => {
-        addLog('Preflight fix request ignored (zero-setup runtime mode).');
-        return res.json({
-            success: true,
-            ready: true,
-            mode: RUNTIME_MOUNT_MODE,
-            note: 'No preflight fix required.'
+        addLog('Preflight fix requested');
+        runPsScript('PreflightFix', (err, result) => {
+            if (err) {
+                addLog(`Preflight fix error: ${err.message}`, 'error');
+                return res.status(500).json({ success: false, error: err.message });
+            }
+            addLog(`Preflight fix result: ${result.message}`, result.success ? 'success' : 'error');
+            res.json(result);
         });
     });
 
@@ -114,7 +138,7 @@ module.exports = function mountSystemRoutes(app, ctx) {
                     runtimeNativeMountEnabled: RUNTIME_NATIVE_MOUNT_ENABLED,
                     runtimeMountMode: RUNTIME_MOUNT_MODE,
                     runtimeCanaryPercent: RUNTIME_CANARY_PERCENT,
-                    runtimeAllowWslFallback: RUNTIME_ALLOW_WSL_FALLBACK
+                    runtimeAllowBridgeFallback: RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK
                 },
                 setupState,
                 nativeStatus: await getNativeStatus(),

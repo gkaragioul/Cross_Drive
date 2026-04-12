@@ -1,7 +1,7 @@
 module.exports = function mountNativeRoutes(app, ctx) {
     const {
         addLog, getNativeStatus, sendNativeWithBoot, ensureBrokerReady,
-        RUNTIME_NATIVE_MOUNT_ENABLED, RUNTIME_MOUNT_MODE, RUNTIME_CANARY_PERCENT, RUNTIME_ALLOW_WSL_FALLBACK
+        RUNTIME_NATIVE_MOUNT_ENABLED, RUNTIME_MOUNT_MODE, RUNTIME_CANARY_PERCENT, RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK
     } = ctx;
 
     app.get('/api/native/status', async (req, res) => {
@@ -11,7 +11,7 @@ module.exports = function mountNativeRoutes(app, ctx) {
             runtimeNativeEnabled: RUNTIME_NATIVE_MOUNT_ENABLED,
             mode: RUNTIME_MOUNT_MODE,
             canaryPercent: RUNTIME_CANARY_PERCENT,
-            allowWslFallback: RUNTIME_ALLOW_WSL_FALLBACK
+            allowBridgeFallback: RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK
         });
     });
 
@@ -20,7 +20,7 @@ module.exports = function mountNativeRoutes(app, ctx) {
             return res.status(501).json({
                 ok: false,
                 error: 'Native runtime mount disabled in app flow.',
-                suggestion: 'Use /api/mount (WSL UNC mode) while raw-disk native engine is under development.'
+                suggestion: 'Use /api/mount while the native runtime is being repaired.'
             });
         }
         return res.status(400).json({
@@ -43,7 +43,7 @@ module.exports = function mountNativeRoutes(app, ctx) {
     });
 
     app.post('/api/native/mount-raw', async (req, res) => {
-        const { driveId, letter, physicalDrivePath, physicalDriveId, fileSystemHint } = req.body || {};
+        const { driveId, letter, physicalDrivePath, physicalDriveId, fileSystemHint, password } = req.body || {};
         const resolvedPath = String(physicalDrivePath || '').trim()
             || (physicalDriveId !== undefined && physicalDriveId !== null
                 ? `\\\\.\\PHYSICALDRIVE${String(physicalDriveId).trim()}`
@@ -63,9 +63,13 @@ module.exports = function mountNativeRoutes(app, ctx) {
                 driveId: String(driveId),
                 letter: String(letter),
                 physicalDrivePath: resolvedPath,
-                fileSystemHint: String(fileSystemHint || '')
+                fileSystemHint: String(fileSystemHint || ''),
+                password: String(password || '')
             }, 20000, 10);
-            if (!result.ok) return res.status(500).json(result);
+            if (!result.ok) {
+                const status = result.needsPassword ? 409 : 500;
+                return res.status(status).json(result);
+            }
             return res.json(result);
         } catch (e) {
             return res.status(500).json({ ok: false, error: e.message });
@@ -124,19 +128,11 @@ module.exports = function mountNativeRoutes(app, ctx) {
             mode: RUNTIME_MOUNT_MODE,
             nativeEnabled: RUNTIME_NATIVE_MOUNT_ENABLED,
             canaryPercent: RUNTIME_CANARY_PERCENT,
-            allowWslFallback: RUNTIME_ALLOW_WSL_FALLBACK
+            allowBridgeFallback: RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK
         });
     });
 
     app.post('/api/runtime/check', async (req, res) => {
-        if (!RUNTIME_NATIVE_MOUNT_ENABLED) {
-            return res.json({
-                ok: true,
-                mode: RUNTIME_MOUNT_MODE,
-                checks: { nativeService: false, brokerReady: false },
-                note: 'Runtime checks skipped for wsl_unc mode.'
-            });
-        }
         let nativeService = false;
         let brokerReady = false;
         try {

@@ -1,0 +1,55 @@
+wing: gk_mac_opener
+rooms:
+- name: deps_fresh
+  description: Files from deps_fresh/
+  keywords:
+  - deps_fresh
+  - deps_fresh
+- name: documentation
+  description: Files from docs/
+  keywords:
+  - documentation
+  - docs
+- name: native
+  description: Files from native/
+  keywords:
+  - native
+  - native
+- name: native_bridge
+  description: Files from native-bridge/
+  keywords:
+  - native_bridge
+  - native-bridge
+- name: native_bridge_bin
+  description: Files from native-bridge-bin/
+  keywords:
+  - native_bridge_bin
+  - native-bridge-bin
+- name: prereqs
+  description: Files from prereqs/
+  keywords:
+  - prereqs
+  - prereqs
+- name: prompt_master_main
+  description: Files from prompt-master-main/
+  keywords:
+  - prompt_master_main
+  - prompt-master-main
+- name: backend
+  description: Files from routes/
+  keywords:
+  - backend
+  - routes
+- name: scripts
+  description: Files from scripts/
+  keywords:
+  - scripts
+  - scripts
+- name: src
+  description: Files from src/
+  keywords:
+  - src
+  - src
+- name: general
+  description: Files that don't fit other rooms
+  keywords: []

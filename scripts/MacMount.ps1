@@ -1,4 +1,4 @@
-# MacMount.ps1 - Core Logic for Mounting Mac Drives on Windows via WSL2
+# MacMount.ps1 - Core logic for mounting Mac drives on Windows via native bridge helpers
 
 param (
     [Parameter(Mandatory = $false)]
@@ -10,6 +10,31 @@ param (
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $REG_BASE = "HKCU:\Software\MacMount\DriveMap"
+
+function Resolve-ApfsFuseExe {
+    # Optional override for CI, portable installs, or custom layouts.
+    $envPath = $env:MACMOUNT_APFS_FUSE_EXE
+    if ([string]::IsNullOrWhiteSpace($envPath)) {
+        $envPath = [Environment]::GetEnvironmentVariable("MACMOUNT_APFS_FUSE_EXE", "User")
+    }
+    if ([string]::IsNullOrWhiteSpace($envPath)) {
+        $envPath = [Environment]::GetEnvironmentVariable("MACMOUNT_APFS_FUSE_EXE", "Machine")
+    }
+    if (-not [string]::IsNullOrWhiteSpace($envPath) -and (Test-Path -LiteralPath $envPath)) {
+        return (Resolve-Path -LiteralPath $envPath).Path
+    }
+    $candidates = @(
+        (Join-Path $PSScriptRoot "..\native-bridge\apfs-fuse\build\apfs-fuse.exe"),
+        (Join-Path $PSScriptRoot "..\native-bridge-bin\apfs-fuse.exe")
+    )
+    foreach ($c in $candidates) {
+        try {
+            if (Test-Path -LiteralPath $c) { return (Resolve-Path -LiteralPath $c).Path }
+        }
+        catch { }
+    }
+    return $null
+}
 
 function Get-AvailableDriveLetter {
     $used = ([System.IO.DriveInfo]::GetDrives() | ForEach-Object { $_.Name.Substring(0, 1).ToUpper() })
@@ -49,8 +74,10 @@ Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;publ
 "@
         Set-Content -Path $scriptPath -Value $scriptContent -Force -Encoding UTF8
         $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`""
-        $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive
-        $task = New-ScheduledTask -Action $action -Principal $principal
+        $userId = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
+        $task = New-ScheduledTask -Action $action -Principal $principal -Settings $settings
         Register-ScheduledTask -TaskName "MacMountMap$letter" -InputObject $task -Force | Out-Null
         Start-ScheduledTask -TaskName "MacMountMap$letter" | Out-Null
         Start-Sleep -Milliseconds 500
@@ -98,6 +125,37 @@ if (`$qLen -gt 0) {
     } catch {}
 }
 
+function Remove-CurrentSessionDriveMapping($letter) {
+    if (-not $letter) { return }
+    try {
+        if (-not ([System.Management.Automation.PSTypeName]'MacMountDosDevice').Type) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public class MacMountDosDevice {
+    [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Auto)]
+    public static extern bool DefineDosDevice(uint dwFlags, string lpDeviceName, string lpTargetPath);
+    [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+    public static extern uint QueryDosDevice(string lpDeviceName, StringBuilder lpTargetPath, uint ucchMax);
+}
+'@ -ErrorAction SilentlyContinue
+        }
+
+        $sb = New-Object System.Text.StringBuilder 512
+        $qLen = [MacMountDosDevice]::QueryDosDevice("${letter}:", $sb, 512)
+        if ($qLen -gt 0) {
+            # flags: DDD_REMOVE_DEFINITION(2) | DDD_RAW_TARGET_PATH(1) | DDD_EXACT_MATCH_ON_REMOVE(4) = 7
+            [MacMountDosDevice]::DefineDosDevice(7, "${letter}:", $sb.ToString()) | Out-Null
+        }
+        else {
+            # Fallback when the target cannot be queried but the drive bit still lingers.
+            [MacMountDosDevice]::DefineDosDevice(2, "${letter}:", $null) | Out-Null
+        }
+    }
+    catch {}
+}
+
 function Invoke-InteractiveHiddenCommand($taskName, $command) {
     try {
         $escaped = $command.Replace('"', '`"')
@@ -141,14 +199,30 @@ function Cleanup-OrphanedMacMountMappings {
         }
     }
     catch {}
+
+    try {
+        if (Test-Path $REG_BASE) {
+            $props = (Get-ItemProperty -Path $REG_BASE).PSObject.Properties |
+                Where-Object { $_.Name -like 'Drive*' -and $_.Value }
+
+            foreach ($prop in $props) {
+                $driveId = $prop.Name -replace '^Drive', ''
+                $letter = "$($prop.Value)".Trim().ToUpper().Replace(':', '')
+                if ($letter -notin @('M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z')) { continue }
+                if (Test-Path "${letter}:") { continue }
+
+                Remove-CurrentSessionDriveMapping $letter
+                Remove-UserSessionDriveMapping $letter
+                Remove-DriveLetterMapping $letter
+                Clear-AssignedLetter $driveId
+            }
+        }
+    }
+    catch {}
 }
 
 function Get-Drives {
     $disks = Get-PhysicalDisk | Select-Object DeviceID, FriendlyName, Size, MediaType
-
-    $wslHealthy = $false
-    wsl -u root -e whoami 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) { $wslHealthy = $true }
 
     $result = @()
     foreach ($disk in $disks) {
@@ -189,6 +263,8 @@ function Get-Drives {
                 $mountPath = "${driveLetter}:\"
             }
             else {
+                Remove-CurrentSessionDriveMapping $driveLetter
+                Remove-UserSessionDriveMapping $driveLetter
                 Remove-DriveLetterMapping $driveLetter
                 $linkPath = "C:\ProgramData\MacMount\Drive$id"
                 if (Test-Path $linkPath) { cmd.exe /c "rmdir `"$linkPath`"" 2>$null | Out-Null }
@@ -204,7 +280,7 @@ function Get-Drives {
             type        = $disk.MediaType
             mounted     = $isMounted
             mountPath   = $mountPath
-            uncPath     = "\\wsl.localhost\Ubuntu\mnt\mac_drive_$id"
+            uncPath     = $null
             driveLetter = $driveLetter
             format      = $format
             isMac       = $isMac
@@ -214,14 +290,11 @@ function Get-Drives {
 }
 
 function Initialize-WSL {
-    if (-not (Get-Command wsl -ErrorAction SilentlyContinue)) {
-        return @{ error = "WSL2 is not installed." }
-    }
-    wsl -e whoami 2>$null | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        return @{ error = "Ubuntu not ready."; suggestion = "wsl --install Ubuntu" }
-    }
-    return @{ success = $true }
+    return @{
+        success = $true
+        ready = $true
+        note = "WSL setup flow has been retired. MacMount now uses native Windows mount paths only."
+    } | ConvertTo-Json
 }
 
 function Mount-Drive($id, $Password = "") {
@@ -286,11 +359,14 @@ function Mount-Drive($id, $Password = "") {
         } | ConvertTo-Json
     }
 
-    # APFS path via apfs-fuse
-    $apfsExe = Join-Path $PSScriptRoot "..\native-bridge\apfs-fuse\build\apfs-fuse.exe"
+    # APFS path via apfs-fuse (dev tree, packaged resources\native-bridge-bin, or MACMOUNT_APFS_FUSE_EXE)
+    $apfsExe = Resolve-ApfsFuseExe
 
-    if (-not (Test-Path $apfsExe)) {
-        return @{ error = "Native apfs-fuse driver not compiled." } | ConvertTo-Json
+    if (-not $apfsExe) {
+        return @{
+            error = "Native apfs-fuse driver not found."
+            suggestion = "Build apfs-fuse into native-bridge\apfs-fuse\build\, place apfs-fuse.exe in native-bridge-bin\, or set MACMOUNT_APFS_FUSE_EXE to the full path."
+        } | ConvertTo-Json
     }
 
     function Get-LogTail([string]$path, [int]$maxLines = 40) {
@@ -538,26 +614,7 @@ public class MacMountDosDevice {
 function Remove-Drive($id) {
     $letter = Get-AssignedLetter $id
     if ($letter) {
-        # Remove the DOS device mapping created by DefineDosDevice
-        if (-not ([System.Management.Automation.PSTypeName]'MacMountDosDevice').Type) {
-            Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
-public class MacMountDosDevice {
-    [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Auto)]
-    public static extern bool DefineDosDevice(uint dwFlags, string lpDeviceName, string lpTargetPath);
-    [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
-    public static extern uint QueryDosDevice(string lpDeviceName, StringBuilder lpTargetPath, uint ucchMax);
-}
-'@ -ErrorAction SilentlyContinue
-        }
-        $sb = New-Object System.Text.StringBuilder 512
-        $qLen = [MacMountDosDevice]::QueryDosDevice("${letter}:", $sb, 512)
-        if ($qLen -gt 0) {
-            # DDD_REMOVE_DEFINITION=2, DDD_RAW_TARGET_PATH=1, DDD_EXACT_MATCH_ON_REMOVE=4
-            [MacMountDosDevice]::DefineDosDevice(7, "${letter}:", $sb.ToString()) | Out-Null
-        }
+        Remove-CurrentSessionDriveMapping $letter
 
         # Remove the mapping from the non-elevated user session too
         Remove-UserSessionDriveMapping $letter
@@ -582,79 +639,23 @@ public class MacMountDosDevice {
 }
 
 function Install-Distro {
-    $cmd = "wsl --install Ubuntu; pause"
-    Start-Process powershell -ArgumentList "-NoExit", "-Command", "`"$cmd`"" -Verb RunAs
-    return @{ success = $true } | ConvertTo-Json
+    return @{
+        success = $false
+        error = "WSL bootstrap has been removed from MacMount."
+        suggestion = "Install WinFsp and ship native bridge binaries instead."
+    } | ConvertTo-Json
 }
 
 function Repair-Drivers {
-    $pkgs = 'hfsprogs fuse libfuse-dev build-essential cmake git pkg-config libicu-dev bzip2 libbz2-dev zlib1g-dev'
-    wsl -u root -e sh -c "DEBIAN_FRONTEND=noninteractive apt-get update -qq 2>&1 && apt-get install -y $pkgs 2>&1" | Out-Null
-
-    $hfsfuseCheck = wsl -u root -e sh -c 'command -v hfsfuse 2>/dev/null' 2>&1
-    $hfsfuseInstalled = ($LASTEXITCODE -eq 0 -and $hfsfuseCheck)
-
-    if (-not $hfsfuseInstalled) {
-        wsl -u root -e sh -c 'cd /tmp && rm -rf hfsfuse && git clone --depth 1 https://github.com/0x09/hfsfuse.git 2>&1 && cd hfsfuse && make -j$(nproc) 2>&1 && make install 2>&1' | Out-Null
-        $hfsfuseCheck2 = wsl -u root -e sh -c 'command -v hfsfuse 2>/dev/null' 2>&1
-        $hfsfuseInstalled = ($LASTEXITCODE -eq 0 -and $hfsfuseCheck2)
-    }
-
-    $apfsCheck = wsl -u root -e sh -c 'command -v apfs-fuse 2>/dev/null' 2>&1
-    $apfsInstalled = ($LASTEXITCODE -eq 0 -and $apfsCheck)
-
-    if (-not $apfsInstalled) {
-        wsl -u root -e sh -c 'cd /tmp && rm -rf apfs-fuse && git clone --depth 1 https://github.com/sgan81/apfs-fuse.git 2>&1 && cd apfs-fuse && git submodule update --init 2>&1 && mkdir -p build && cd build && cmake .. 2>&1 && make -j$(nproc) 2>&1 && make install 2>&1' | Out-Null
-        $apfsCheck2 = wsl -u root -e sh -c 'command -v apfs-fuse 2>/dev/null' 2>&1
-        $apfsInstalled = ($LASTEXITCODE -eq 0 -and $apfsCheck2)
-    }
-
-    wsl -u root -e sh -c 'dpkg -l hfsprogs 2>/dev/null | grep -q "^ii"' 2>&1 | Out-Null
-    $hfsOk = ($LASTEXITCODE -eq 0)
-
-    # Make FUSE mounts accessible across user boundaries (required for Windows 9P access to WSL mounts)
-    wsl -u root -e sh -c "sed -i 's/^#user_allow_other/user_allow_other/g' /etc/fuse.conf" 2>$null | Out-Null
-
-    if ($hfsfuseInstalled -or $hfsOk -or $apfsInstalled) {
-        return @{ success = $true; message = "Drivers ready. hfsfuse=$hfsfuseInstalled, apfs-fuse=$apfsInstalled" } | ConvertTo-Json
-    }
-    return @{ success = $false; error = "Driver build failed. Check WSL internet access." } | ConvertTo-Json
+    return @{
+        success = $false
+        error = "WSL-based driver repair has been removed from MacMount."
+        suggestion = "Bundle WinFsp and the native bridge binaries with the app installer."
+    } | ConvertTo-Json
 }
 
 function Get-PreflightCheck {
-    $items = @()
-    $wslCommand = Get-Command wsl -ErrorAction SilentlyContinue
-    $wslInstalled = $null -ne $wslCommand
-    $ubuntuInstalled = $false
-    $wslRootReady = $false
-    $hfsfuseInstalled = $false
-    $apfsInstalled = $false
     $winFspInstalled = $false
-
-    if ($wslInstalled) {
-        try {
-            $distros = @(
-                wsl -l -q 2>$null |
-                ForEach-Object { $_.Trim() } |
-                Where-Object { $_ -ne '' }
-            )
-            $ubuntuInstalled = ($distros -contains "Ubuntu")
-        }
-        catch {}
-    }
-
-    if ($wslInstalled -and $ubuntuInstalled) {
-        wsl -d Ubuntu -u root -e sh -c 'echo ok' 2>$null | Out-Null
-        $wslRootReady = ($LASTEXITCODE -eq 0)
-    }
-
-    if ($wslRootReady) {
-        wsl -d Ubuntu -u root -e sh -c 'command -v hfsfuse >/dev/null 2>&1' 2>$null | Out-Null
-        $hfsfuseInstalled = ($LASTEXITCODE -eq 0)
-        wsl -d Ubuntu -u root -e sh -c 'command -v apfs-fuse >/dev/null 2>&1' 2>$null | Out-Null
-        $apfsInstalled = ($LASTEXITCODE -eq 0)
-    }
-
     try {
         $svc = Get-Service -Name "WinFsp.Launcher" -ErrorAction SilentlyContinue
         $winFspInstalled = $null -ne $svc
@@ -664,29 +665,17 @@ function Get-PreflightCheck {
         $winFspInstalled = Test-Path "C:\Program Files (x86)\WinFsp\bin\launchctl-x64.exe"
     }
 
-    $items += @{
-        id = "wsl"; title = "WSL Platform"; ok = $wslInstalled
-        detail = $(if ($wslInstalled) { "Installed" } else { "WSL not detected" })
-    }
-    $items += @{
-        id = "ubuntu"; title = "Ubuntu Distro"; ok = $ubuntuInstalled
-        detail = $(if ($ubuntuInstalled) { "Installed" } else { "Ubuntu distro missing" })
-    }
-    $items += @{
-        id = "wslRoot"; title = "Ubuntu Root Access"; ok = $wslRootReady
-        detail = $(if ($wslRootReady) { "Ready" } else { "Cannot run root commands in Ubuntu yet" })
-    }
+    $nativeBridgePath = Resolve-ApfsFuseExe
+    $nativeBridgeReady = -not [string]::IsNullOrWhiteSpace($nativeBridgePath)
+
+    $items = @()
     $items += @{
         id = "winfsp"; title = "WinFsp Driver"; ok = $winFspInstalled
         detail = $(if ($winFspInstalled) { "Installed" } else { "WinFsp runtime missing" })
     }
     $items += @{
-        id = "hfsfuse"; title = "HFS Driver"; ok = $hfsfuseInstalled
-        detail = $(if ($hfsfuseInstalled) { "Installed" } else { "hfsfuse missing" })
-    }
-    $items += @{
-        id = "apfsfuse"; title = "APFS Driver"; ok = $apfsInstalled
-        detail = $(if ($apfsInstalled) { "Installed" } else { "apfs-fuse missing" })
+        id = "nativeBridge"; title = "Native APFS Bridge (optional fallback)"; ok = $true
+        detail = $(if ($nativeBridgeReady) { $nativeBridgePath } else { "Not installed (optional). Native broker handles APFS directly." })
     }
 
     $ready = ($items | Where-Object { -not $_.ok }).Count -eq 0
@@ -694,106 +683,86 @@ function Get-PreflightCheck {
         success = $true
         ready   = $ready
         items   = $items
+        note    = "WSL-based checks have been removed. MacMount now validates only native Windows components."
     } | ConvertTo-Json -Depth 5
 }
 
+function Install-WinFsp {
+    # Try to install WinFsp from the bundled MSI, then fall back to winget.
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).
+        IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $isAdmin) {
+        return @{ success = $false; error = "Administrator rights required to install WinFsp." } | ConvertTo-Json
+    }
+
+    # 1. Try bundled MSI first
+    $msiCandidates = @(
+        (Join-Path $PSScriptRoot "..\prereqs\winfsp.msi"),
+        (Join-Path $PSScriptRoot "..\prereqs\winfsp-2.1.25156.msi"),
+        "C:\ProgramData\MacMount\prereqs\winfsp.msi"
+    )
+    foreach ($msi in $msiCandidates) {
+        if (Test-Path $msi) {
+            $msiAbs = (Resolve-Path $msi).Path
+            [Console]::Error.WriteLine("[MacMount] Installing Winfsp from: $msiAbs")
+            $proc = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$msiAbs`" /quiet /norestart" -Wait -NoNewWindow -PassThru
+            if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010) {
+                Start-Sleep -Seconds 3
+                return @{ success = $true; method = "msi"; path = $msiAbs } | ConvertTo-Json
+            } else {
+                [Console]::Error.WriteLine("[MacMount] WinFsp MSI install failed with exit code $($proc.ExitCode)")
+            }
+        }
+    }
+
+    # 2. Fall back to winget
+    [Console]::Error.WriteLine("[MacMount] Falling back to winget for WinFsp installation")
+    try {
+        $wingetProc = Start-Process -FilePath "winget" -ArgumentList "install --id WinFsp.WinFsp --silent --accept-package-agreements --accept-source-agreements" -Wait -NoNewWindow -PassThru
+        if ($wingetProc.ExitCode -eq 0 -or $wingetProc.ExitCode -eq 3010) {
+            Start-Sleep -Seconds 3
+            return @{ success = $true; method = "winget" } | ConvertTo-Json
+        }
+    } catch {
+        [Console]::Error.WriteLine("[MacMount] winget install failed: $_")
+    }
+
+    return @{ success = $false; error = "WinFsp installation failed. Please install manually from https://github.com/winfsp/winfsp/releases" } | ConvertTo-Json
+}
+
 function Invoke-PreflightFix {
+    # First, try to install WinFsp if missing
+    $preflight = Get-PreflightCheck | ConvertFrom-Json
+    $winFspItem = $preflight.items | Where-Object { $_.id -eq "winfsp" }
     $actions = @()
-    $rebootRequired = $false
 
-    $checkRaw = Get-PreflightCheck
-    $check = $checkRaw | ConvertFrom-Json
-
-    $hasWsl = ($check.items | Where-Object { $_.id -eq "wsl" -and $_.ok }) -ne $null
-    $hasUbuntu = ($check.items | Where-Object { $_.id -eq "ubuntu" -and $_.ok }) -ne $null
-    $hasRoot = ($check.items | Where-Object { $_.id -eq "wslRoot" -and $_.ok }) -ne $null
-    $hasWinFsp = ($check.items | Where-Object { $_.id -eq "winfsp" -and $_.ok }) -ne $null
-    $hasHfs = ($check.items | Where-Object { $_.id -eq "hfsfuse" -and $_.ok }) -ne $null
-    $hasApfs = ($check.items | Where-Object { $_.id -eq "apfsfuse" -and $_.ok }) -ne $null
-
-    if (-not $hasWsl -or -not $hasUbuntu) {
-        $installOut = wsl --install -d Ubuntu --no-launch 2>&1
-        $installText = ($installOut | Out-String).Trim()
-        $actions += @{
-            step   = "wslInstall"
-            ok     = ($LASTEXITCODE -eq 0)
-            detail = $(if ($LASTEXITCODE -eq 0) { "WSL/Ubuntu install command completed." } else { $installText })
-        }
-        if ($LASTEXITCODE -eq 0) { $rebootRequired = $true }
-    }
-
-    if (-not $hasWinFsp) {
-        $localMsi = @(
-            "C:\Program Files\MacMount\resources\prereqs\winfsp.msi",
-            "C:\Program Files\MacMount\resources\prereqs\WinFsp.msi",
-            (Join-Path $PSScriptRoot "..\prereqs\winfsp.msi"),
-            (Join-Path $PSScriptRoot "..\prereqs\WinFsp.msi")
-        ) | Where-Object { Test-Path $_ } | Select-Object -First 1
-
-        if ($localMsi) {
-            $msiPath = (Resolve-Path $localMsi).Path
-            $msiOut = Start-Process msiexec.exe -ArgumentList "/i `"$msiPath`" /qn /norestart" -PassThru -Wait
-            $actions += @{
-                step   = "winfspInstall"
-                ok     = ($msiOut.ExitCode -eq 0)
-                detail = $(if ($msiOut.ExitCode -eq 0) { "WinFsp installed from bundled installer." } else { "Bundled WinFsp installer failed with exit code $($msiOut.ExitCode)." })
-            }
-        }
-        else {
-            $winget = Get-Command winget -ErrorAction SilentlyContinue
-            if ($winget) {
-                $wgOut = winget install --id WinFsp.WinFsp -e --silent --accept-package-agreements --accept-source-agreements 2>&1
-                $wgText = ($wgOut | Out-String).Trim()
-                $actions += @{
-                    step   = "winfspInstall"
-                    ok     = ($LASTEXITCODE -eq 0)
-                    detail = $(if ($LASTEXITCODE -eq 0) { "WinFsp installed through winget." } else { $wgText })
-                }
-            }
-            else {
-                $actions += @{
-                    step   = "winfspInstall"
-                    ok     = $false
-                    detail = "WinFsp installer not bundled and winget is unavailable. Install WinFsp manually: https://winfsp.dev/rel/"
-                }
-            }
+    if (-not $winFspItem.ok) {
+        [Console]::Error.WriteLine("[MacMount] WinFsp missing, attempting installation...")
+        $installResult = Install-WinFsp | ConvertFrom-Json
+        if ($installResult.success) {
+            $actions += "Installed WinFsp via $($installResult.method)"
+        } else {
+            return @{
+                success        = $false
+                ready          = $false
+                rebootRequired = $false
+                actions        = $actions
+                items          = $preflight.items
+                message        = "WinFsp installation failed: $($installResult.error)"
+            } | ConvertTo-Json -Depth 6
         }
     }
 
-    $postRaw = Get-PreflightCheck
-    $post = $postRaw | ConvertFrom-Json
-    $postHasRoot = ($post.items | Where-Object { $_.id -eq "wslRoot" -and $_.ok }) -ne $null
-    $postHasHfs = ($post.items | Where-Object { $_.id -eq "hfsfuse" -and $_.ok }) -ne $null
-    $postHasApfs = ($post.items | Where-Object { $_.id -eq "apfsfuse" -and $_.ok }) -ne $null
-
-    if ($postHasRoot -and (-not $postHasHfs -or -not $postHasApfs)) {
-        $repairRaw = Repair-Drivers
-        try {
-            $repair = $repairRaw | ConvertFrom-Json
-            $actions += @{
-                step   = "driverRepair"
-                ok     = [bool]$repair.success
-                detail = $(if ($repair.success) { $repair.message } else { $repair.error })
-            }
-        }
-        catch {
-            $actions += @{
-                step   = "driverRepair"
-                ok     = $false
-                detail = "Could not parse driver repair response."
-            }
-        }
-    }
-
+    # Re-check after installation
     $finalRaw = Get-PreflightCheck
     $final = $finalRaw | ConvertFrom-Json
     return @{
         success        = [bool]$final.ready
         ready          = [bool]$final.ready
-        rebootRequired = $rebootRequired
+        rebootRequired = $false
         actions        = $actions
         items          = $final.items
-        message        = $(if ($final.ready) { "Environment is ready." } else { "Some prerequisites still need attention." })
+        message        = $(if ($final.ready) { "Native runtime is ready." } else { "Native runtime is missing required Windows components." })
     } | ConvertTo-Json -Depth 6
 }
 

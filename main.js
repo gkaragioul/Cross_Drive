@@ -1,6 +1,65 @@
-const { app, BrowserWindow, dialog } = require('electron');
+const { app, BrowserWindow, dialog, Menu, shell } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const { execSync, execFile } = require('child_process');
+
+function resolveBundledLegalPath(fileName) {
+    if (app.isPackaged && process.resourcesPath) {
+        const res = path.join(process.resourcesPath, fileName);
+        if (fs.existsSync(res)) return res;
+    }
+    const dev = path.join(__dirname, 'build', fileName);
+    if (fs.existsSync(dev)) return dev;
+    if (process.resourcesPath) {
+        return path.join(process.resourcesPath, fileName);
+    }
+    return dev;
+}
+
+function openLegalFile(fileName, title) {
+    const p = resolveBundledLegalPath(fileName);
+    shell.openPath(p).then((err) => {
+        if (err) {
+            dialog.showErrorBox(
+                title,
+                `Could not open:\n${p}\n\n${err}`
+            );
+        }
+    });
+}
+
+function installAppMenu() {
+    const template = [];
+    if (process.platform === 'darwin') {
+        template.push({
+            label: app.name,
+            submenu: [
+                { role: 'about' },
+                { type: 'separator' },
+                { role: 'quit' }
+            ]
+        });
+    }
+    template.push({
+        label: 'Help',
+        submenu: [
+            {
+                label: 'Third-Party Notices',
+                click: () => openLegalFile('THIRD_PARTY_NOTICES.txt', 'Third-Party Notices')
+            },
+            {
+                label: 'GPL Source Offer',
+                click: () => openLegalFile('GPL_SOURCE_OFFER.txt', 'GPL Source Offer')
+            },
+            { type: 'separator' },
+            {
+                label: 'MacMount License (MIT)',
+                click: () => openLegalFile('LICENSE.txt', 'License')
+            }
+        ]
+    });
+    Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
 
 let mainWindow;
 let backendModule = null;
@@ -30,17 +89,25 @@ function relaunchAsAdmin() {
         ? `Start-Process -Verb RunAs -FilePath '${exePath.replace(/'/g, "''")}' -ArgumentList @(${escapedArgv})`
         : `Start-Process -Verb RunAs -FilePath '${exePath.replace(/'/g, "''")}'`;
 
-    execFile('powershell.exe', ['-NonInteractive', '-Command', psCommand], { env: process.env }, (error) => {
-        if (error) {
-            console.error('Failed to relaunch as admin:', error);
-            dialog.showErrorBox(
-                'Administrator Rights Required',
-                'MacMount needs Administrator rights to mount raw physical drives.\n\n' +
-                'Please right-click MacMount.exe and select "Run as administrator".'
-            );
+    // Silently elevate — no info dialog needed (UAC prompt appears if enabled, or elevation is automatic)
+    console.log('[MacMount] Requesting elevation via PowerShell RunAs...');
+
+    execFile(
+        'powershell.exe',
+        ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', psCommand],
+        { env: process.env, windowsHide: true },
+        (error) => {
+            if (error) {
+                console.error('Failed to relaunch as admin:', error);
+                dialog.showErrorBox(
+                    'Administrator Rights Required',
+                    'MacMount could not restart as Administrator automatically.\n\n' +
+                    'Right-click MacMount (or your terminal) and choose "Run as administrator", then start the app again.'
+                );
+            }
+            app.quit();
         }
-        app.quit();
-    });
+    );
 }
 
 function createWindow() {
@@ -96,6 +163,7 @@ app.on('ready', () => {
     }
     
     console.log('Starting MacMount as administrator...');
+    installAppMenu();
     startBackend();
     createWindow();
 });

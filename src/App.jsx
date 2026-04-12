@@ -43,6 +43,8 @@ const App = () => {
   const [passwordValue, setPasswordValue] = useState('');
   const [runtimeConfig, setRuntimeConfig] = useState(null);
   const [bundleStatus, setBundleStatus] = useState(null); // null | 'generating' | { path } | { error }
+  const [preflight, setPreflight] = useState(null); // { ready, items }
+  const [fixingPreflight, setFixingPreflight] = useState(false);
 
   useEffect(() => {
     fetchDrives();
@@ -50,14 +52,17 @@ const App = () => {
     const statusInterval = setInterval(fetchStatus, 3000);
     const nativeInterval = setInterval(fetchNativeStatus, 3000);
     const driveInterval = setInterval(fetchDrives, 5000);
+    const preflightInterval = setInterval(fetchPreflight, 5000);
     fetchStatus();
     fetchNativeStatus();
     fetchRuntimeConfig();
+    fetchPreflight();
     return () => {
       clearInterval(logInterval);
       clearInterval(statusInterval);
       clearInterval(nativeInterval);
       clearInterval(driveInterval);
+      clearInterval(preflightInterval);
     };
   }, []);
 
@@ -75,6 +80,27 @@ const App = () => {
       const data = await res.json();
       setRuntimeConfig(data);
     } catch (e) { /* silent */ }
+  };
+
+  const fetchPreflight = async () => {
+    try {
+      const res = await fetch('http://localhost:3001/api/preflight/check');
+      const data = await res.json();
+      setPreflight(data);
+    } catch (e) { /* silent */ }
+  };
+
+  const fixPreflight = async () => {
+    setFixingPreflight(true);
+    try {
+      const res = await fetch('http://localhost:3001/api/preflight/fix', { method: 'POST' });
+      const data = await res.json();
+      setPreflight(data);
+      if (data.success) {
+        fetchDrives();
+      }
+    } catch (e) { /* silent */ }
+    finally { setFixingPreflight(false); }
   };
 
   const fetchNativeStatus = async () => {
@@ -255,6 +281,44 @@ const App = () => {
 
           <SetupBanner />
 
+          {preflight && !preflight.ready && (
+            <div style={{
+              backgroundColor: 'rgba(229,83,0,0.08)',
+              border: '1px solid rgba(229,83,0,0.3)',
+              color: 'var(--primary)',
+              padding: '16px 18px',
+              marginBottom: '20px',
+              fontSize: '12px',
+              fontFamily: 'var(--font-mono)',
+              letterSpacing: '0.5px'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+                <strong>Prerequisites Missing</strong>
+                <button
+                  className="btn btn-primary"
+                  style={{ width: 'auto', padding: '6px 14px', fontSize: '11px' }}
+                  onClick={fixPreflight}
+                  disabled={fixingPreflight}
+                >
+                  {fixingPreflight ? 'Installing...' : 'Auto-Install'}
+                </button>
+              </div>
+              {preflight.items && preflight.items.map(item => (
+                <div key={item.id} style={{
+                  display: 'flex', alignItems: 'center', gap: '8px',
+                  marginBottom: '6px',
+                  color: item.ok ? 'var(--success)' : 'var(--danger)'
+                }}>
+                  <span>{item.ok ? '✓' : '✗'}</span>
+                  <span>{item.title}: {item.detail}</span>
+                </div>
+              ))}
+              {preflight.note && (
+                <div style={{ marginTop: '8px', opacity: 0.7, fontSize: '11px' }}>{preflight.note}</div>
+              )}
+            </div>
+          )}
+
           {errorMessage && (
             <div style={{ backgroundColor: 'rgba(192,57,43,0.08)', border: '1px solid var(--danger)', color: 'var(--danger)', padding: '14px 18px', marginBottom: '24px', fontFamily: 'var(--font-mono)', fontSize: '12px', letterSpacing: '0.5px' }}>
               <strong style={{ letterSpacing: '1.5px', textTransform: 'uppercase' }}>SYS_ERROR:</strong> {errorMessage}
@@ -269,11 +333,47 @@ const App = () => {
             <div className="drive-grid">
               {drives.map((drive, index) => (
                 <div key={drive.id} className="drive-card fade-in" style={{ animationDelay: `${index * 0.1}s`, opacity: drive.isMac ? 1 : 0.6 }}>
+                  {(() => {
+                    const mountBlocked = !drive.mounted && drive.supported === false;
+                    const mountTitle = !drive.mounted && !environmentReady
+                      ? 'Finish setup first.'
+                      : mountBlocked
+                        ? (drive.mountHint || 'This drive type is not supported yet.')
+                        : '';
+                    const mountLabel = isMounting === drive.id
+                      ? (drive.mounted ? 'Unmounting...' : 'Mounting...')
+                      : !environmentReady && !drive.mounted
+                        ? '⏳ Preparing...'
+                        : mountBlocked
+                          ? 'Unsupported'
+                          : drive.mounted
+                            ? 'Unmount'
+                            : drive.needsPassword
+                              ? 'Unlock Drive'
+                              : 'Mount Drive';
+
+                    return (
+                      <>
                   <div className="drive-info">
                     <div className="drive-icon"><DriveIcon /></div>
                     <div className="drive-details">
                       <h3>{drive.name}</h3>
                       <span>{drive.size} • {drive.type} • <b style={{ color: drive.isMac ? 'var(--success)' : 'inherit' }}>{drive.format}</b></span>
+                      {(drive.needsPassword || drive.mountHint) && (
+                        <div style={{
+                          marginTop: '8px',
+                          fontSize: '11px',
+                          letterSpacing: '0.5px',
+                          color: drive.supported === false
+                            ? 'var(--danger)'
+                            : drive.needsPassword
+                              ? 'var(--warning)'
+                              : 'var(--text-dim)',
+                          fontFamily: 'var(--font-mono)'
+                        }}>
+                          {drive.needsPassword ? 'ENCRYPTED' : 'NOTICE'}: {drive.mountHint}
+                        </div>
+                      )}
                     </div>
                   </div>
                   <div className="mount-status">
@@ -286,14 +386,10 @@ const App = () => {
                     <button
                       className={`btn ${drive.mounted ? 'btn-outline' : 'btn-primary'}`}
                       onClick={() => drive.mounted ? unmountDrive(drive.id) : mountDrive(drive.id)}
-                      disabled={isMounting !== null || (!drive.mounted && !environmentReady)}
-                      title={!environmentReady && !drive.mounted ? 'Finish setup first.' : ''}
+                      disabled={isMounting !== null || (!drive.mounted && (!environmentReady || mountBlocked))}
+                      title={mountTitle}
                     >
-                      {isMounting === drive.id
-                        ? (drive.mounted ? 'Unmounting...' : 'Mounting...')
-                        : !environmentReady && !drive.mounted
-                          ? '⏳ Preparing...'
-                          : drive.mounted ? 'Unmount' : 'Mount Drive'}
+                      {mountLabel}
                     </button>
                     <button
                       className="btn btn-outline"
@@ -303,6 +399,9 @@ const App = () => {
                       Open Explorer
                     </button>
                   </div>
+                      </>
+                    );
+                  })()}
                 </div>
               ))}
             </div>
@@ -363,6 +462,41 @@ const App = () => {
         <section className="fade-in">
           <h1>Settings</h1>
 
+          <h3 style={{ marginTop: '24px', marginBottom: '12px', opacity: 0.5, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '2.5px', fontFamily: 'var(--font-heading)', color: 'var(--primary)' }}>Runtime Prerequisites</h3>
+          <div style={{ background: '#0e0e0e', border: '1px solid var(--border)', padding: '16px' }}>
+            {preflight ? (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                  <span style={{ color: preflight.ready ? 'var(--success)' : 'var(--danger)', fontSize: '13px', fontWeight: 'bold' }}>
+                    {preflight.ready ? 'All prerequisites installed' : 'Prerequisites missing'}
+                  </span>
+                  {!preflight.ready && (
+                    <button
+                      className="btn btn-primary"
+                      style={{ width: 'auto', padding: '6px 14px', fontSize: '11px' }}
+                      onClick={fixPreflight}
+                      disabled={fixingPreflight}
+                    >
+                      {fixingPreflight ? 'Installing...' : 'Auto-Install'}
+                    </button>
+                  )}
+                </div>
+                {preflight.items && preflight.items.map(item => (
+                  <div key={item.id} style={{
+                    display: 'flex', justifyContent: 'space-between', padding: '8px 0',
+                    borderBottom: '1px solid var(--border)',
+                    color: item.ok ? 'var(--success)' : 'var(--danger)'
+                  }}>
+                    <span style={{ fontSize: '12px', letterSpacing: '1px', textTransform: 'uppercase' }}>{item.title}</span>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>{item.detail}</span>
+                  </div>
+                ))}
+              </>
+            ) : (
+              <div style={{ color: 'var(--text-dim)', fontSize: '13px' }}>Checking...</div>
+            )}
+          </div>
+
           <h3 style={{ marginTop: '24px', marginBottom: '12px', opacity: 0.5, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '2.5px', fontFamily: 'var(--font-heading)', color: 'var(--primary)' }}>Native Engine</h3>
           <div style={{ background: '#0e0e0e', border: '1px solid var(--border)', padding: '16px' }}>
             {row('Status', nativeStatus.available ? 'Connected' : 'Not connected')}
@@ -376,8 +510,8 @@ const App = () => {
               <>
                 {row('Mount Mode', runtimeConfig.mode)}
                 {row('Native Mount Enabled', runtimeConfig.nativeEnabled ? 'Yes' : 'No')}
-                {row('Canary Rollout %', `${runtimeConfig.canaryPercent}%`)}
-                {row('WSL Fallback Allowed', runtimeConfig.allowWslFallback ? 'Yes' : 'No')}
+                {row('Raw Engine Rollout %', `${runtimeConfig.canaryPercent}%`)}
+                {row('Native Bridge Fallback', runtimeConfig.allowBridgeFallback ? 'Allowed' : 'Disabled')}
               </>
             ) : (
               <div style={{ color: 'var(--text-dim)', fontSize: '13px' }}>Loading...</div>

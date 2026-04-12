@@ -9,7 +9,10 @@ public sealed record MountPlan(
     bool Writable,
     string Notes,
     long PartitionOffsetBytes = 0,
-    long PartitionLengthBytes = 0
+    long PartitionLengthBytes = 0,
+    bool IsEncrypted = false,
+    bool NeedsPassword = false,
+    byte[]? EncryptionKey = null
 );
 
 public sealed record FileEntry(

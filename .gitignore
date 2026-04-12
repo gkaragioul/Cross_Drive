@@ -16,6 +16,10 @@ native/*/obj/
 native-bridge/bin/
 native-bridge/obj/
 
+# Optional shipped APFS bridge (build locally or in CI; do not commit binaries)
+native-bridge-bin/apfs-fuse.exe
+native-bridge-bin/APFS_FUSE_SOURCE_REV.txt
+
 # Logs
 *.log
 logs/
@@ -49,6 +53,8 @@ signing-env.ps1
 asar-check/
 asar-temp/
 asar-test/
+deps_fresh/
+prompt-master-main/
 
 # Embedded third-party repos (not tracked as submodules)
 native-bridge/apfs-fuse/

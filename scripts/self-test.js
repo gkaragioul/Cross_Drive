@@ -17,8 +17,11 @@ const preloadPath = path.join(root, 'preload.js');
 const auditPath = path.join(root, 'scripts', 'release-audit.ps1');
 const secAuditPath = path.join(root, 'scripts', 'security-audit.js');
 const gatePath = path.join(root, 'scripts', 'commercial-gate.js');
+const noticesPath = path.join(root, 'build', 'THIRD_PARTY_NOTICES.txt');
+const gplOfferPath = path.join(root, 'build', 'GPL_SOURCE_OFFER.txt');
+const licensePath = path.join(root, 'LICENSE');
 
-for (const p of [pkgPath, mainPath, preloadPath, auditPath, secAuditPath, gatePath]) {
+for (const p of [pkgPath, mainPath, preloadPath, auditPath, secAuditPath, gatePath, noticesPath, gplOfferPath, licensePath]) {
   if (!fs.existsSync(p)) fail(`missing file: ${p}`);
   else pass(`exists: ${path.basename(p)}`);
 }
@@ -59,6 +62,12 @@ if (!mainJs.includes('preload: path.join(__dirname, \'preload.js\')')) {
   fail('main.js missing preload path');
 } else {
   pass('preload path configured');
+}
+
+if (!mainJs.includes('installAppMenu') || !mainJs.includes('THIRD_PARTY_NOTICES.txt')) {
+  fail('main.js missing Help / third-party legal menu wiring');
+} else {
+  pass('third-party legal menu wired');
 }
 
 if (process.exitCode && process.exitCode !== 0) {

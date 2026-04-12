@@ -1,0 +1,43 @@
+OFFER FOR SOURCE CODE — GPL-2.0-COVERED COMPONENTS
+====================================================
+MacMount may distribute object code (executable) forms of software licensed
+under the GNU General Public License, version 2 (GPL-2.0), such as a Windows
+build of APFS-FUSE commonly known as apfs-fuse.exe.
+
+Under GPL-2.0 section 3, recipients of the binary are entitled to receive the
+complete corresponding source code for the GPL-covered portions.
+
+HOW TO OBTAIN SOURCE
+--------------------
+1) Upstream reference source (unmodified baseline)
+
+   The APFS-FUSE project is widely published at:
+     https://github.com/sgan81/apfs-fuse
+
+   Your MacMount release notes or build documentation should record the exact
+   upstream commit, tag, or archive used to produce the shipped apfs-fuse.exe.
+
+2) Corresponding source for the exact binary MacMount distributed
+
+   That includes the upstream source at the recorded revision plus any patches,
+   build scripts, or configuration MacMount applied to produce the binary you
+   received.
+
+   If this source is not already published in a public repository maintained by
+   the MacMount publisher, you may request it using the support or legal contact
+   published on the official MacMount distribution site. The publisher may
+   fulfill the request by providing a download link or other durable means of
+   obtaining the source.
+
+   Any fee charged will not exceed the reasonable cost of distribution.
+
+DURATION
+--------
+This offer is valid for at least three years from the date of distribution of
+the corresponding binary, and for as long as the publisher offers support or
+spare parts for the product that includes that binary, whichever is longer.
+
+FULL LICENSE TEXT
+-----------------
+The GNU GPL version 2 full text:
+  https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt

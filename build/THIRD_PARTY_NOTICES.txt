@@ -1,0 +1,76 @@
+MacMount — Third-Party Notices
+==============================
+Last updated: 2026-04-03
+
+This document lists major third-party components that may ship with or be used
+by MacMount. It is provided for attribution and license awareness. It is not
+legal advice.
+
+----------------------------------------------------------------------
+MacMount application (source in this product’s repository)
+----------------------------------------------------------------------
+License: MIT License
+Copyright: MacMount contributors.
+
+The MIT license text is included in the LICENSE file at the root of the
+MacMount source repository (when obtained as source). A copy may also ship
+beside this file as LICENSE.txt depending on the build.
+
+----------------------------------------------------------------------
+Optional bundled binary — APFS-FUSE (apfs-fuse.exe)
+----------------------------------------------------------------------
+Some MacMount builds include a Windows executable derived from APFS-FUSE, used
+to mount APFS volumes via WinFsp.
+
+Reference upstream project (verify the exact fork you build from):
+  https://github.com/sgan81/apfs-fuse
+
+That upstream project is typically licensed under the GNU General Public
+License, version 2 only (GPL-2.0-only). If you received apfs-fuse.exe with
+MacMount, the GPL applies to that executable and you have rights and
+obligations under that license.
+
+A written offer for corresponding source code, as required for distribution of
+GPL-covered binaries in object form, is in the file:
+  GPL_SOURCE_OFFER.txt
+(shipped next to this file when present in the install layout).
+
+----------------------------------------------------------------------
+Prerequisite / bundled installer — WinFsp
+----------------------------------------------------------------------
+MacMount may install or require WinFsp (for example via prereqs/winfsp.msi).
+WinFsp is a separate product; its license applies only to WinFsp.
+
+License information:
+  https://github.com/winfsp/winfsp/blob/master/License.txt
+
+Review the license text in the WinFsp installer or distribution you use.
+
+----------------------------------------------------------------------
+Desktop runtime — Electron and Chromium
+----------------------------------------------------------------------
+MacMount’s user interface is built with Electron, which bundles Chromium.
+
+Electron:
+  https://github.com/electron/electron/blob/main/LICENSE
+
+Chromium / third-party credits (high level):
+  https://www.chromium.org/
+
+----------------------------------------------------------------------
+Native runtime — .NET
+----------------------------------------------------------------------
+MacMount ships native components (MacMount.NativeService, MacMount.NativeBroker)
+that may be published self-contained with the .NET runtime. Those Microsoft
+components are licensed under Microsoft’s terms for the .NET version bundled
+in the build you installed. See Microsoft’s published “.NET” and “Microsoft
+.NET Library” license terms for that version.
+
+----------------------------------------------------------------------
+Contact
+----------------------------------------------------------------------
+For source requests related to GPL-2.0-covered binaries shipped with a
+MacMount build, see GPL_SOURCE_OFFER.txt.
+
+For all other support, use the contact or support channel published with your
+copy of MacMount.

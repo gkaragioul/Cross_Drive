@@ -686,6 +686,14 @@ internal sealed class BrokerRawProviderFileSystem : FileSystemBase
 {
     private readonly IRawFileSystemProvider _provider;
     private readonly DirectoryBuffer _dirBuffer = new();
+    private static readonly string _debugLog = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+        "MacMount", "winfsp_debug.log");
+
+    private static void DebugLog(string msg)
+    {
+        try { File.AppendAllText(_debugLog, $"[{DateTime.Now:HH:mm:ss.fff}] {msg}\n"); } catch { }
+    }
 
     // WinFsp constants for Create disposition
     private const uint FILE_CREATE = 0x00000002;
@@ -728,6 +736,8 @@ internal sealed class BrokerRawProviderFileSystem : FileSystemBase
         fileDesc = null!;
         normalizedName = path;
 
+        DebugLog($"Create: path='{path}' writable={_provider.IsWritable} opts=0x{createOptions:X} alloc={allocationSize}");
+
         if (!_provider.IsWritable)
             return unchecked((int)0xC00000BB); // STATUS_MEDIA_WRITE_PROTECTED
 
@@ -735,27 +745,35 @@ internal sealed class BrokerRawProviderFileSystem : FileSystemBase
         {
             if ((createOptions & FILE_DIRECTORY_FILE) != 0)
             {
+                DebugLog($"Create: mkdir '{path}'");
                 _provider.CreateDirectory(path);
             }
             else
             {
+                DebugLog($"Create: mkfile '{path}'");
                 _provider.CreateFile(path);
                 if (allocationSize > 0)
                 {
-                    try { _provider.SetFileSize(path, (long)allocationSize); } catch { }
+                    try { _provider.SetFileSize(path, (long)allocationSize); } catch (Exception sz) { DebugLog($"Create: SetFileSize failed: {sz.Message}"); }
                 }
             }
 
             var entry = _provider.GetEntry(path);
-            if (entry is null) return unchecked((int)0xC0000001); // STATUS_UNSUCCESSFUL
+            if (entry is null)
+            {
+                DebugLog($"Create: GetEntry returned null after create for '{path}'");
+                return unchecked((int)0xC0000001);
+            }
 
             fileNode = entry;
             fileDesc = entry;
             PopulateInfo(entry, ref fileInfo);
+            DebugLog($"Create OK: '{path}' isDir={entry.IsDirectory} size={entry.Size}");
             return 0;
         }
-        catch
+        catch (Exception ex)
         {
+            DebugLog($"Create FAILED '{path}': {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
             return unchecked((int)0xC0000001);
         }
     }
@@ -860,6 +878,7 @@ internal sealed class BrokerRawProviderFileSystem : FileSystemBase
 
         try
         {
+            DebugLog($"Write: path='{entry.Path}' offset={offset} len={length} endOfFile={writeToEndOfFile}");
             var temp = ArrayPool<byte>.Shared.Rent((int)length);
             try
             {
@@ -867,6 +886,7 @@ internal sealed class BrokerRawProviderFileSystem : FileSystemBase
                 var writeOffset = writeToEndOfFile ? entry.Size : (long)offset;
                 var written = _provider.WriteFile(entry.Path, writeOffset, temp.AsSpan(0, (int)length));
                 bytesTransferred = (uint)Math.Max(0, written);
+                DebugLog($"Write OK: path='{entry.Path}' written={written}");
 
                 var updated = _provider.GetEntry(entry.Path);
                 if (updated != null) PopulateInfo(updated, ref fileInfo);
@@ -879,8 +899,9 @@ internal sealed class BrokerRawProviderFileSystem : FileSystemBase
                 ArrayPool<byte>.Shared.Return(temp);
             }
         }
-        catch
+        catch (Exception ex)
         {
+            DebugLog($"Write FAILED: path='{entry.Path}' {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
             return unchecked((int)0xC0000001);
         }
     }

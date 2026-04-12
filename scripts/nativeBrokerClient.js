@@ -99,16 +99,16 @@ function startBrokerInInteractiveSession() {
   });
 }
 
-async function ensureBrokerReady(retries = 8) {
+async function ensureBrokerReady(retries = 8, requireElevated = false) {
   for (let i = 0; i < retries; i++) {
     try {
       const ping = await sendBrokerRequest({ action: 'ping', requestId: String(Date.now()) }, 1500);
-      if (ping?.ok) return true;
+      if (ping?.ok && (!requireElevated || ping?.elevated === true)) return true;
     } catch {
       // ignore
     }
 
-    if (i === 0) {
+    if (i === 0 || requireElevated) {
       try { await startBrokerInInteractiveSession(); } catch {}
     }
 
