@@ -181,10 +181,59 @@ internal sealed class ApfsBTreeNode
         return buf;
     }
 
+    /// <summary>
+    /// Reconstructs an <see cref="ApfsBTreeNode"/> from a raw block buffer.
+    /// Returns null if the buffer is too small or has no valid btn_nkeys field.
+    /// Preserves on-disk record order (does not re-sort).
+    /// </summary>
+    public static ApfsBTreeNode? Deserialize(byte[] block, uint blockSize, bool isRoot = false)
+    {
+        if (block.Length < HeaderSize) return null;
+
+        var oid        = BinaryPrimitives.ReadUInt64LittleEndian(block.AsSpan(0x08, 8));
+        var xid        = BinaryPrimitives.ReadUInt64LittleEndian(block.AsSpan(0x10, 8));
+        var objType    = BinaryPrimitives.ReadUInt32LittleEndian(block.AsSpan(0x18, 4));
+        var objSubtype = BinaryPrimitives.ReadUInt32LittleEndian(block.AsSpan(0x1C, 4));
+        var nkeys      = BinaryPrimitives.ReadUInt32LittleEndian(block.AsSpan(0x24, 4));
+
+        var node = new ApfsBTreeNode(blockSize, oid, xid, objType, objSubtype, isRoot);
+
+        int tocBase = HeaderSize; // 0x38
+        for (uint i = 0; i < nkeys; i++)
+        {
+            int tocOff = tocBase + (int)(i * TocEntrySize);
+            if (tocOff + TocEntrySize > block.Length) break;
+
+            var kOff = BinaryPrimitives.ReadUInt16LittleEndian(block.AsSpan(tocOff + 0, 2));
+            var kLen = BinaryPrimitives.ReadUInt16LittleEndian(block.AsSpan(tocOff + 2, 2));
+            var vOff = BinaryPrimitives.ReadUInt16LittleEndian(block.AsSpan(tocOff + 4, 2));
+            var vLen = BinaryPrimitives.ReadUInt16LittleEndian(block.AsSpan(tocOff + 6, 2));
+
+            if (kOff + kLen > block.Length || vOff + vLen > block.Length) break;
+
+            var key = block.AsSpan(kOff, kLen).ToArray();
+            var val = block.AsSpan(vOff, vLen).ToArray();
+            node._records.Add((key, val)); // preserve on-disk order (static member of same class)
+        }
+
+        return node;
+    }
+
     private static int CompareKeys(byte[] a, byte[] b)
     {
+        // APFS stores integer key fields as little-endian uint64. Compare in 8-byte chunks
+        // as unsigned 64-bit integers so that type-encoded keys (type << 60 | id) sort
+        // numerically by type first, then by id — matching APFS on-disk ordering.
+        // Remaining bytes beyond the last complete 8-byte chunk compare lexicographically.
         int len = Math.Min(a.Length, b.Length);
-        for (int i = 0; i < len; i++)
+        int aligned = (len / 8) * 8;
+        for (int i = 0; i < aligned; i += 8)
+        {
+            var va = BinaryPrimitives.ReadUInt64LittleEndian(a.AsSpan(i, 8));
+            var vb = BinaryPrimitives.ReadUInt64LittleEndian(b.AsSpan(i, 8));
+            if (va != vb) return va.CompareTo(vb);
+        }
+        for (int i = aligned; i < len; i++)
         {
             if (a[i] != b[i]) return a[i].CompareTo(b[i]);
         }

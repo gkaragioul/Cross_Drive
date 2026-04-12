@@ -190,8 +190,8 @@ internal static class ApfsCowTests
             BinaryPrimitives.WriteUInt32LittleEndian(vsb.Slice(0x20, 4), 0x42535041u);
             BinaryPrimitives.WriteUInt64LittleEndian(vsb.Slice(0x08, 8), 500);  // o_oid
             BinaryPrimitives.WriteUInt64LittleEndian(vsb.Slice(0x10, 8), 10);   // o_xid = 10
-            BinaryPrimitives.WriteUInt64LittleEndian(vsb.Slice(0x90, 8), 3);    // apfs_num_files = 3
-            BinaryPrimitives.WriteUInt64LittleEndian(vsb.Slice(0x98, 8), 1);    // apfs_num_directories = 1
+            BinaryPrimitives.WriteUInt64LittleEndian(vsb.Slice(0xA8, 8), 3);    // apfs_num_files = 3
+            BinaryPrimitives.WriteUInt64LittleEndian(vsb.Slice(0xB0, 8), 1);    // apfs_num_directories = 1
             ApfsChecksum.WriteChecksum(vsb);
 
             var device = new WritableMemoryRawBlockDevice(deviceBytes);
@@ -214,8 +214,8 @@ internal static class ApfsCowTests
             // Verify the written block
             var after = deviceBytes.AsSpan(4096, 4096);
             var newXid       = BinaryPrimitives.ReadUInt64LittleEndian(after.Slice(0x10, 8));
-            var newFileCount = BinaryPrimitives.ReadUInt64LittleEndian(after.Slice(0x90, 8));
-            var newDirCount  = BinaryPrimitives.ReadUInt64LittleEndian(after.Slice(0x98, 8));
+            var newFileCount = BinaryPrimitives.ReadUInt64LittleEndian(after.Slice(0xA8, 8));
+            var newDirCount  = BinaryPrimitives.ReadUInt64LittleEndian(after.Slice(0xB0, 8));
             Assert(newXid == 11,       $"expected xid=11, got {newXid}");
             Assert(newFileCount == 5,  $"expected num_files=5, got {newFileCount}");
             Assert(newDirCount == 1,   $"dir count should be unchanged, got {newDirCount}");

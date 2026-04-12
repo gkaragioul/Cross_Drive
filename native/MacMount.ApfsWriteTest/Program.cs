@@ -27,10 +27,11 @@ public static class Program
             Console.WriteLine("APFS Write Test Harness");
             Console.WriteLine(new string('=', 60));
 
-            var spaceman = await RunSuite("Phase 1 — Spaceman Parser", ApfsSpacemanTests.RunAllAsync);
-            var cow = await RunSuite("Phase 2 — COW Block Writer", ApfsCowTests.RunAllAsync);
+            var spaceman  = await RunSuite("Phase 1 — Spaceman Parser",         ApfsSpacemanTests.RunAllAsync);
+            var cow       = await RunSuite("Phase 2 — COW Block Writer",        ApfsCowTests.RunAllAsync);
+            var fileOps   = await RunSuite("Phase 3/4 — File Operation Writes", ApfsFileOpsTests.RunAllAsync);
 
-            allPassed = spaceman && cow;
+            allPassed = spaceman && cow && fileOps;
 
             Console.WriteLine();
             Console.WriteLine(new string('=', 60));
