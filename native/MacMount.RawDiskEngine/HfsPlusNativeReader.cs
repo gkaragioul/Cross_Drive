@@ -28,6 +28,12 @@ public sealed class HfsPlusNativeReader : IDisposable
     // Allocation file extent list (block runs on disk)
     private readonly List<(long ByteOffset, long ByteLength)> _allocationExtents = new();
 
+    // Extents-overflow file extent list and B-tree header info
+    // (used for files that need more than 8 inline extents)
+    private readonly List<(long ByteOffset, long ByteLength)> _extentsExtents = new();
+    private uint _extentsNodeSize;
+    private uint _extentsRootNode;
+
     // Volume header raw bytes (512 bytes), kept in sync for flush
     private byte[] _vhRawBuf = new byte[512];
 
@@ -54,7 +60,8 @@ public sealed class HfsPlusNativeReader : IDisposable
         uint nodeSize, uint rootNodeIndex, uint firstLeafNodeIndex, List<(long, long)> catalogExtents,
         long catalogFileStart, List<(long, long)> allocationExtents, byte[] vhRawBuf,
         uint nextCatalogId, uint freeBlocks, uint volumeAttributes,
-        uint totalNodes, uint freeNodes, uint leafRecords, uint lastLeafNode, ushort treeDepth)
+        uint totalNodes, uint freeNodes, uint leafRecords, uint lastLeafNode, ushort treeDepth,
+        List<(long, long)> extentsExtents, uint extentsNodeSize, uint extentsRootNode)
     {
         _device = device;
         _partitionOffset = partitionOffset;
@@ -74,6 +81,9 @@ public sealed class HfsPlusNativeReader : IDisposable
         _leafRecords = leafRecords;
         _lastLeafNode = lastLeafNode;
         _treeDepth = treeDepth;
+        _extentsExtents = extentsExtents;
+        _extentsNodeSize = extentsNodeSize;
+        _extentsRootNode = extentsRootNode;
     }
 
     public static async Task<HfsPlusNativeReader?> OpenAsync(IRawBlockDevice device, long partitionOffset, CancellationToken ct = default)
@@ -121,6 +131,41 @@ public sealed class HfsPlusNativeReader : IDisposable
             allocationExtents.Add((byteOff, byteLen));
         }
 
+        // Build extents-overflow file extent map (offset 80 = 0x50 in VH).
+        // Layout matches allocation/catalog forks: logicalSize(8) clumpSize(4) totalBlocks(4) extents[8].
+        var extentsExtents = new List<(long ByteOffset, long ByteLength)>();
+        const int extentsForkOffset = 80; // 0x50
+        for (int i = 0; i < 8; i++)
+        {
+            var extOff = extentsForkOffset + 16 + i * 8;
+            var startBlock = BinaryPrimitives.ReadUInt32BigEndian(vhBuf.AsSpan(extOff, 4));
+            var blockCnt = BinaryPrimitives.ReadUInt32BigEndian(vhBuf.AsSpan(extOff + 4, 4));
+            if (blockCnt == 0) break;
+            var byteOff = partitionOffset + (long)startBlock * header.BlockSize;
+            var byteLen = (long)blockCnt * header.BlockSize;
+            extentsExtents.Add((byteOff, byteLen));
+        }
+
+        // Read the extents-overflow B-tree header node (node 0) if the file exists.
+        // Note: many newly-formatted volumes have an empty extents-overflow B-tree
+        // (header node only); this is normal.
+        uint extentsNodeSize = 0;
+        uint extentsRootNode = 0;
+        if (extentsExtents.Count > 0)
+        {
+            var extentsHeaderBuf = new byte[Math.Max(header.BlockSize, 4096u)];
+            var extentsHeaderRead = await device.ReadAsync(extentsExtents[0].ByteOffset, extentsHeaderBuf, extentsHeaderBuf.Length, ct).ConfigureAwait(false);
+            if (extentsHeaderRead >= 512)
+            {
+                var extentsKind = (sbyte)extentsHeaderBuf[8];
+                if (extentsKind == 1)
+                {
+                    extentsRootNode  = BinaryPrimitives.ReadUInt32BigEndian(extentsHeaderBuf.AsSpan(16, 4));
+                    extentsNodeSize  = BinaryPrimitives.ReadUInt16BigEndian(extentsHeaderBuf.AsSpan(32, 2));
+                }
+            }
+        }
+
         // Read the catalog B-tree header node (node 0)
         var headerNodeBuf = new byte[Math.Max(header.BlockSize, 4096u)];
         var headerNodeRead = await device.ReadAsync(catalogExtents[0].ByteOffset, headerNodeBuf, headerNodeBuf.Length, ct).ConfigureAwait(false);
@@ -147,7 +192,8 @@ public sealed class HfsPlusNativeReader : IDisposable
         return new HfsPlusNativeReader(device, partitionOffset, header, nodeSize, rootNode, firstLeafNode,
             catalogExtents, catalogExtents[0].ByteOffset, allocationExtents, vhBuf,
             nextCatalogId, header.FreeBlocks, volumeAttributes,
-            totalNodes, freeNodes, leafRecords, lastLeafNode, treeDepth);
+            totalNodes, freeNodes, leafRecords, lastLeafNode, treeDepth,
+            extentsExtents, extentsNodeSize, extentsRootNode);
     }
 
     /// <summary>
@@ -252,15 +298,83 @@ public sealed class HfsPlusNativeReader : IDisposable
     }
 
     /// <summary>
-    /// Read file data from a data fork's extent records.
+    /// Returns the full extent list for a fork: the up-to-8 inline extents, plus
+    /// any additional extents resolved from the extents-overflow B-tree if the
+    /// fork's totalBlocks exceeds what the inline extents cover.
     /// </summary>
-    public async Task<int> ReadFileAsync(HfsPlusForkInfo fork, long offset, byte[] buffer, int count, CancellationToken ct = default)
+    /// <param name="fork">The fork descriptor read from the catalog (has 8 inline extents).</param>
+    /// <param name="fileId">The CNID of the file (used as the extents-overflow B-tree key).</param>
+    /// <param name="forkType">0x00 for data fork, 0xFF for resource fork.</param>
+    public async Task<HfsPlusExtent[]> ResolveAllExtentsAsync(
+        HfsPlusForkInfo fork, uint fileId, byte forkType, CancellationToken ct = default)
     {
-        if (offset < 0 || offset >= fork.LogicalSize) return 0;
-        var toRead = (int)Math.Min(count, fork.LogicalSize - offset);
+        var inline = new List<HfsPlusExtent>();
+        uint blocksCovered = 0;
+        foreach (var ext in fork.Extents)
+        {
+            if (ext.BlockCount == 0) break;
+            inline.Add(ext);
+            blocksCovered += ext.BlockCount;
+        }
+
+        // If logicalSize fits inside the blocks covered by inline extents, no overflow lookup needed.
+        var blocksRequired = (uint)((fork.LogicalSize + _header.BlockSize - 1) / _header.BlockSize);
+        if (blocksCovered >= blocksRequired || _extentsRootNode == 0 || _extentsNodeSize == 0)
+        {
+            return inline.ToArray();
+        }
+
+        // Walk the extents-overflow B-tree starting from blocksCovered.
+        var combined = new List<HfsPlusExtent>(inline);
+        var startBlock = blocksCovered;
+        var safetyLimit = 256; // bound the walk against pathological B-trees
+        while (blocksCovered < blocksRequired && safetyLimit-- > 0)
+        {
+            var record = await LookupExtentsOverflowAsync(fileId, forkType, startBlock, ct).ConfigureAwait(false);
+            if (record is null || record.Length == 0) break;
+            foreach (var ext in record)
+            {
+                if (ext.BlockCount == 0) break;
+                combined.Add(ext);
+                blocksCovered += ext.BlockCount;
+            }
+            // Next overflow record starts where the last one ended.
+            startBlock = blocksCovered;
+        }
+
+        return combined.ToArray();
+    }
+
+    /// <summary>
+    /// Read file data from a fork, resolving extents-overflow records when the
+    /// 8 inline extents are insufficient. Use this overload for any file whose
+    /// fileId+forkType is known and whose fork.LogicalSize may extend past the
+    /// inline extents.
+    /// </summary>
+    public async Task<int> ReadFileAsync(HfsPlusForkInfo fork, uint fileId, byte forkType,
+        long offset, byte[] buffer, int count, CancellationToken ct = default)
+    {
+        var allExtents = await ResolveAllExtentsAsync(fork, fileId, forkType, ct).ConfigureAwait(false);
+        return await ReadExtentsAsync(allExtents, fork.LogicalSize, offset, buffer, count, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Read file data from a data fork's extent records (legacy 8-extent path).
+    /// Prefer the (fileId, forkType) overload to support files larger than 8 extents.
+    /// </summary>
+    public Task<int> ReadFileAsync(HfsPlusForkInfo fork, long offset, byte[] buffer, int count, CancellationToken ct = default)
+    {
+        return ReadExtentsAsync(fork.Extents, fork.LogicalSize, offset, buffer, count, ct);
+    }
+
+    private async Task<int> ReadExtentsAsync(IReadOnlyList<HfsPlusExtent> extents, long logicalSize,
+        long offset, byte[] buffer, int count, CancellationToken ct)
+    {
+        if (offset < 0 || offset >= logicalSize) return 0;
+        var toRead = (int)Math.Min(count, logicalSize - offset);
         var totalRead = 0;
 
-        foreach (var ext in fork.Extents)
+        foreach (var ext in extents)
         {
             if (ext.BlockCount == 0) break;
 
@@ -290,6 +404,157 @@ public sealed class HfsPlusNativeReader : IDisposable
         }
 
         return totalRead;
+    }
+
+    /// <summary>
+    /// Look up a single extents-overflow record for (fileId, forkType, startBlock).
+    /// Returns the 8-extent array if found, null otherwise. Walks the B-tree from
+    /// the root index node down to a leaf using HFSPlusExtentKey ordering:
+    /// fileID, then forkType (data 0x00 &lt; resource 0xFF), then startBlock.
+    /// </summary>
+    private async Task<HfsPlusExtent[]?> LookupExtentsOverflowAsync(uint fileId, byte forkType, uint startBlock, CancellationToken ct)
+    {
+        if (_extentsRootNode == 0 || _extentsNodeSize == 0) return null;
+
+        // Walk down from the root, picking the index entry whose key is <= target.
+        var currentNode = _extentsRootNode;
+        var safetyLimit = 32; // tree depth bound
+        while (safetyLimit-- > 0)
+        {
+            var nodeBuf = await ReadExtentsNodeAsync(currentNode, ct).ConfigureAwait(false);
+            if (nodeBuf is null) return null;
+
+            var kind = (sbyte)nodeBuf[8];          // 0x00 = leaf, 0xFE = index, 0x01 = header
+            var numRecords = BinaryPrimitives.ReadUInt16BigEndian(nodeBuf.AsSpan(10, 2));
+
+            // Index node: pick child whose key is <= target, descend.
+            if (kind == unchecked((sbyte)0xFE))
+            {
+                uint chosenChild = 0;
+                for (int i = 0; i < numRecords; i++)
+                {
+                    var (recOff, recLen) = GetExtentsRecordOffsetAndLength(nodeBuf, i, numRecords);
+                    if (recOff < 14 || recLen <= 0) continue;
+                    if (recLen < 12 + 4) continue; // key(12) + child pointer(4)
+                    var keyCmp = CompareExtentsKey(nodeBuf, recOff, fileId, forkType, startBlock);
+                    if (keyCmp <= 0)
+                    {
+                        chosenChild = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(recOff + 12, 4));
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+                if (chosenChild == 0) return null;
+                currentNode = chosenChild;
+                continue;
+            }
+
+            // Leaf node: find a record whose key matches OR is the largest key <= target
+            // (because overflow records cover a range of startBlocks).
+            if (kind == 0)
+            {
+                int bestIdx = -1;
+                for (int i = 0; i < numRecords; i++)
+                {
+                    var (recOff, recLen) = GetExtentsRecordOffsetAndLength(nodeBuf, i, numRecords);
+                    if (recOff < 14 || recLen < 12 + 64) continue;
+                    if (CompareExtentsFileFork(nodeBuf, recOff, fileId, forkType) != 0) continue;
+                    var recStartBlock = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(recOff + 8, 4));
+                    if (recStartBlock <= startBlock) bestIdx = i;
+                    else break;
+                }
+                if (bestIdx < 0) return null;
+                var (off, len) = GetExtentsRecordOffsetAndLength(nodeBuf, bestIdx, numRecords);
+                if (off < 14 || len < 12 + 64) return null;
+                // Confirm the chosen record actually starts at the requested startBlock — the
+                // walk above can pick the record covering an earlier range if no exact match
+                // exists, but for our caller (sequential traversal) that means there's no
+                // record for this startBlock yet.
+                var foundStart = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(off + 8, 4));
+                if (foundStart != startBlock) return null;
+
+                return ParseExtentsRecord(nodeBuf, off + 12);
+            }
+
+            return null; // unexpected node kind
+        }
+        return null;
+    }
+
+    private async Task<byte[]?> ReadExtentsNodeAsync(uint nodeIndex, CancellationToken ct)
+    {
+        if (_extentsNodeSize == 0) return null;
+        var buf = new byte[_extentsNodeSize];
+        var nodeOffset = (long)nodeIndex * _extentsNodeSize;
+        var remaining = nodeOffset;
+        foreach (var (byteOff, byteLen) in _extentsExtents)
+        {
+            if (remaining < byteLen)
+            {
+                var physicalOffset = byteOff + remaining;
+                var read = await _device.ReadAsync(physicalOffset, buf, buf.Length, ct).ConfigureAwait(false);
+                return read >= _extentsNodeSize ? buf : null;
+            }
+            remaining -= byteLen;
+        }
+        return null;
+    }
+
+    private (int Offset, int Length) GetExtentsRecordOffsetAndLength(byte[] nodeBuf, int recordIndex, int numRecords)
+    {
+        // Same offset-table layout as the catalog B-tree, parameterized on the
+        // extents-overflow B-tree's own node size.
+        var freeSpacePos = (int)_extentsNodeSize - 2;
+        var entryPos = freeSpacePos - ((numRecords - recordIndex) * 2);
+        var nextEntryPos = entryPos + 2;
+        if (entryPos < 14 || entryPos + 2 > nodeBuf.Length) return (0, 0);
+        if (nextEntryPos < 0 || nextEntryPos + 2 > nodeBuf.Length) return (0, 0);
+        var offset = BinaryPrimitives.ReadUInt16BigEndian(nodeBuf.AsSpan(entryPos, 2));
+        var nextOffset = BinaryPrimitives.ReadUInt16BigEndian(nodeBuf.AsSpan(nextEntryPos, 2));
+        if (offset < 14 || nextOffset <= offset) return (offset, 0);
+        return (offset, nextOffset - offset);
+    }
+
+    /// <summary>
+    /// Compare a record's HFSPlusExtentKey at <paramref name="recOff"/> against
+    /// (fileId, forkType, startBlock). Returns -1 / 0 / +1 by HFS+ ordering:
+    /// fileID, then forkType (data 0x00 &lt; resource 0xFF), then startBlock.
+    /// </summary>
+    private static int CompareExtentsKey(byte[] nodeBuf, int recOff, uint fileId, byte forkType, uint startBlock)
+    {
+        // HFSPlusExtentKey: keyLength(2) forkType(1) pad(1) fileID(4) startBlock(4)
+        var recForkType = nodeBuf[recOff + 2];
+        var recFileId = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(recOff + 4, 4));
+        var recStartBlock = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(recOff + 8, 4));
+        if (recFileId != fileId) return recFileId < fileId ? -1 : 1;
+        if (recForkType != forkType) return recForkType < forkType ? -1 : 1;
+        if (recStartBlock != startBlock) return recStartBlock < startBlock ? -1 : 1;
+        return 0;
+    }
+
+    private static int CompareExtentsFileFork(byte[] nodeBuf, int recOff, uint fileId, byte forkType)
+    {
+        var recForkType = nodeBuf[recOff + 2];
+        var recFileId = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(recOff + 4, 4));
+        if (recFileId != fileId) return recFileId < fileId ? -1 : 1;
+        if (recForkType != forkType) return recForkType < forkType ? -1 : 1;
+        return 0;
+    }
+
+    private static HfsPlusExtent[] ParseExtentsRecord(byte[] nodeBuf, int valOff)
+    {
+        // HFSPlusExtentRecord = 8 × HFSPlusExtentDescriptor (8 bytes each)
+        var extents = new HfsPlusExtent[8];
+        for (int i = 0; i < 8; i++)
+        {
+            var off = valOff + i * 8;
+            var startBlock = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(off, 4));
+            var blockCount = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(off + 4, 4));
+            extents[i] = new HfsPlusExtent(startBlock, blockCount);
+        }
+        return extents;
     }
 
     // ─── WRITE SUPPORT ────────────────────────────────────────────────────────
