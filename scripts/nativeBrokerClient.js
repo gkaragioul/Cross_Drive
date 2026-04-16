@@ -78,25 +78,26 @@ function startBrokerInInteractiveSession() {
   return new Promise((resolve, reject) => {
     const brokerExe = getBrokerExecutable();
 
-    // Build the scheduled task action.  When a compiled exe exists we invoke it
-    // directly via New-ScheduledTaskAction -Execute so there is no intermediate
-    // powershell.exe wrapper that could silently absorb the path as a string
-    // expression instead of executing it.  The dotnet fallback still needs
-    // powershell to compose the "dotnet run ..." invocation.
-    const [actionExe, actionArg] = brokerExe
-      ? [brokerExe, '']
-      : [
-          'powershell.exe',
-          `-NoProfile -NonInteractive -WindowStyle Hidden -Command "& 'dotnet' run --project '${
-            path.join(__dirname, '..', 'native', 'MacMount.NativeBroker', 'MacMount.NativeBroker.csproj').replace(/'/g, "''")
-          }'"`,
-        ];
-
+    // The broker is a .NET CONSOLE application. When the Task Scheduler launches
+    // it directly in an interactive session, Windows allocates a visible conhost
+    // window every single time. Even with the broker self-bounded by named-pipe
+    // mutual exclusion, every ensureBrokerReady() retry that needed to spawn a
+    // fresh process popped a new console window — manifesting as the "endless
+    // terminal windows opening and closing" symptom.
+    //
+    // Wrap the exe (and the dotnet-run fallback) in a `powershell -WindowStyle
+    // Hidden -Command "& '...'"` invocation. PowerShell's hidden style applies
+    // to the conhost it allocates for the spawned child, which keeps the broker
+    // running without any visible window.
     const brokerDir = brokerExe ? path.dirname(brokerExe) : path.join(__dirname, '..');
+    const innerCmd = brokerExe
+      ? `& '${brokerExe.replace(/'/g, "''")}'`
+      : `& 'dotnet' run --project '${path.join(__dirname, '..', 'native', 'MacMount.NativeBroker', 'MacMount.NativeBroker.csproj').replace(/'/g, "''")}'`;
 
-    const actionPs = actionArg
-      ? `New-ScheduledTaskAction -Execute '${actionExe.replace(/'/g, "''")}' -Argument '${actionArg.replace(/'/g, "''")}' -WorkingDirectory '${brokerDir.replace(/'/g, "''")}'`
-      : `New-ScheduledTaskAction -Execute '${actionExe.replace(/'/g, "''")}' -WorkingDirectory '${brokerDir.replace(/'/g, "''")}'`;
+    const actionExe = 'powershell.exe';
+    const actionArg = `-NoProfile -NonInteractive -WindowStyle Hidden -Command "${innerCmd.replace(/"/g, '\\"')}"`;
+
+    const actionPs = `New-ScheduledTaskAction -Execute '${actionExe}' -Argument '${actionArg.replace(/'/g, "''")}' -WorkingDirectory '${brokerDir.replace(/'/g, "''")}'`;
 
     const cmd = [
       `$action = ${actionPs};`,
