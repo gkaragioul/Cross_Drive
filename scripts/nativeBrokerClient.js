@@ -78,26 +78,29 @@ function startBrokerInInteractiveSession() {
   return new Promise((resolve, reject) => {
     const brokerExe = getBrokerExecutable();
 
-    // The broker is a .NET CONSOLE application. When the Task Scheduler launches
-    // it directly in an interactive session, Windows allocates a visible conhost
-    // window every single time. Even with the broker self-bounded by named-pipe
-    // mutual exclusion, every ensureBrokerReady() retry that needed to spawn a
-    // fresh process popped a new console window — manifesting as the "endless
-    // terminal windows opening and closing" symptom.
+    // Why this is more involved than it looks:
     //
-    // Wrap the exe (and the dotnet-run fallback) in a `powershell -WindowStyle
-    // Hidden -Command "& '...'"` invocation. PowerShell's hidden style applies
-    // to the conhost it allocates for the spawned child, which keeps the broker
-    // running without any visible window.
+    // The broker is a .NET CONSOLE application. When Task Scheduler launches a
+    // console exe (even via `powershell -WindowStyle Hidden -Command "& '...'"`)
+    // in interactive session mode, the spawned console child still gets its own
+    // visible conhost window because Task Scheduler allocates a session-attached
+    // console for it. The PowerShell wrapper's `-WindowStyle Hidden` only hides
+    // PowerShell's own window, not the broker child's.
+    //
+    // The fix: have the scheduled task launch a hidden PowerShell that uses
+    // `Start-Process -WindowStyle Hidden -FilePath '...'`. Start-Process calls
+    // CreateProcess with STARTUPINFO.dwFlags = STARTF_USESHOWWINDOW and
+    // wShowWindow = SW_HIDE, which actually hides the broker's conhost — no
+    // visible window even with interactive Task Scheduler.
     const brokerDir = brokerExe ? path.dirname(brokerExe) : path.join(__dirname, '..');
-    const innerCmd = brokerExe
-      ? `& '${brokerExe.replace(/'/g, "''")}'`
-      : `& 'dotnet' run --project '${path.join(__dirname, '..', 'native', 'MacMount.NativeBroker', 'MacMount.NativeBroker.csproj').replace(/'/g, "''")}'`;
+    const startProcessArgs = brokerExe
+      ? `-FilePath '${brokerExe.replace(/'/g, "''")}' -WindowStyle Hidden -WorkingDirectory '${brokerDir.replace(/'/g, "''")}'`
+      : `-FilePath 'dotnet' -ArgumentList 'run','--project','${path.join(__dirname, '..', 'native', 'MacMount.NativeBroker', 'MacMount.NativeBroker.csproj').replace(/'/g, "''")}' -WindowStyle Hidden -WorkingDirectory '${brokerDir.replace(/'/g, "''")}'`;
 
-    const actionExe = 'powershell.exe';
-    const actionArg = `-NoProfile -NonInteractive -WindowStyle Hidden -Command "${innerCmd.replace(/"/g, '\\"')}"`;
+    const innerPsCommand = `Start-Process ${startProcessArgs}`;
+    const actionArg = `-NoProfile -NonInteractive -WindowStyle Hidden -Command "${innerPsCommand.replace(/"/g, '\\"')}"`;
 
-    const actionPs = `New-ScheduledTaskAction -Execute '${actionExe}' -Argument '${actionArg.replace(/'/g, "''")}' -WorkingDirectory '${brokerDir.replace(/'/g, "''")}'`;
+    const actionPs = `New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '${actionArg.replace(/'/g, "''")}' -WorkingDirectory '${brokerDir.replace(/'/g, "''")}'`;
 
     const cmd = [
       `$action = ${actionPs};`,
