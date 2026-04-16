@@ -53,6 +53,26 @@ public sealed class ApfsParser : IFileSystemParser
                 .Select(v => v.VolumeUuid)
                 .FirstOrDefault();
 
+            // Detect T2 / Apple Silicon hardware-bound encryption: when the volume
+            // is encrypted but the container keybag has no unlock-records entry for
+            // it, the unwrap path lives in the Mac's Secure Enclave and there is no
+            // password we could accept that would help. Surface this so the UI can
+            // explain "this drive can only be unlocked on the original Mac" instead
+            // of the generic "encrypted, enter password" prompt.
+            var hardwareBound = false;
+            if (firstEncryptedUuid != Guid.Empty)
+            {
+                try
+                {
+                    var keyManager = new ApfsKeyManager(device, 0, summary.BlockSize == 0 ? 4096u : summary.BlockSize);
+                    hardwareBound = await keyManager.IsLikelyHardwareBoundAsync(firstEncryptedUuid, cancellationToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Don't let detection errors break analysis; treat as "unknown" (false).
+                }
+            }
+
             var notes =
                 $"APFS container parsed. " +
                 $"BlockSize={summary.BlockSize}, BlockCount={summary.BlockCount}, " +
@@ -67,10 +87,11 @@ public sealed class ApfsParser : IFileSystemParser
                 device.DevicePath,
                 "APFS",
                 total,
-                Writable: experimentalWritable, // SAFETY: disabled unless MACMOUNT_EXPERIMENTAL_APFS_WRITES=1
-                Notes: notes,
+                Writable: experimentalWritable && !hardwareBound, // SAFETY: disabled unless MACMOUNT_EXPERIMENTAL_APFS_WRITES=1
+                Notes: notes + (hardwareBound ? " HardwareBound=true (T2/Apple Silicon — cannot unlock on Windows)." : string.Empty),
                 IsEncrypted: encryptedCount > 0,
-                NeedsPassword: needsPassword
+                NeedsPassword: needsPassword && !hardwareBound,
+                HardwareBound: hardwareBound
             );
         }
         catch

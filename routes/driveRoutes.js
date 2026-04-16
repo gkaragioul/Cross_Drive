@@ -81,13 +81,20 @@ module.exports = function mountDriveRoutes(app, ctx) {
                         }
                         drive.isEncrypted = plan.IsEncrypted === true;
                         drive.needsPassword = plan.NeedsPassword === true;
+                        drive.hardwareBound = plan.HardwareBound === true;
                         drive.analysisNotes = String(plan.Notes || '');
                         drive.supported =
                             /^APFS$/i.test(fsType) ||
                             /^HFS\+$/i.test(fsType) ||
                             /^HFSX$/i.test(fsType);
 
-                        if (/^CoreStorage$/i.test(fsType)) {
+                        if (drive.hardwareBound) {
+                            // T2 / Apple Silicon — keys live in the Mac's Secure Enclave; nothing
+                            // we can do about it on Windows. Mark unsupported so the mount button
+                            // disables and the UI shows a clear message.
+                            drive.supported = false;
+                            drive.mountHint = 'Hardware-bound encryption (T2 chip / Apple Silicon). Decrypt on the original Mac first.';
+                        } else if (/^CoreStorage$/i.test(fsType)) {
                             drive.supported = false;
                             drive.mountHint = 'CoreStorage/FileVault unlock is not implemented yet.';
                         } else if (drive.needsPassword) {
@@ -100,6 +107,7 @@ module.exports = function mountDriveRoutes(app, ctx) {
                     } else {
                         drive.isEncrypted = false;
                         drive.needsPassword = false;
+                        drive.hardwareBound = false;
                         drive.supported = true;
                         drive.mountHint = '';
                         drive.analysisNotes = '';

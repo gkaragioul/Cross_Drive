@@ -137,6 +137,17 @@ module.exports = function mountMountRoutes(app, ctx) {
                 const isApfsPlan = /^APFS$/i.test(analyzedFsType);
                 const isCoreStoragePlan = /^CoreStorage$/i.test(analyzedFsType);
                 const isPasswordRequired = nativeResult.needsPassword === true && !password;
+                const isHardwareBound = nativeResult.hardwareBound === true || analyzedPlan?.HardwareBound === true;
+
+                if (isHardwareBound) {
+                    return res.status(501).json({
+                        error: 'This drive is encrypted with hardware-bound keys (T2 chip or Apple Silicon Secure Enclave) and cannot be unlocked on Windows.',
+                        suggestion: 'Connect to the original Mac and run `diskutil apfs decryptVolume` first, then retry.',
+                        hardwareBound: true,
+                        analysis: nativeResult.analysis || null,
+                        mode: RUNTIME_MOUNT_MODE
+                    });
+                }
 
                 if (isPasswordRequired) {
                     return res.status(409).json({

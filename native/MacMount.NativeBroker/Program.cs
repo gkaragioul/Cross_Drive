@@ -332,6 +332,36 @@ internal sealed class BrokerService
                 new MountRequest(physicalDrivePath, fileSystemHint ?? string.Empty, ReadOnly: false)
             ).ConfigureAwait(false);
 
+            // Short-circuit T2 / Apple Silicon hardware-bound encryption: there is
+            // no password we can accept that would unlock these drives because the
+            // unwrap key never leaves the original Mac's Secure Enclave. Surface a
+            // clear message instead of asking the user for a password we can't use.
+            if (plan.HardwareBound)
+            {
+                return new
+                {
+                    ok = false,
+                    requestId,
+                    error = "This drive is encrypted with hardware-bound keys (T2 chip or Apple Silicon Secure Enclave) and can only be unlocked on the original Mac.",
+                    needsPassword = false,
+                    hardwareBound = true,
+                    suggestion = "Connect this drive to the Mac it was created on, decrypt it there (diskutil apfs decryptVolume), then re-attach to Windows.",
+                    plan = new
+                    {
+                        plan.PhysicalDrivePath,
+                        plan.FileSystemType,
+                        plan.TotalBytes,
+                        plan.Writable,
+                        plan.Notes,
+                        plan.IsEncrypted,
+                        plan.NeedsPassword,
+                        plan.HardwareBound,
+                        plan.PartitionOffsetBytes,
+                        plan.PartitionLengthBytes
+                    }
+                };
+            }
+
             if (plan.NeedsPassword && string.IsNullOrWhiteSpace(password))
             {
                 return new
@@ -349,6 +379,7 @@ internal sealed class BrokerService
                         plan.Notes,
                         plan.IsEncrypted,
                         plan.NeedsPassword,
+                        plan.HardwareBound,
                         plan.PartitionOffsetBytes,
                         plan.PartitionLengthBytes
                     }
@@ -375,6 +406,7 @@ internal sealed class BrokerService
                             plan.Notes,
                             plan.IsEncrypted,
                             plan.NeedsPassword,
+                            plan.HardwareBound,
                             plan.PartitionOffsetBytes,
                             plan.PartitionLengthBytes
                         }

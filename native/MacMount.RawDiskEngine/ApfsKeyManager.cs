@@ -59,6 +59,23 @@ public sealed class ApfsKeyManager
         return vek;
     }
 
+    /// <summary>
+    /// Returns true if the volume appears to be hardware-bound (T2 / Apple Silicon).
+    /// Detection: the container keybag is either missing entirely (no nx_keylocker
+    /// or it points nowhere readable from Windows), OR the keybag exists but has
+    /// no <c>KbTagVolumeUnlockRecords</c> entry for this volume UUID — meaning the
+    /// only available unwrap path lives in the Secure Enclave on the original Mac.
+    /// A password-only encrypted volume always has its unlock-records entry present.
+    /// </summary>
+    public async Task<bool> IsLikelyHardwareBoundAsync(Guid volumeUuid, CancellationToken ct = default)
+    {
+        var keybagData = await LoadContainerKeybagAsync(ct).ConfigureAwait(false);
+        if (keybagData is null || keybagData.Length == 0) return true;
+
+        var kekEntry = FindKeybagEntry(keybagData, ApfsConstants.KbTagVolumeUnlockRecords, volumeUuid);
+        return kekEntry is null;
+    }
+
     private async Task<byte[]?> LoadContainerKeybagAsync(CancellationToken ct)
     {
         // Read the NX superblock (must be at least large enough for nx_keylocker at 0x4F8 + 16)
