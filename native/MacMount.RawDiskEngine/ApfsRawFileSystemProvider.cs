@@ -327,6 +327,14 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
 
         if (uncompressedSize <= 0 || uncompressedSize > 64 * 1024 * 1024) return null; // sanity cap
 
+        // Type 1: uncompressed data stored inline after the header (rare, small files)
+        if (compressionType == 1 && inlineData.Length > 12)
+        {
+            var data = new byte[Math.Min(uncompressedSize, inlineData.Length - 12)];
+            Array.Copy(inlineData, 12, data, 0, data.Length);
+            return data;
+        }
+
         // Type 3: zlib-compressed data stored inline after the 12-byte header
         if (compressionType == 3 && inlineData.Length > 12)
         {
@@ -353,16 +361,29 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
             }
         }
 
-        // Type 1: uncompressed data stored inline after the header (rare, small files)
-        if (compressionType == 1 && inlineData.Length > 12)
-        {
-            var data = new byte[Math.Min(uncompressedSize, inlineData.Length - 12)];
-            Array.Copy(inlineData, 12, data, 0, data.Length);
-            return data;
-        }
-
-        return null; // unsupported compression type (LZVN=7, LZFSE=11, resource-fork types 4/8/12)
+        // Types 4, 8, 12: resource-fork variants — compressed payload lives in the
+        //   resource fork rather than inline. Inline buffer is just the decmpfs
+        //   header. Reading the resource fork requires a separate code path that's
+        //   not yet implemented.
+        // Type 11: LZFSE-compressed inline. Decoder is significantly larger than
+        //   LZVN (FSE entropy coding); not yet ported.
+        // For all of these we log the type so the caller can produce a specific
+        // diagnostic instead of a silent zero-byte read.
+        Console.Error.WriteLine($"[APFS] decmpfs: unsupported compression type {compressionType} ({DecmpfsTypeName(compressionType)}) — file will read as 0 bytes.");
+        return null;
     }
+
+    private static string DecmpfsTypeName(uint type) => type switch
+    {
+        1  => "uncompressed inline",
+        3  => "zlib inline",
+        4  => "zlib in resource fork",
+        7  => "LZVN inline",
+        8  => "LZVN in resource fork",
+        11 => "LZFSE inline",
+        12 => "LZFSE in resource fork",
+        _  => $"unknown ({type})"
+    };
 
     // Write operations
     public int WriteFile(string path, long offset, ReadOnlySpan<byte> source)
