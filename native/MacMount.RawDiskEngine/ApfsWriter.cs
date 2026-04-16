@@ -219,6 +219,17 @@ internal sealed class ApfsWriter : IDisposable
     public void SetFsBTreeBlock(ulong block) => _fsBTreeBlock = block;
 
     /// <summary>
+    /// When false, fs-tree writes overwrite the same block in place — the legacy
+    /// behaviour, kept for synthetic tests that read back from a fixed block.
+    /// When true (default for production), fs-tree writes are copy-on-write:
+    /// the modified node lands on a freshly-allocated block, the omap is
+    /// updated to map (oid, new-XID) → new-block, the omap is itself COW'd, and
+    /// the VSB is rewritten to point at the new omap block. This is what makes
+    /// writes survive a remount.
+    /// </summary>
+    public bool UseCowOnFsTreeWrite { get; set; } = true;
+
+    /// <summary>
     /// Returns the cached fs-tree block, resolving it from the volume superblock if needed.
     /// Returns null if the block cannot be determined (read-only device, missing VSB, etc.).
     /// </summary>
@@ -305,15 +316,101 @@ internal sealed class ApfsWriter : IDisposable
         return node is null ? null : (node, block.Value);
     }
 
-    /// <summary>Serializes and writes a B-tree node back to a specific block.</summary>
+    /// <summary>
+    /// Writes a modified fs-tree node using copy-on-write semantics:
+    ///   1. Allocate a NEW block from the spaceman.
+    ///   2. Write the modified node (with bumped XID) to that new block.
+    ///   3. Read the volume omap leaf from VSB.omap_oid; insert/update an
+    ///      entry mapping (fs-tree-oid, new-XID) → new physical block.
+    ///   4. COW the omap leaf too (allocate a new block, write modified omap).
+    ///   5. Update VSB.omap_oid to the new omap block; recompute Fletcher-64.
+    ///
+    /// Without this COW the writes would not survive a remount because the
+    /// omap (which mounts use to find the fs-tree) would still point at the
+    /// old, unmodified block. The previous implementation overwrote the same
+    /// block in place — fast, but not real APFS semantics, and silently
+    /// corrupting on power-cycle since the metadata pointer chain wasn't
+    /// kept consistent.
+    ///
+    /// Falls back to in-place overwrite when there's no VSB (e.g. tests using
+    /// SetFsBTreeBlock without a synthetic image), so existing tests continue
+    /// to work.
+    /// </summary>
     private async Task WriteFsBTreeAsync(ApfsBTreeNode node, ulong block, CancellationToken ct)
     {
-        node.TransactionId = ++_currentXid;
+        var newXid = ++_currentXid;
+        node.TransactionId = newXid;
         var buf = node.Serialize();
         if (buf is null) throw new IOException("B-tree node exceeds block size — node splitting not yet supported.");
+
+        // In-place fallback: COW disabled (legacy tests) or no VSB to update.
+        if (!UseCowOnFsTreeWrite || _volumeSuperblockBlock is null)
+        {
+            await _device.WriteAsync(
+                _partitionOffset + (long)(block * _blockSize), buf, buf.Length, ct)
+                .ConfigureAwait(false);
+            return;
+        }
+
+        // ── 1. Allocate new physical block for the fs-tree node ────────────
+        var newFsBlock = _allocator.AllocateBlocks(1)
+            ?? throw new IOException("WriteFsBTree COW: no free blocks for fs-tree.");
+        // Refresh OID in the serialized buffer (ApfsBTreeNode keeps OID in header
+        // — for a physical-OID tree, OID == phys block number).
+        BinaryPrimitives.WriteUInt64LittleEndian(buf.AsSpan(0x08, 8), newFsBlock);
+        ApfsChecksum.WriteChecksum(buf.AsSpan());
         await _device.WriteAsync(
-            _partitionOffset + (long)(block * _blockSize), buf, buf.Length, ct)
+            _partitionOffset + (long)(newFsBlock * _blockSize), buf, buf.Length, ct)
             .ConfigureAwait(false);
+
+        // ── 2. Read VSB to find omap location ──────────────────────────────
+        var vsbBuf = new byte[_blockSize];
+        var vsbOff = _partitionOffset + (long)(_volumeSuperblockBlock.Value * _blockSize);
+        var vsbRead = await _device.ReadAsync(vsbOff, vsbBuf, vsbBuf.Length, ct).ConfigureAwait(false);
+        if (vsbRead < (int)_blockSize) throw new IOException("WriteFsBTree COW: short read on VSB.");
+        var omapBlock      = BinaryPrimitives.ReadUInt64LittleEndian(vsbBuf.AsSpan(0x80, 8));
+        var rootTreeOid    = BinaryPrimitives.ReadUInt64LittleEndian(vsbBuf.AsSpan(0x88, 8));
+
+        // ── 3. Read omap leaf, update/insert entry ─────────────────────────
+        var omapBuf = new byte[_blockSize];
+        var omapOff = _partitionOffset + (long)(omapBlock * _blockSize);
+        var omapRead = await _device.ReadAsync(omapOff, omapBuf, omapBuf.Length, ct).ConfigureAwait(false);
+        if (omapRead < (int)_blockSize) throw new IOException("WriteFsBTree COW: short read on omap.");
+
+        var omapNode = ApfsBTreeNode.Deserialize(omapBuf, _blockSize, isRoot: true)
+            ?? throw new IOException("WriteFsBTree COW: omap deserialise failed.");
+
+        // Build new omap entry: key=(rootTreeOid, newXid) → val=(flags=0, size=blockSize, paddr=newFsBlock)
+        var newKey = new byte[16];
+        BinaryPrimitives.WriteUInt64LittleEndian(newKey.AsSpan(0, 8), rootTreeOid);
+        BinaryPrimitives.WriteUInt64LittleEndian(newKey.AsSpan(8, 8), newXid);
+        var newVal = new byte[16];
+        BinaryPrimitives.WriteUInt32LittleEndian(newVal.AsSpan(0, 4), 0);
+        BinaryPrimitives.WriteUInt32LittleEndian(newVal.AsSpan(4, 4), _blockSize);
+        BinaryPrimitives.WriteUInt64LittleEndian(newVal.AsSpan(8, 8), newFsBlock);
+        omapNode.Insert(newKey, newVal);
+        omapNode.TransactionId = newXid;
+
+        var newOmapBuf = omapNode.Serialize()
+            ?? throw new IOException("WriteFsBTree COW: omap serialise overflowed (split not yet implemented).");
+
+        // ── 4. COW the omap leaf to a new block ────────────────────────────
+        var newOmapBlock = _allocator.AllocateBlocks(1)
+            ?? throw new IOException("WriteFsBTree COW: no free blocks for omap.");
+        BinaryPrimitives.WriteUInt64LittleEndian(newOmapBuf.AsSpan(0x08, 8), newOmapBlock);
+        ApfsChecksum.WriteChecksum(newOmapBuf.AsSpan());
+        await _device.WriteAsync(
+            _partitionOffset + (long)(newOmapBlock * _blockSize), newOmapBuf, newOmapBuf.Length, ct)
+            .ConfigureAwait(false);
+
+        // ── 5. Update VSB.omap_oid → new omap block, bump VSB xid, rewrite ─
+        BinaryPrimitives.WriteUInt64LittleEndian(vsbBuf.AsSpan(0x80, 8), newOmapBlock);
+        BinaryPrimitives.WriteUInt64LittleEndian(vsbBuf.AsSpan(0x10, 8), newXid);
+        ApfsChecksum.WriteChecksum(vsbBuf.AsSpan());
+        await _device.WriteAsync(vsbOff, vsbBuf, vsbBuf.Length, ct).ConfigureAwait(false);
+
+        // Update cached fs-tree block so subsequent reads in this writer see the new location.
+        _fsBTreeBlock = newFsBlock;
     }
 
     /// <summary>Increments the pending file count for the next FlushAsync.</summary>

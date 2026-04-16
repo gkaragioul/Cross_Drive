@@ -30,8 +30,9 @@ public static class Program
             var spaceman  = await RunSuite("Phase 1 — Spaceman Parser",         ApfsSpacemanTests.RunAllAsync);
             var cow       = await RunSuite("Phase 2 — COW Block Writer",        ApfsCowTests.RunAllAsync);
             var fileOps   = await RunSuite("Phase 3/4 — File Operation Writes", ApfsFileOpsTests.RunAllAsync);
+            var remount   = await RunSuite("Phase 5 — Remount Round-Trip",      ApfsRemountTests.RunAllAsync);
 
-            allPassed = spaceman && cow && fileOps;
+            allPassed = spaceman && cow && fileOps && remount;
 
             Console.WriteLine();
             Console.WriteLine(new string('=', 60));

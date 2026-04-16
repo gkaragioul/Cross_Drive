@@ -272,6 +272,10 @@ internal static class ApfsFileOpsTests
             volumeSuperblockBlock: 1,
             currentXid: 1);
         writer.SetFsBTreeBlock(FsBTreeBlock);
+        // Phase 3/4 tests verify in-place writes against a fixed FsBTreeBlock.
+        // Disable COW for them; the round-trip behaviour is validated separately
+        // in ApfsRemountTests where the test reads through the omap chain.
+        writer.UseCowOnFsTreeWrite = false;
         return (image, writer);
     }
 
