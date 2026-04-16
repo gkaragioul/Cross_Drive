@@ -131,10 +131,13 @@ public sealed class HfsPlusNativeReader : IDisposable
             allocationExtents.Add((byteOff, byteLen));
         }
 
-        // Build extents-overflow file extent map (offset 80 = 0x50 in VH).
-        // Layout matches allocation/catalog forks: logicalSize(8) clumpSize(4) totalBlocks(4) extents[8].
+        // Build extents-overflow file extent map. Per HFS+ TN1150:
+        //   allocationFile = 112 (0x70), extentsFile = 192 (0xC0), catalogFile = 272 (0x110).
+        // (Offset 0x50 is finderInfo[0], NOT a fork — earlier code mistakenly read
+        //  garbage from finderInfo and reported it as extents-overflow extents.)
+        // Each ForkData = logicalSize(8) clumpSize(4) totalBlocks(4) extents[8].
         var extentsExtents = new List<(long ByteOffset, long ByteLength)>();
-        const int extentsForkOffset = 80; // 0x50
+        const int extentsForkOffset = 192; // 0xC0
         for (int i = 0; i < 8; i++)
         {
             var extOff = extentsForkOffset + 16 + i * 8;
