@@ -188,10 +188,16 @@ public sealed class WindowsRawBlockDevice : IRawBlockDevice, IDisposable
             throw new IOException($"SetFilePointerEx (RMW read) failed at offset {alignedOffset} (win32={win32}).");
         }
 
-        if (!NativeMethods.ReadFile(_handle, alignedBuffer, alignedCount, out _, IntPtr.Zero))
+        if (!NativeMethods.ReadFile(_handle, alignedBuffer, alignedCount, out var rmwBytesRead, IntPtr.Zero))
         {
             var win32 = Marshal.GetLastWin32Error();
             throw new IOException($"ReadFile (RMW) failed at offset {alignedOffset}, count {alignedCount} (win32={win32}).");
+        }
+
+        if (rmwBytesRead < alignedCount)
+        {
+            // Partial sector read — writing back would zero-fill unread sectors and corrupt disk data.
+            throw new IOException($"ReadFile (RMW) short read at offset {alignedOffset}: expected {alignedCount} bytes, got {rmwBytesRead}.");
         }
 
         // Overlay the caller's data

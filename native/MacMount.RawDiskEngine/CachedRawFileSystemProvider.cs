@@ -221,7 +221,7 @@ public sealed class CachedRawFileSystemProvider : IRawFileSystemProvider
                     Interlocked.Add(ref _bytesReadFromDisk, read);
                     
                     // Copy requested portion to destination
-                    var copyLength = Math.Min(bytesToRead, read - (int)offsetInBlock);
+                    var copyLength = Math.Min(bytesToRead, Math.Max(0, read - (int)offsetInBlock));
                     if (copyLength > 0)
                     {
                         blockSpan.Slice((int)offsetInBlock, copyLength).CopyTo(

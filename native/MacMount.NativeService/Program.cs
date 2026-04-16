@@ -319,6 +319,7 @@ internal sealed class NativeService
             var result = _engine.MountRawProvider(driveId, letter, plan, provider);
             if (!result.Ok)
             {
+                try { provider.Dispose(); } catch { /* best-effort — release disk handle */ }
                 return new { ok = false, requestId, error = result.Error };
             }
 

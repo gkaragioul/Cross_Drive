@@ -38,7 +38,8 @@ module.exports = function mountDriveRoutes(app, ctx) {
             analysisCache.set(cacheKey, { time: now, value });
             return value;
         } catch {
-            analysisCache.set(cacheKey, { time: now, value: null });
+            // Do not cache on transient errors (pipe broken, timeout, service not yet started).
+            // The next scan will retry immediately rather than waiting out the TTL.
             return null;
         }
     }

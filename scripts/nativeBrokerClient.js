@@ -49,7 +49,7 @@ function sendBrokerRequest(payload, timeoutMs = 5000) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      socket.end();
+      socket.destroy();
       const line = buffer.split('\n')[0].trim();
       try {
         resolve(JSON.parse(line));
@@ -77,18 +77,35 @@ function sendBrokerRequest(payload, timeoutMs = 5000) {
 function startBrokerInInteractiveSession() {
   return new Promise((resolve, reject) => {
     const brokerExe = getBrokerExecutable();
-    const runCmd = brokerExe
-      ? `"${brokerExe.replace(/"/g, '""')}"`
-      : `dotnet run --project "${path.join(__dirname, '..', 'native', 'MacMount.NativeBroker', 'MacMount.NativeBroker.csproj').replace(/"/g, '""')}"`;
+
+    // Build the scheduled task action.  When a compiled exe exists we invoke it
+    // directly via New-ScheduledTaskAction -Execute so there is no intermediate
+    // powershell.exe wrapper that could silently absorb the path as a string
+    // expression instead of executing it.  The dotnet fallback still needs
+    // powershell to compose the "dotnet run ..." invocation.
+    const [actionExe, actionArg] = brokerExe
+      ? [brokerExe, '']
+      : [
+          'powershell.exe',
+          `-NoProfile -NonInteractive -WindowStyle Hidden -Command "& 'dotnet' run --project '${
+            path.join(__dirname, '..', 'native', 'MacMount.NativeBroker', 'MacMount.NativeBroker.csproj').replace(/'/g, "''")
+          }'"`,
+        ];
+
+    const brokerDir = brokerExe ? path.dirname(brokerExe) : path.join(__dirname, '..');
+
+    const actionPs = actionArg
+      ? `New-ScheduledTaskAction -Execute '${actionExe.replace(/'/g, "''")}' -Argument '${actionArg.replace(/'/g, "''")}' -WorkingDirectory '${brokerDir.replace(/'/g, "''")}'`
+      : `New-ScheduledTaskAction -Execute '${actionExe.replace(/'/g, "''")}' -WorkingDirectory '${brokerDir.replace(/'/g, "''")}'`;
 
     const cmd = [
-      `$run='${runCmd.replace(/'/g, "''")}';`,
-      "$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -Command \"' + $run + '\"');",
+      `$action = ${actionPs};`,
       "$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest;",
-      "$task = New-ScheduledTask -Action $action -Principal $principal;",
+      "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10);",
+      "$task = New-ScheduledTask -Action $action -Principal $principal -Settings $settings;",
       `Register-ScheduledTask -TaskName '${BROKER_TASK}' -InputObject $task -Force | Out-Null;`,
       `Start-ScheduledTask -TaskName '${BROKER_TASK}' | Out-Null;`,
-      'Start-Sleep -Seconds 1;',
+      'Start-Sleep -Seconds 2;',
       `Unregister-ScheduledTask -TaskName '${BROKER_TASK}' -Confirm:$false -ErrorAction SilentlyContinue | Out-Null;`
     ].join(' ');
 
@@ -100,15 +117,24 @@ function startBrokerInInteractiveSession() {
 }
 
 async function ensureBrokerReady(retries = 8, requireElevated = false) {
+  // Only attempt to launch the broker at most twice per call (once at the
+  // start, once at the midpoint) regardless of requireElevated.  Launching on
+  // every retry creates N simultaneous broker processes all racing to bind the
+  // same named pipe — only one wins, the rest fail silently and waste seconds.
+  let startCount = 0;
+  const MAX_STARTS = 2;
+
   for (let i = 0; i < retries; i++) {
     try {
       const ping = await sendBrokerRequest({ action: 'ping', requestId: String(Date.now()) }, 1500);
       if (ping?.ok && (!requireElevated || ping?.elevated === true)) return true;
     } catch {
-      // ignore
+      // broker not yet up — fall through to start logic
     }
 
-    if (i === 0 || requireElevated) {
+    const atStartBoundary = i === 0 || i === Math.floor(retries / 2);
+    if (atStartBoundary && startCount < MAX_STARTS) {
+      startCount += 1;
       try { await startBrokerInInteractiveSession(); } catch {}
     }
 

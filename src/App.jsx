@@ -47,7 +47,31 @@ const App = () => {
   const [fixingPreflight, setFixingPreflight] = useState(false);
 
   useEffect(() => {
-    fetchDrives();
+    let unmounted = false;
+    const safeSetDrives = (v) => { if (!unmounted) setDrives(v); };
+    const safeSetIsLoading = (v) => { if (!unmounted) setIsLoading(v); };
+    const safeSetErrorMessage = (v) => { if (!unmounted) setErrorMessage(v); };
+
+    // Override the module-level fetch so the initial call is also guarded
+    const guardedFetchDrives = async () => {
+      try {
+        const response = await fetch('http://localhost:3001/api/drives');
+        const data = await response.json();
+        if (data.error) {
+          safeSetDrives(data.mockData || []);
+          safeSetErrorMessage(data.error);
+        } else {
+          safeSetDrives(Array.isArray(data) ? data : []);
+          safeSetErrorMessage(null);
+        }
+      } catch {
+        safeSetErrorMessage("Could not connect to backend server.");
+      } finally {
+        safeSetIsLoading(false);
+      }
+    };
+
+    guardedFetchDrives();
     const logInterval = setInterval(fetchLogs, 2000);
     const statusInterval = setInterval(fetchStatus, 3000);
     const nativeInterval = setInterval(fetchNativeStatus, 3000);
@@ -58,6 +82,7 @@ const App = () => {
     fetchRuntimeConfig();
     fetchPreflight();
     return () => {
+      unmounted = true;
       clearInterval(logInterval);
       clearInterval(statusInterval);
       clearInterval(nativeInterval);
@@ -213,11 +238,13 @@ const App = () => {
   };
 
   const openInExplorer = async (p) => {
-    await fetch('http://localhost:3001/api/open', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: p })
-    });
+    try {
+      await fetch('http://localhost:3001/api/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: p })
+      });
+    } catch { /* best-effort — Explorer open is fire-and-forget */ }
   };
 
   const getExplorerTarget = (drive) => {

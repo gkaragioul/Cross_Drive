@@ -1,4 +1,4 @@
-const { exec, execSync } = require('child_process');
+const { exec } = require('child_process');
 const { promisify } = require('util');
 const fs = require('fs');
 const path = require('path');
@@ -9,6 +9,7 @@ function mapDriveLetterInUserSession(letter, mapScriptPath, logFn) {
     // WinFsp mounts in the elevated session; Explorer runs non-elevated.
     // scripts/map-drive-user-session.ps1 maps the same NT device into the
     // interactive user's session (correct DOMAIN\\user principal + SHChangeNotify).
+    // NOTE: runs async (fire-and-forget) so it never blocks the HTTP response.
     const L = String(letter || '').trim().toUpperCase().replace(':', '');
     if (!/^[A-Z]$/.test(L)) return;
     const scriptPath = String(mapScriptPath || '').trim();
@@ -16,28 +17,30 @@ function mapDriveLetterInUserSession(letter, mapScriptPath, logFn) {
         logFn?.(`User-session map skipped: script missing (${scriptPath || 'unset'})`, 'warning');
         return;
     }
-    try {
-        execSync(
-            `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}" -Letter "${L}"`,
-            { timeout: 60000, windowsHide: true, stdio: 'ignore' }
-        );
-        logFn?.(`User-session drive map completed for ${L}: (Explorer should list this PC).`, 'info');
-    } catch (e) {
-        const tail = (() => {
-            try {
-                const logFile = path.join(process.env.ProgramData || 'C:\\ProgramData', 'MacMount', 'user-session-map.log');
-                if (fs.existsSync(logFile)) {
-                    const lines = fs.readFileSync(logFile, 'utf8').trim().split(/\r?\n/);
-                    return lines.slice(-6).join(' | ');
-                }
-            } catch { /* ignore */ }
-            return '';
-        })();
-        logFn?.(
-            `User-session drive map failed for ${L}: ${e.message || e}. ${tail ? `Log tail: ${tail}` : 'See C:\\ProgramData\\MacMount\\user-session-map.log'}`,
-            'warning'
-        );
-    }
+    exec(
+        `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}" -Letter "${L}"`,
+        { timeout: 60000, windowsHide: true },
+        (error) => {
+            if (error) {
+                const tail = (() => {
+                    try {
+                        const logFile = path.join(process.env.ProgramData || 'C:\\ProgramData', 'MacMount', 'user-session-map.log');
+                        if (fs.existsSync(logFile)) {
+                            const lines = fs.readFileSync(logFile, 'utf8').trim().split(/\r?\n/);
+                            return lines.slice(-6).join(' | ');
+                        }
+                    } catch { /* ignore */ }
+                    return '';
+                })();
+                logFn?.(
+                    `User-session drive map failed for ${L}: ${error.message || error}. ${tail ? `Log tail: ${tail}` : 'See C:\\ProgramData\\MacMount\\user-session-map.log'}`,
+                    'warning'
+                );
+            } else {
+                logFn?.(`User-session drive map completed for ${L}: (Explorer should list this PC).`, 'info');
+            }
+        }
+    );
 }
 
 function syncAssignedLetter(driveId, letter = null) {
@@ -59,11 +62,12 @@ function syncAssignedLetter(driveId, letter = null) {
         ].join('; ');
     }
 
-    execSync(`powershell -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command "${script}"`, {
+    // Fire-and-forget — registry writes are best-effort state persistence and
+    // must not block the mount/unmount HTTP response.
+    exec(`powershell -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command "${script}"`, {
         timeout: 10000,
-        windowsHide: true,
-        stdio: ['ignore', 'ignore', 'ignore']
-    });
+        windowsHide: true
+    }, () => {});
 }
 
 module.exports = function mountMountRoutes(app, ctx) {
@@ -248,15 +252,6 @@ module.exports = function mountMountRoutes(app, ctx) {
         addLog(`USER ACTION: Requesting unmount for Physical Drive ${id}`);
 
         try {
-            // Record state before clearing (preserve existing behavior)
-            if (/^\d+$/.test(driveId) && /^[A-Z]$/.test(rememberedLetter)) {
-                try {
-                    syncAssignedLetter(driveId, rememberedLetter);
-                } catch (e) {
-                    addLog(`Native unmount state persistence warning for drive ${driveId}: ${e.message}`, 'warning');
-                }
-            }
-
             // 1. Broker unmount first — awaited so it completes before PS tears down the mount point
             if (RUNTIME_NATIVE_MOUNT_ENABLED && nativeMountState.has(driveId)) {
                 try {

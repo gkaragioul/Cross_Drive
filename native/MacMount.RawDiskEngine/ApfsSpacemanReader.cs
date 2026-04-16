@@ -170,8 +170,10 @@ internal sealed class ApfsSpacemanReader
     {
         lock (_sync)
         {
-            var idx = (int)block;
-            return block < _totalBlocks && idx < _bitmap.Length && _bitmap[idx];
+            // Guard ulong→int cast: if block >= bitmap length (including the int.MaxValue cap
+            // applied at load time for very large volumes), treat as used.
+            if (block >= _totalBlocks || block >= (ulong)_bitmap.Length) return false;
+            return _bitmap[(int)block];
         }
     }
 
@@ -180,8 +182,8 @@ internal sealed class ApfsSpacemanReader
     {
         lock (_sync)
         {
+            if (block >= _totalBlocks || block >= (ulong)_bitmap.Length) return;
             var idx = (int)block;
-            if (block >= _totalBlocks || idx >= _bitmap.Length) return;
             if (_bitmap[idx])
             {
                 _bitmap[idx] = false;
@@ -195,8 +197,8 @@ internal sealed class ApfsSpacemanReader
     {
         lock (_sync)
         {
+            if (block >= _totalBlocks || block >= (ulong)_bitmap.Length) return;
             var idx = (int)block;
-            if (block >= _totalBlocks || idx >= _bitmap.Length) return;
             if (!_bitmap[idx])
             {
                 _bitmap[idx] = true;

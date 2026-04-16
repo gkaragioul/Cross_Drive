@@ -1374,6 +1374,8 @@ public sealed class HfsPlusNativeReader : IDisposable
         // Extract first key from right node
         var (firstRecOff, firstRecLen) = GetRecordOffsetAndLength(newNodeBuf, 0, rightRecords.Count);
         var keyLenField = BinaryPrimitives.ReadUInt16BigEndian(newNodeBuf.AsSpan(firstRecOff, 2));
+        if (firstRecOff + 2 + keyLenField > newNodeBuf.Length)
+            throw new InvalidOperationException($"Malformed HFS+ key at node record offset {firstRecOff}: keyLen={keyLenField} exceeds node buffer ({newNodeBuf.Length} bytes).");
         var firstKey = new byte[2 + keyLenField];
         Buffer.BlockCopy(newNodeBuf, firstRecOff, firstKey, 0, firstKey.Length);
 
@@ -1595,6 +1597,8 @@ public sealed class HfsPlusNativeReader : IDisposable
         // Extract first key of new (right) node for parent insertion
         var (firstRecOff, _) = GetRecordOffsetAndLength(newNodeBuf, 0, rightRecords.Count);
         var keyLenField = BinaryPrimitives.ReadUInt16BigEndian(newNodeBuf.AsSpan(firstRecOff, 2));
+        if (firstRecOff + 2 + keyLenField > newNodeBuf.Length)
+            throw new InvalidOperationException($"Malformed HFS+ key at index node record offset {firstRecOff}: keyLen={keyLenField} exceeds node buffer ({newNodeBuf.Length} bytes).");
         var firstKey = new byte[2 + keyLenField];
         Buffer.BlockCopy(newNodeBuf, firstRecOff, firstKey, 0, firstKey.Length);
 
@@ -1625,6 +1629,8 @@ public sealed class HfsPlusNativeReader : IDisposable
             var leftNumRecs = BinaryPrimitives.ReadUInt16BigEndian(oldRootBuf.AsSpan(10, 2));
             var (leftRecOff, _) = GetRecordOffsetAndLength(oldRootBuf, 0, leftNumRecs);
             var leftKeyLen = BinaryPrimitives.ReadUInt16BigEndian(oldRootBuf.AsSpan(leftRecOff, 2));
+            if (leftRecOff + 2 + leftKeyLen > oldRootBuf.Length)
+                throw new InvalidOperationException($"Malformed HFS+ key at root node record offset {leftRecOff}: keyLen={leftKeyLen} exceeds node buffer ({oldRootBuf.Length} bytes).");
             leftFirstKey = new byte[2 + leftKeyLen];
             Buffer.BlockCopy(oldRootBuf, leftRecOff, leftFirstKey, 0, leftFirstKey.Length);
         }

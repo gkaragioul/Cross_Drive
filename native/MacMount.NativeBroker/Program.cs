@@ -321,7 +321,7 @@ internal sealed class BrokerService
 
         if (_mounted.TryRemove(driveId, out var existing))
         {
-            existing.Dispose();
+            try { existing.Dispose(); } catch { /* best-effort: clear old mount before replacing */ }
         }
 
         IRawFileSystemProvider? provider = null;
@@ -483,16 +483,18 @@ internal sealed class BrokerService
             var preflight = host.Preflight(mountPoint);
             if (preflight != 0)
             {
-                host.Dispose();
-                provider.Dispose();
+                // Dispose in correct order; swallow secondary exceptions so the
+                // original error code is preserved in the returned response.
+                try { host.Dispose(); } catch { }
+                try { provider.Dispose(); } catch { }
                 return new { ok = false, requestId, error = $"WinFsp preflight failed: 0x{preflight:X8}" };
             }
 
             var rc = host.Mount(mountPoint, null, false, 0);
             if (rc != 0)
             {
-                host.Dispose();
-                provider.Dispose();
+                try { host.Dispose(); } catch { }
+                try { provider.Dispose(); } catch { }
                 return new { ok = false, requestId, error = $"WinFsp mount failed: 0x{rc:X8}" };
             }
 
@@ -724,7 +726,9 @@ internal sealed class BrokerRawProviderFileSystem : FileSystemBase
 
     private static void DebugLog(string msg)
     {
+#if DEBUG
         try { File.AppendAllText(_debugLog, $"[{DateTime.Now:HH:mm:ss.fff}] {msg}\n"); } catch { }
+#endif
     }
 
     // WinFsp constants for Create disposition
@@ -915,7 +919,11 @@ internal sealed class BrokerRawProviderFileSystem : FileSystemBase
             try
             {
                 Marshal.Copy(buffer, temp, 0, (int)length);
-                var writeOffset = writeToEndOfFile ? entry.Size : (long)offset;
+                // Re-query live size for append writes — entry was captured at Open() time
+                // and may be stale if another write has extended the file since.
+                var writeOffset = writeToEndOfFile
+                    ? (_provider.GetEntry(entry.Path)?.Size ?? entry.Size)
+                    : (long)offset;
                 var written = _provider.WriteFile(entry.Path, writeOffset, temp.AsSpan(0, (int)length));
                 bytesTransferred = (uint)Math.Max(0, written);
                 DebugLog($"Write OK: path='{entry.Path}' written={written}");
@@ -996,6 +1004,7 @@ internal sealed class BrokerRawProviderFileSystem : FileSystemBase
 
         if (!iterator.MoveNext())
         {
+            iterator.Dispose();
             return false;
         }
 
@@ -1036,6 +1045,8 @@ internal sealed class BrokerRawProviderFileSystem : FileSystemBase
         {
             var oldPath = Normalize(fileName);
             var newPath = Normalize(newFileName);
+            if (!replaceIfExists && _provider.GetEntry(newPath) != null)
+                return unchecked((int)0xC0000035); // STATUS_OBJECT_NAME_COLLISION
             _provider.Rename(oldPath, newPath);
             return 0;
         }

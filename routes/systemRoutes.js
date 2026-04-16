@@ -7,12 +7,12 @@ module.exports = function mountSystemRoutes(app, ctx) {
         addLog, logs, setupState, getNativeStatus,
         RUNTIME_MOUNT_MODE, RUNTIME_NATIVE_MOUNT_ENABLED,
         RUNTIME_CANARY_PERCENT, RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK,
-        isAdmin, hasRawDiskAccess
+        isAdmin, hasRawDiskAccess, PS_PATH
     } = ctx;
 
     function runPsScript(action, callback) {
-        const scriptPath = path.join(__dirname, '..', 'scripts', 'MacMount.ps1');
-        const cmd = `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}" -Action "${action}"`;
+        // Use PS_PATH from context (resolves correctly for both dev and packaged builds)
+        const cmd = `powershell -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${PS_PATH}" -Action "${action}"`;
         exec(cmd, { windowsHide: true, timeout: 60000 }, (err, stdout, stderr) => {
             if (stderr) {
                 addLog(`Preflight stderr: ${stderr}`, 'warn');
@@ -120,11 +120,13 @@ module.exports = function mountSystemRoutes(app, ctx) {
         exec(`powershell -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command "${openCmd}"`, { windowsHide: true }, (err) => {
             if (err) {
                 addLog(`Explorer Open Error: ${err.message}`, 'error');
-                return;
+            } else {
+                addLog(`Explorer open dispatched in user session: ${safePath}`, 'success');
             }
-            addLog(`Explorer open dispatched in user session: ${safePath}`, 'success');
         });
-        res.json({ success: true });
+        // Response is intentionally non-blocking — Explorer opens asynchronously.
+        // dispatched=true means the shell command was sent; it does not guarantee Explorer opened.
+        res.json({ success: true, dispatched: true });
     });
 
     app.get('/api/support/bundle', async (req, res) => {

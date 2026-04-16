@@ -604,11 +604,17 @@ internal sealed class ApfsWriter : IDisposable
 
     private async Task WriteBlocksAsync(ulong blockNumber, byte[] data, CancellationToken ct)
     {
-        // Cast to long BEFORE multiplying so the multiplication can't silently
-        // overflow ulong and wrap to an in-range offset. For any real disk
-        // (< 8 EB) long math has plenty of headroom; if the device receives
-        // an out-of-range offset, WriteAsync will throw an IOException.
+        // Defense in depth:
+        //  - Cast to long BEFORE multiplying so the multiplication can't silently
+        //    overflow ulong and wrap to an in-range offset.
+        //  - `checked` catches any remaining overflow (real disks are < 8 EB so
+        //    long math has plenty of headroom, but be paranoid).
+        //  - Explicit bounds check rejects garbage block numbers up front with a
+        //    clear error instead of relying on the device to raise an IOException.
         var offset = checked(_partitionOffset + (long)blockNumber * (long)_blockSize);
+        if (offset < _partitionOffset || offset + data.Length > _device.Length)
+            throw new ArgumentOutOfRangeException(nameof(blockNumber),
+                $"Block {blockNumber} at byte offset {offset} with {data.Length} bytes would exceed device length {_device.Length}.");
         await _device.WriteAsync(offset, data, data.Length, ct).ConfigureAwait(false);
     }
 

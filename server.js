@@ -257,46 +257,65 @@ function removeUserSessionDriveMapping(letter) {
     const L = String(letter || '').trim().toUpperCase().replace(':', '');
     if (!/^[A-Z]$/.test(L)) return;
 
-    const ps = [
-        `$letter='${L}';`,
-        "$scriptPath = Join-Path ($env:ProgramData ?? 'C:\\ProgramData') \"MacMount\\user-unmount-$letter.ps1\";",
-        "$script = @\"",
-        "Add-Type -TypeDefinition @'",
-        'using System;',
-        'using System.Runtime.InteropServices;',
-        'using System.Text;',
-        'public class UM {',
-        '    [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Auto)]',
-        '    public static extern bool DefineDosDevice(uint f, string d, string t);',
-        '    [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]',
-        '    public static extern uint QueryDosDevice(string d, StringBuilder buf, uint max);',
-        '}',
-        "'@ -ErrorAction SilentlyContinue",
-        '`$sb = New-Object System.Text.StringBuilder 512',
-        '`$qLen = [UM]::QueryDosDevice("$letter`:", `$sb, 512)',
-        'if (`$qLen -gt 0) {',
-        '    [UM]::DefineDosDevice(7, "$letter`:", `$sb.ToString()) | Out-Null',
-        '} else {',
-        '    [UM]::DefineDosDevice(2, "$letter`:", $null) | Out-Null',
-        '}',
-        '"@;',
-        'New-Item -ItemType Directory -Path (Split-Path $scriptPath) -Force | Out-Null;',
-        'Set-Content -Path $scriptPath -Value $script -Force -Encoding UTF8;',
-        "$taskName = \"MacMountUnmap$letter\";",
-        '$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument ("-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"" + $scriptPath + "`"");',
-        '$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited;',
-        '$task = New-ScheduledTask -Action $action -Principal $principal;',
-        'Register-ScheduledTask -TaskName $taskName -InputObject $task -Force | Out-Null;',
-        'Start-ScheduledTask -TaskName $taskName | Out-Null;',
-        'Start-Sleep -Milliseconds 800;',
-        'Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue | Out-Null;',
-        'Remove-Item -Path ("HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\DriveIcons\\" + $letter) -Recurse -Force -ErrorAction SilentlyContinue;'
+    // Write the inner unmap script to a temp file so we don't have to embed
+    // multi-line PowerShell here-strings or unescaped double-quotes inside
+    // a -Command "..." argument (both caused silent failures before).
+    const tmpDir = process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp';
+    const tmpScript = path.join(tmpDir, `MacMountUnmap_${L}_${Date.now()}.ps1`);
+
+    // The inner script runs non-elevated (RunLevel Limited) via scheduled task.
+    // It calls QueryDosDevice / DefineDosDevice to remove the drive mapping from
+    // the interactive user session.
+    const innerScript = [
+        `Add-Type -TypeDefinition @'`,
+        `using System;`,
+        `using System.Runtime.InteropServices;`,
+        `using System.Text;`,
+        `public class MacMountUmDef_${L} {`,
+        `    [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Auto)]`,
+        `    public static extern bool DefineDosDevice(uint f, string d, string t);`,
+        `    [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]`,
+        `    public static extern uint QueryDosDevice(string d, StringBuilder buf, uint max);`,
+        `}`,
+        `'@ -ErrorAction SilentlyContinue`,
+        `$sb = New-Object System.Text.StringBuilder 512`,
+        `$qLen = [MacMountUmDef_${L}]::QueryDosDevice('${L}:', $sb, 512)`,
+        `if ($qLen -gt 0) {`,
+        `    [MacMountUmDef_${L}]::DefineDosDevice(7, '${L}:', $sb.ToString()) | Out-Null`,
+        `} else {`,
+        `    [MacMountUmDef_${L}]::DefineDosDevice(2, '${L}:', $null) | Out-Null`,
+        `}`,
+        `Remove-Item -Path 'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\DriveIcons\\${L}' -Recurse -Force -ErrorAction SilentlyContinue`,
+    ].join('\r\n');
+
+    try {
+        fs.writeFileSync(tmpScript, innerScript, 'utf8');
+    } catch {
+        return; // Can't write temp file; skip cleanup silently
+    }
+
+    const taskName = `MacMountUnmap${L}_${Date.now()}`;
+    // Build the outer psCmd using only single-quoted PS strings and concatenation
+    // to avoid any double-quote escaping issues inside -Command "..."
+    const safeScript = tmpScript.replace(/'/g, "''");
+    const psCmd = [
+        `$tmp = '${safeScript}';`,
+        `$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $tmp + '"');`,
+        `$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited;`,
+        `$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries;`,
+        `$task = New-ScheduledTask -Action $action -Principal $principal -Settings $settings;`,
+        `Register-ScheduledTask -TaskName '${taskName}' -InputObject $task -Force | Out-Null;`,
+        `Start-ScheduledTask -TaskName '${taskName}' | Out-Null;`,
+        `Start-Sleep -Milliseconds 1200;`,
+        `Unregister-ScheduledTask -TaskName '${taskName}' -Confirm:$false -ErrorAction SilentlyContinue | Out-Null;`,
     ].join(' ');
 
-    exec(`powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "${ps}"`, {
+    exec(`powershell -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command "${psCmd}"`, {
         timeout: 15000,
         windowsHide: true
-    }, () => {});
+    }, () => {
+        try { fs.unlinkSync(tmpScript); } catch {}
+    });
 }
 
 function cleanupSingleDriveLetter(letter) {
@@ -554,7 +573,7 @@ const MAP_USER_SESSION_PS_PATH = (() => {
 
 function runPsJson(action, extraArgs = '', timeout = 120000) {
     return new Promise((resolve, reject) => {
-        const cmd = `powershell -ExecutionPolicy Bypass -File "${PS_PATH}" -Action ${action} ${extraArgs}`.trim();
+        const cmd = `powershell -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${PS_PATH}" -Action ${action} ${extraArgs}`.trim();
         exec(cmd, { timeout, windowsHide: true }, (error, stdout, stderr) => {
             if (stderr) addLog(`PS ${action} stderr: ${stderr}`, 'info');
             if (error) return reject(error);

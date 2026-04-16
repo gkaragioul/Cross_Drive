@@ -82,7 +82,7 @@ function sendNativeRequest(payload, timeoutMs = 3000) {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        socket.end();
+        socket.destroy();
         const line = buffer.split('\n')[0].trim();
         try {
           resolve(JSON.parse(line));

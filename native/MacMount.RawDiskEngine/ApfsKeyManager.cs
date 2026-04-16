@@ -100,7 +100,8 @@ public sealed class ApfsKeyManager
             return null;
 
         var keybagBuf = new byte[keybagByteSize];
-        await _device.ReadAsync(keybagByteOffset, keybagBuf, keybagBuf.Length, ct).ConfigureAwait(false);
+        var keybagRead = await _device.ReadAsync(keybagByteOffset, keybagBuf, keybagBuf.Length, ct).ConfigureAwait(false);
+        if (keybagRead < keybagBuf.Length) return null; // partial read — keybag data is incomplete
 
         return keybagBuf;
     }

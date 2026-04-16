@@ -37,7 +37,7 @@ internal sealed class DecryptingRawBlockDevice : IRawBlockDevice
         if (read <= 0) return 0;
 
         var srcOffset = (int)(offset - alignedOffset);
-        var bytesToCopy = Math.Min(count, read - srcOffset);
+        var bytesToCopy = Math.Min(count, Math.Max(0, read - srcOffset));
 
         // Decrypt each sector. The XTS tweak (unit number) is the sector index
         // from the start of the device, incrementing by 1 for each 512-byte sector.

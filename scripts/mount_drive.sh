@@ -123,10 +123,12 @@ try_apfs_best_volume() {
 for PART in $PARTITIONS; do
   DEVPATH="/dev/$PART"
 
-  # Skip very small partitions (< 500MB) — likely EFI/recovery
-  SIZE_KB=$(lsblk -bdno SIZE "$DEVPATH" 2>/dev/null || echo 0)
-  if [ -n "$SIZE_KB" ] && [ "$SIZE_KB" -lt 524288000 ]; then
-    echo "Skipping $DEVPATH (only ${SIZE_KB} bytes — likely EFI/recovery)" >> /tmp/mount_err
+  # Skip very small partitions (< 500MB) — likely EFI/recovery.
+  # Only skip when lsblk reports a known non-zero size; if lsblk fails (SIZE_BYTES empty
+  # or 0) we proceed rather than incorrectly discarding a valid partition.
+  SIZE_BYTES=$(lsblk -bdno SIZE "$DEVPATH" 2>/dev/null)
+  if [ -n "$SIZE_BYTES" ] && [ "$SIZE_BYTES" -gt 0 ] && [ "$SIZE_BYTES" -lt 524288000 ]; then
+    echo "Skipping $DEVPATH (only ${SIZE_BYTES} bytes — likely EFI/recovery)" >> /tmp/mount_err
     continue
   fi
 

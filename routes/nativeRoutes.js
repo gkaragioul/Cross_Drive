@@ -55,6 +55,12 @@ module.exports = function mountNativeRoutes(app, ctx) {
                 error: 'driveId, letter and (physicalDrivePath or physicalDriveId) are required.'
             });
         }
+        if (!/^[A-Za-z]$/.test(String(letter))) {
+            return res.status(400).json({
+                ok: false,
+                error: 'letter must be a single drive letter A–Z.'
+            });
+        }
 
         try {
             const result = await sendNativeWithBoot({
