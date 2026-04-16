@@ -1,7 +1,7 @@
 const net = require('net');
 const path = require('path');
 const fs = require('fs');
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 
 const PIPE_PATH = '\\\\.\\pipe\\macmount.broker';
 const BROKER_TASK = 'MacMountStartUserBroker';
@@ -78,45 +78,52 @@ function startBrokerInInteractiveSession() {
   return new Promise((resolve, reject) => {
     const brokerExe = getBrokerExecutable();
 
-    // Why this is more involved than it looks:
+    // The Express server runs inside the elevated Electron main process (main.js
+    // re-launches itself as Administrator via UAC), so we already have admin
+    // rights — no need to bounce through Task Scheduler to get them. Spawning
+    // the broker as a direct, detached, hidden child of this process gives:
+    //   • Admin rights (inherited).
+    //   • CREATE_NO_WINDOW (windowsHide:true) — Windows actually honors this for
+    //     a direct child, unlike Task Scheduler which always allocates a
+    //     visible conhost in the user's interactive session.
+    //   • detached: true → broker survives if Express dies briefly (rare).
+    //   • stdio:'ignore' → broker's Console.WriteLine doesn't keep a console
+    //     handle alive and doesn't backpressure if no one reads it.
     //
-    // The broker is a .NET CONSOLE application. When Task Scheduler launches a
-    // console exe (even via `powershell -WindowStyle Hidden -Command "& '...'"`)
-    // in interactive session mode, the spawned console child still gets its own
-    // visible conhost window because Task Scheduler allocates a session-attached
-    // console for it. The PowerShell wrapper's `-WindowStyle Hidden` only hides
-    // PowerShell's own window, not the broker child's.
-    //
-    // The fix: have the scheduled task launch a hidden PowerShell that uses
-    // `Start-Process -WindowStyle Hidden -FilePath '...'`. Start-Process calls
-    // CreateProcess with STARTUPINFO.dwFlags = STARTF_USESHOWWINDOW and
-    // wShowWindow = SW_HIDE, which actually hides the broker's conhost — no
-    // visible window even with interactive Task Scheduler.
+    // The previous Task-Scheduler-based path popped a visible conhost on every
+    // ensureBrokerReady() retry — observed as "endless terminal windows
+    // flashing". Direct spawn is cleaner AND invisible.
     const brokerDir = brokerExe ? path.dirname(brokerExe) : path.join(__dirname, '..');
-    const startProcessArgs = brokerExe
-      ? `-FilePath '${brokerExe.replace(/'/g, "''")}' -WindowStyle Hidden -WorkingDirectory '${brokerDir.replace(/'/g, "''")}'`
-      : `-FilePath 'dotnet' -ArgumentList 'run','--project','${path.join(__dirname, '..', 'native', 'MacMount.NativeBroker', 'MacMount.NativeBroker.csproj').replace(/'/g, "''")}' -WindowStyle Hidden -WorkingDirectory '${brokerDir.replace(/'/g, "''")}'`;
 
-    const innerPsCommand = `Start-Process ${startProcessArgs}`;
-    const actionArg = `-NoProfile -NonInteractive -WindowStyle Hidden -Command "${innerPsCommand.replace(/"/g, '\\"')}"`;
-
-    const actionPs = `New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '${actionArg.replace(/'/g, "''")}' -WorkingDirectory '${brokerDir.replace(/'/g, "''")}'`;
-
-    const cmd = [
-      `$action = ${actionPs};`,
-      "$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest;",
-      "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10);",
-      "$task = New-ScheduledTask -Action $action -Principal $principal -Settings $settings;",
-      `Register-ScheduledTask -TaskName '${BROKER_TASK}' -InputObject $task -Force | Out-Null;`,
-      `Start-ScheduledTask -TaskName '${BROKER_TASK}' | Out-Null;`,
-      'Start-Sleep -Seconds 2;',
-      `Unregister-ScheduledTask -TaskName '${BROKER_TASK}' -Confirm:$false -ErrorAction SilentlyContinue | Out-Null;`
-    ].join(' ');
-
-    exec(`powershell -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command "${cmd}"`, { windowsHide: true }, (error) => {
-      if (error) return reject(error);
+    try {
+      let child;
+      if (brokerExe) {
+        child = spawn(brokerExe, [], {
+          cwd: brokerDir,
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: true,
+        });
+      } else {
+        // Fallback: dotnet run the project directly (dev environments without a
+        // published broker.exe). Same hidden+detached treatment.
+        const projPath = path.join(__dirname, '..', 'native', 'MacMount.NativeBroker', 'MacMount.NativeBroker.csproj');
+        child = spawn('dotnet', ['run', '--project', projPath], {
+          cwd: brokerDir,
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: true,
+        });
+      }
+      // unref() so this child doesn't keep the Node event loop alive — the broker
+      // outlives this process intentionally.
+      child.unref();
+      child.on('error', (err) => reject(err));
+      // Resolve immediately; ensureBrokerReady() polls for the pipe to confirm.
       resolve();
-    });
+    } catch (err) {
+      reject(err);
+    }
   });
 }
 
