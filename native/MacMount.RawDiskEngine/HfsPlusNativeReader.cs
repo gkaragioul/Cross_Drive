@@ -1780,18 +1780,24 @@ public sealed class HfsPlusNativeReader : IDisposable
             // Need to allocate more blocks
             var additionalBytes = requiredSize - currentAllocatedBytes;
             var additionalBlocks = (uint)((additionalBytes + _header.BlockSize - 1) / _header.BlockSize);
-            var newStart = await AllocateBlocksAsync(additionalBlocks, ct).ConfigureAwait(false);
 
-            // Add new extent to fork — find first empty extent slot
+            // Find first empty extent slot BEFORE allocating, so we can refuse
+            // cleanly instead of leaking allocated blocks if the fork is full.
             var extents = new List<HfsPlusExtent>(currentFork.Extents);
+            int emptySlot = -1;
             for (int i = 0; i < extents.Count; i++)
             {
-                if (extents[i].BlockCount == 0)
-                {
-                    extents[i] = new HfsPlusExtent(newStart, additionalBlocks);
-                    break;
-                }
+                if (extents[i].BlockCount == 0) { emptySlot = i; break; }
             }
+            if (emptySlot < 0)
+            {
+                throw new InvalidOperationException(
+                    $"WriteFileData: file CNID {fileCnid} already uses all {extents.Count} inline extents; " +
+                    "extents-overflow file is not supported on write.");
+            }
+
+            var newStart = await AllocateBlocksAsync(additionalBlocks, ct).ConfigureAwait(false);
+            extents[emptySlot] = new HfsPlusExtent(newStart, additionalBlocks);
 
             currentFork = new HfsPlusForkInfo(Math.Max(currentFork.LogicalSize, requiredSize), extents.ToArray());
 

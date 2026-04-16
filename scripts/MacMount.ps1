@@ -233,12 +233,20 @@ function Get-Drives {
         try {
             $partitions = Get-Partition -DiskNumber $id -ErrorAction SilentlyContinue
             if ($partitions) {
+                $hfsGuid  = [guid]"48465300-0000-11AA-AA11-00306543ECAC"
+                $apfsGuid = [guid]"7C3457EF-0000-11AA-AA11-00306543ECAC"
                 foreach ($p in $partitions) {
+                    # Normalize GptType to a [guid] for case-insensitive, format-tolerant comparison.
+                    # Get-Partition returns GptType in mixed case (with or without braces) depending on
+                    # Windows build; substring -match worked by accident but failed when WMI returned
+                    # the value with surrounding braces.
                     $type = "$($p.GptType)"
-                    if ($type -match "48465300-0000-11AA-AA11-00306543ECAC" -or $p.Type -match "HFS") {
+                    $typeGuid = $null
+                    try { $typeGuid = [guid]($type -replace '[{}]', '') } catch { }
+                    if (($typeGuid -eq $hfsGuid) -or ($p.Type -match "HFS")) {
                         $isMac = $true; $format = "HFS+"; break
                     }
-                    if ($type -match "7C3457EF-0000-11AA-AA11-00306543ECAC" -or $p.Type -match "APFS") {
+                    if (($typeGuid -eq $apfsGuid) -or ($p.Type -match "APFS")) {
                         $isMac = $true; $format = "APFS"; break
                     }
                     # MBR-based HFS+ (partition type 0xAF) — shows as Unknown in Windows

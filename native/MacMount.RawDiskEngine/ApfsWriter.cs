@@ -77,11 +77,13 @@ internal sealed class ApfsBlockAllocator : IDisposable
     public ulong? AllocateBlocks(uint count)
     {
         if (!_bitmapLoaded || count == 0) return null;
+        if (count > _blockCount) return null;
 
         lock (_sync)
         {
-            // Simple first-fit allocation
-            for (ulong start = 0; start <= _blockCount - count; start++)
+            // Simple first-fit allocation. Use addition (not _blockCount - count)
+            // because the latter underflows when count > _blockCount.
+            for (ulong start = 0; start + count <= _blockCount; start++)
             {
                 if (IsRangeFree(start, count))
                 {
@@ -169,6 +171,7 @@ internal sealed class ApfsWriter : IDisposable
     private readonly ulong _volumeOid;
     private readonly ulong? _volumeSuperblockBlock;
     private readonly object _sync = new();
+    private readonly SemaphoreSlim _flushLock = new(1, 1);
     private ulong _currentXid;
     private ulong _nextObjectId = 1000; // Starting CNID for new objects
     private long _pendingFileCountDelta;
@@ -556,14 +559,19 @@ internal sealed class ApfsWriter : IDisposable
         if (_volumeSuperblockBlock is null) return;
         if (_pendingFileCountDelta == 0 && _pendingDirCountDelta == 0) return;
 
-        var offset = _partitionOffset + (long)(_volumeSuperblockBlock.Value * _blockSize);
-        var buf = new byte[_blockSize];
-        var read = await _device.ReadAsync(offset, buf, buf.Length, ct).ConfigureAwait(false);
-        if (read < (int)_blockSize) return;
-
-        // Increment transaction ID in object header (o_xid at 0x10)
-        lock (_sync)
+        // Serialize the entire read-modify-write cycle so concurrent flushes
+        // can't interleave a stale read with someone else's write.
+        await _flushLock.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
+            if (_pendingFileCountDelta == 0 && _pendingDirCountDelta == 0) return;
+
+            var offset = _partitionOffset + (long)(_volumeSuperblockBlock.Value * _blockSize);
+            var buf = new byte[_blockSize];
+            var read = await _device.ReadAsync(offset, buf, buf.Length, ct).ConfigureAwait(false);
+            if (read < (int)_blockSize) return;
+
+            // Increment transaction ID in object header (o_xid at 0x10)
             _currentXid++;
             BinaryPrimitives.WriteUInt64LittleEndian(buf.AsSpan(0x10, 8), _currentXid);
 
@@ -584,15 +592,23 @@ internal sealed class ApfsWriter : IDisposable
                 BinaryPrimitives.WriteUInt64LittleEndian(buf.AsSpan(0xB0, 8), next);
                 _pendingDirCountDelta = 0;
             }
-        }
 
-        ApfsChecksum.WriteChecksum(buf.AsSpan());
-        await _device.WriteAsync(offset, buf, buf.Length, ct).ConfigureAwait(false);
+            ApfsChecksum.WriteChecksum(buf.AsSpan());
+            await _device.WriteAsync(offset, buf, buf.Length, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _flushLock.Release();
+        }
     }
 
     private async Task WriteBlocksAsync(ulong blockNumber, byte[] data, CancellationToken ct)
     {
-        var offset = _partitionOffset + (long)(blockNumber * _blockSize);
+        // Cast to long BEFORE multiplying so the multiplication can't silently
+        // overflow ulong and wrap to an in-range offset. For any real disk
+        // (< 8 EB) long math has plenty of headroom; if the device receives
+        // an out-of-range offset, WriteAsync will throw an IOException.
+        var offset = checked(_partitionOffset + (long)blockNumber * (long)_blockSize);
         await _device.WriteAsync(offset, data, data.Length, ct).ConfigureAwait(false);
     }
 

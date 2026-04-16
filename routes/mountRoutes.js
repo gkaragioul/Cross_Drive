@@ -276,6 +276,13 @@ module.exports = function mountMountRoutes(app, ctx) {
                 if (/^\d+$/.test(driveId)) {
                     try { syncAssignedLetter(driveId, null); } catch {}
                 }
+                // The broker unmount above already removed the WinFsp host, so the
+                // user-session drive map is now a ghost letter. Clean it up
+                // explicitly — otherwise Explorer keeps showing a dead drive
+                // until the next session restart.
+                if (/^[A-Z]$/.test(rememberedLetter)) {
+                    try { cleanupSingleDriveLetter(rememberedLetter); } catch {}
+                }
                 return res.status(500).json({ error: execError.message });
             }
 

@@ -129,10 +129,13 @@ module.exports = function mountDriveRoutes(app, ctx) {
                         continue;
                     }
 
-                    // If broker status is temporarily unavailable, keep a valid native letter visible.
+                    // If broker status is temporarily unavailable, keep a valid native letter
+                    // visible — but only if the drive root actually exists. Otherwise the UI
+                    // shows a phantom mount and the next mount attempt collides with the stale
+                    // entry.
                     const remembered = nativeMountState.get(id);
                     const rememberedLetter = String(remembered?.letter || '').trim().toUpperCase().replace(':', '');
-                    if (/^[A-Z]$/.test(rememberedLetter)) {
+                    if (/^[A-Z]$/.test(rememberedLetter) && fs.existsSync(`${rememberedLetter}:\\`)) {
                         drive.mounted = true;
                         drive.mountPath = fs.existsSync(`${rememberedLetter}:\\root`) ? `${rememberedLetter}:\\root\\` : `${rememberedLetter}:\\`;
                         drive.driveLetter = rememberedLetter;
