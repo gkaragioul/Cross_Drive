@@ -362,14 +362,24 @@ internal sealed class BrokerService
                 };
             }
 
+            var fsType = plan.FileSystemType ?? string.Empty;
+            var isApfs = string.Equals(fsType, "APFS", StringComparison.OrdinalIgnoreCase);
+            var isHfs = string.Equals(fsType, "HFS+", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(fsType, "HFSX", StringComparison.OrdinalIgnoreCase);
+
             if (plan.NeedsPassword && string.IsNullOrWhiteSpace(password))
             {
                 return new
                 {
                     ok = false,
                     requestId,
-                    error = "Encrypted APFS volume requires a password.",
+                    error = isApfs
+                        ? "Encrypted APFS volume requires a password."
+                        : "Encrypted or locked HFS volume cannot be mounted as plain HFS+.",
                     needsPassword = true,
+                    suggestion = isApfs
+                        ? "Enter the disk password and retry."
+                        : "This looks like an encrypted HFS/CoreStorage-style volume. Native HFS unlock is not implemented yet; decrypt it on a Mac first, then retry.",
                     plan = new
                     {
                         plan.PhysicalDrivePath,
@@ -386,7 +396,34 @@ internal sealed class BrokerService
                 };
             }
 
-            if (plan.IsEncrypted && !string.IsNullOrWhiteSpace(password))
+            if (plan.IsEncrypted && !isApfs)
+            {
+                return new
+                {
+                    ok = false,
+                    requestId,
+                    error = isHfs
+                        ? "Encrypted HFS/CoreStorage-style volumes are detected but cannot be unlocked by the native HFS provider yet."
+                        : $"Encrypted filesystem '{fsType}' is not supported by the native unlock path yet.",
+                    needsPassword = false,
+                    suggestion = "Use a Mac to decrypt or convert the drive to an unencrypted external volume, then retry.",
+                    plan = new
+                    {
+                        plan.PhysicalDrivePath,
+                        plan.FileSystemType,
+                        plan.TotalBytes,
+                        plan.Writable,
+                        plan.Notes,
+                        plan.IsEncrypted,
+                        plan.NeedsPassword,
+                        plan.HardwareBound,
+                        plan.PartitionOffsetBytes,
+                        plan.PartitionLengthBytes
+                    }
+                };
+            }
+
+            if (plan.IsEncrypted && isApfs && !string.IsNullOrWhiteSpace(password))
             {
                 var vek = await TryUnlockEncryptedApfsAsync(plan, password).ConfigureAwait(false);
                 if (vek is null)
@@ -415,7 +452,6 @@ internal sealed class BrokerService
                 plan = plan with { IsEncrypted = false, NeedsPassword = false, EncryptionKey = vek, Notes = $"{plan.Notes} Encrypted volume unlocked." };
             }
 
-            var fsType = plan.FileSystemType ?? string.Empty;
             if (string.Equals(fsType, "CoreStorage", StringComparison.OrdinalIgnoreCase))
             {
                 return new
@@ -726,9 +762,10 @@ internal sealed class BrokerRawProviderFileSystem : FileSystemBase
 
     private static void DebugLog(string msg)
     {
-#if DEBUG
+        // Logging is unconditional — gated previously behind #if DEBUG which excluded
+        // Release builds (the only build the installer ships). For diagnostics we want
+        // these write/create failures captured even on Release.
         try { File.AppendAllText(_debugLog, $"[{DateTime.Now:HH:mm:ss.fff}] {msg}\n"); } catch { }
-#endif
     }
 
     // WinFsp constants for Create disposition
@@ -1022,16 +1059,19 @@ internal sealed class BrokerRawProviderFileSystem : FileSystemBase
 
     public override void Cleanup(object fileNode, object fileDesc, string fileName, uint flags)
     {
+        DebugLog($"Cleanup: path='{fileName}' flags=0x{flags:X}");
         // If DELETE_ON_CLOSE flag is set, delete the file/directory
         if ((flags & 1) != 0 && _provider.IsWritable) // FspCleanupDelete = 1
         {
             try
             {
                 var path = Normalize(fileName);
+                DebugLog($"Cleanup: DELETE_ON_CLOSE -> Delete('{path}')");
                 _provider.Delete(path);
             }
             catch (Exception ex)
             {
+                DebugLog($"Cleanup: Delete failed for '{fileName}': {ex.Message}");
                 Console.Error.WriteLine($"[WinFsp] Cleanup delete failed: {ex.Message}");
             }
         }

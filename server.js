@@ -324,6 +324,44 @@ function cleanupSingleDriveLetter(letter) {
     try { removeUserSessionDriveMapping(L); } catch {}
 }
 
+function getTrackedManagedLetters() {
+    try {
+        const cmd = [
+            'powershell',
+            '-NoProfile',
+            '-NonInteractive',
+            '-WindowStyle', 'Hidden',
+            '-ExecutionPolicy', 'Bypass',
+            '-Command',
+            `"if (Test-Path 'HKCU:\\Software\\MacMount\\DriveMap') { Get-ItemProperty -Path 'HKCU:\\Software\\MacMount\\DriveMap' | ConvertTo-Json -Compress }"`
+        ].join(' ');
+        const out = execSync(cmd, {
+            timeout: 8000,
+            windowsHide: true,
+            stdio: ['ignore', 'pipe', 'ignore']
+        }).toString().trim();
+        if (!out) return new Set();
+
+        const parsed = JSON.parse(out);
+        const values = [];
+        if (Array.isArray(parsed)) {
+            for (const item of parsed) {
+                if (item && typeof item === 'object') values.push(...Object.values(item));
+            }
+        } else if (parsed && typeof parsed === 'object') {
+            values.push(...Object.values(parsed));
+        }
+
+        return new Set(
+            values
+                .map((v) => String(v || '').trim().toUpperCase().replace(':', ''))
+                .filter((v) => /^[A-Z]$/.test(v))
+        );
+    } catch {
+        return new Set();
+    }
+}
+
 let lastGhostCleanupAt = 0;
 function cleanupGhostDriveLetters(activeLetters = []) {
     const now = Date.now();
@@ -334,7 +372,8 @@ function cleanupGhostDriveLetters(activeLetters = []) {
         .map((x) => String(x || '').trim().toUpperCase().replace(':', ''))
         .filter((x) => /^[A-Z]$/.test(x)));
 
-    for (const letter of ['M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z']) {
+    const tracked = getTrackedManagedLetters();
+    for (const letter of tracked) {
         if (keep.has(letter)) continue;
         if (fs.existsSync(`${letter}:\\`)) continue;
         try { removeUserSessionDriveMapping(letter); } catch {}
@@ -620,7 +659,46 @@ async function runRuntimeIntegrationChecks() {
     }
 }
 
-runRuntimeIntegrationChecks();
+async function clearStartupMountState() {
+    try {
+        const ready = await ensureBrokerReady(2, false);
+        if (ready) {
+            try {
+                const status = await sendBrokerRequest({ action: 'status', requestId: String(Date.now()) }, 4000);
+                if (status?.ok && Array.isArray(status.mounted)) {
+                    for (const mounted of status.mounted) {
+                        const driveId = String(mounted?.DriveId ?? mounted?.driveId ?? '').trim();
+                        const letter = String(mounted?.Letter ?? mounted?.letter ?? '').trim().toUpperCase().replace(':', '');
+                        if (driveId) {
+                            try {
+                                await sendBrokerRequest({
+                                    action: 'unmount',
+                                    requestId: String(Date.now()),
+                                    driveId
+                                }, 10000);
+                            } catch {}
+                        }
+                        if (/^[A-Z]$/.test(letter)) {
+                            try { cleanupSingleDriveLetter(letter); } catch {}
+                        }
+                    }
+                }
+            } catch {}
+        }
+    } catch {}
+
+    nativeMountState.clear();
+    for (const letter of getTrackedManagedLetters()) {
+        try { cleanupSingleDriveLetter(letter); } catch {}
+    }
+}
+
+const startupCleanupPromise = clearStartupMountState().then(() => {
+    addLog('Startup mount cleanup complete.');
+    return runRuntimeIntegrationChecks();
+}).catch(() => {
+    return runRuntimeIntegrationChecks();
+});
 
 // ─── Mount routes ───────────────────────────────────────────────────────────
 const ctx = {
@@ -651,6 +729,7 @@ const ctx = {
     sendBrokerRequest,
     getUsedDriveLetters,
     resolveUserFacingSourcePath,
+    awaitStartupCleanup: () => startupCleanupPromise,
 };
 
 mountSystemRoutes(app, ctx);

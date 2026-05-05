@@ -6,6 +6,7 @@ using System.IO;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using DiscUtils.HfsPlus;
 
 namespace MacMount.RawDiskEngine;
 
@@ -267,7 +268,25 @@ public sealed class RawDiskEngine : IRawDiskEngine
         if (string.Equals(plan.FileSystemType, "HFS+", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(plan.FileSystemType, "HFSX", StringComparison.OrdinalIgnoreCase))
         {
-            provider = await HfsPlusRawFileSystemProvider.CreateAsync(plan, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                provider = await HfsPlusRawFileSystemProvider.CreateAsync(plan, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception nativeEx)
+            {
+                Console.Error.WriteLine($"[HFS+ Native] Falling back to DiscUtils provider: {nativeEx.Message}");
+                try
+                {
+                    provider = await DiscUtilsHfsPlusFileSystemProvider.CreateAsync(plan, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception fallbackEx)
+                {
+                    throw new InvalidOperationException(
+                        $"HFS mount failed. Native provider error: {nativeEx.Message} Fallback provider error: {fallbackEx.Message}",
+                        fallbackEx
+                    );
+                }
+            }
         }
         else if (string.Equals(plan.FileSystemType, "APFS", StringComparison.OrdinalIgnoreCase))
         {
@@ -493,6 +512,171 @@ public sealed class RawDiskEngine : IRawDiskEngine
     }
 }
 
+internal sealed class DiscUtilsHfsPlusFileSystemProvider : IRawFileSystemProvider
+{
+    private readonly IRawBlockDevice _device;
+    private readonly RawBlockDeviceStream _stream;
+    private readonly HfsPlusFileSystem _fs;
+
+    private DiscUtilsHfsPlusFileSystemProvider(IRawBlockDevice device, RawBlockDeviceStream stream, HfsPlusFileSystem fs, string fsType)
+    {
+        _device = device;
+        _stream = stream;
+        _fs = fs;
+        FileSystemType = fsType;
+    }
+
+    public static async Task<DiscUtilsHfsPlusFileSystemProvider> CreateAsync(MountPlan plan, CancellationToken ct = default)
+    {
+        var basePath = plan.PhysicalDrivePath;
+        var hashIdx = basePath.IndexOf('#');
+        if (hashIdx > 0)
+        {
+            basePath = basePath[..hashIdx];
+        }
+
+        var factory = new WindowsRawBlockDeviceFactory();
+        var device = await factory.OpenReadOnlyAsync(basePath, ct).ConfigureAwait(false);
+        try
+        {
+            var start = Math.Max(0, plan.PartitionOffsetBytes);
+            var length = plan.PartitionLengthBytes > 0
+                ? plan.PartitionLengthBytes
+                : Math.Max(0, device.Length - start);
+            var stream = new RawBlockDeviceStream(device, start, length, ownsDevice: false);
+            try
+            {
+                var fs = new HfsPlusFileSystem(stream);
+                var fsType = string.IsNullOrWhiteSpace(plan.FileSystemType) ? "HFS+" : plan.FileSystemType;
+                return new DiscUtilsHfsPlusFileSystemProvider(device, stream, fs, fsType);
+            }
+            catch
+            {
+                stream.Dispose();
+                throw;
+            }
+        }
+        catch
+        {
+            device.Dispose();
+            throw;
+        }
+    }
+
+    public string FileSystemType { get; }
+    public long TotalBytes => _fs.Size;
+    public long FreeBytes => _fs.AvailableSpace;
+
+    public RawFsEntry? GetEntry(string path)
+    {
+        var n = NormalizeDiscPath(path);
+        try
+        {
+            if (string.IsNullOrEmpty(n))
+            {
+                return new RawFsEntry("\\", "ROOT", true, 0, DateTimeOffset.UtcNow, FileAttributes.Directory);
+            }
+
+            if (!_fs.Exists(n))
+            {
+                return null;
+            }
+
+            var info = _fs.GetFileSystemInfo(n);
+            var name = Path.GetFileName(n.TrimEnd('/', '\\'));
+            var isDirectory = _fs.DirectoryExists(n);
+            var size = isDirectory ? 0 : _fs.GetFileLength(n);
+            return new RawFsEntry(
+                NormalizePath(path),
+                string.IsNullOrWhiteSpace(name) ? n : name,
+                isDirectory,
+                size,
+                new DateTimeOffset(info.LastWriteTimeUtc),
+                info.Attributes
+            );
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    public IReadOnlyList<RawFsEntry> ListDirectory(string path)
+    {
+        var n = NormalizeDiscPath(path);
+        try
+        {
+            var entries = _fs.GetFileSystemEntries(n);
+            var results = new List<RawFsEntry>(entries.Length);
+            foreach (var entryPath in entries)
+            {
+                var info = _fs.GetFileSystemInfo(entryPath);
+                var isDirectory = _fs.DirectoryExists(entryPath);
+                var name = Path.GetFileName(entryPath.TrimEnd('/', '\\'));
+                var normalized = NormalizePath(entryPath.Replace('/', '\\'));
+                var size = isDirectory ? 0 : _fs.GetFileLength(entryPath);
+                results.Add(new RawFsEntry(
+                    normalized,
+                    name,
+                    isDirectory,
+                    size,
+                    new DateTimeOffset(info.LastWriteTimeUtc),
+                    info.Attributes
+                ));
+            }
+            return results;
+        }
+        catch
+        {
+            return Array.Empty<RawFsEntry>();
+        }
+    }
+
+    public int ReadFile(string path, long offset, Span<byte> destination)
+    {
+        if (destination.Length == 0) return 0;
+        var n = NormalizeDiscPath(path);
+        try
+        {
+            using var stream = _fs.OpenFile(n, FileMode.Open, FileAccess.Read);
+            if (offset < 0 || offset >= stream.Length) return 0;
+            stream.Position = offset;
+            var temp = new byte[destination.Length];
+            var read = stream.Read(temp, 0, temp.Length);
+            if (read > 0)
+            {
+                temp.AsSpan(0, read).CopyTo(destination);
+            }
+            return read;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    public void Dispose()
+    {
+        try { _fs.Dispose(); } catch {}
+        try { _stream.Dispose(); } catch {}
+        try { _device.Dispose(); } catch {}
+    }
+
+    private static string NormalizeDiscPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || path == "/" || path == "\\") return string.Empty;
+        return path.Replace('\\', '/').TrimStart('/');
+    }
+
+    private static string NormalizePath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || path == "/" || path == "\\") return "\\";
+        var p = path.Replace('/', '\\');
+        if (!p.StartsWith('\\')) p = "\\" + p.TrimStart('\\');
+        return p;
+    }
+}
+
 internal sealed class ProbeRawFileSystemProvider : IRawFileSystemProvider
 {
     private readonly Dictionary<string, RawFsEntry> _entries = new(StringComparer.OrdinalIgnoreCase);
@@ -619,8 +803,9 @@ internal sealed class HfsPlusRawFileSystemProvider : IRawFileSystemProvider
         var reader = await HfsPlusNativeReader.OpenAsync(device, start, ct).ConfigureAwait(false);
         if (reader is null)
         {
+            var diagnostic = await HfsPlusNativeReader.DiagnoseOpenFailureAsync(device, start, ct).ConfigureAwait(false);
             device.Dispose();
-            throw new InvalidOperationException("Failed to open HFS+ volume header or catalog B-tree.");
+            throw new InvalidOperationException($"Failed to open HFS+ volume header or catalog B-tree. Diagnostic: {diagnostic}");
         }
 
         // If writable, disable journaling so writes are safe on external drives
@@ -631,7 +816,11 @@ internal sealed class HfsPlusRawFileSystemProvider : IRawFileSystemProvider
 
         // Probe the root catalog up front so broken HFS+ parses fail before Explorer
         // gets an apparently mounted but empty shell drive.
-        await reader.ListDirectoryAsync(2, ct).ConfigureAwait(false);
+        var rootItems = await reader.ListDirectoryAsync(2, ct).ConfigureAwait(false);
+        if (rootItems.Count == 0)
+        {
+            Console.Error.WriteLine("[HFS+ Native] Root directory probe returned zero items.");
+        }
 
         var fsType = string.IsNullOrWhiteSpace(plan.FileSystemType) ? "HFS+" : plan.FileSystemType;
         return new HfsPlusRawFileSystemProvider(device, reader, fsType, plan.Writable && reader.IsWritable);
@@ -695,10 +884,7 @@ internal sealed class HfsPlusRawFileSystemProvider : IRawFileSystemProvider
 
                     // Always cache for internal lookups (GetEntry, WriteFile, etc.)
                     _entryCache[childPath] = entry;
-                    if (item.IsDirectory)
-                    {
-                        _cnidByPath[childPath] = item.Cnid;
-                    }
+                    _cnidByPath[childPath] = item.Cnid;
                     if (item.DataFork is not null)
                     {
                         _forkByPath[childPath] = item.DataFork;
@@ -727,15 +913,17 @@ internal sealed class HfsPlusRawFileSystemProvider : IRawFileSystemProvider
         var n = NormalizePath(path);
 
         HfsPlusForkInfo? fork;
+        uint fileId;
         lock (_sync)
         {
             if (!_forkByPath.TryGetValue(n, out fork)) return 0;
+            if (!_cnidByPath.TryGetValue(n, out fileId)) return 0;
         }
 
         try
         {
             var buf = new byte[destination.Length];
-            var read = _reader.ReadFileAsync(fork, offset, buf, destination.Length).GetAwaiter().GetResult();
+            var read = _reader.ReadFileAsync(fork, fileId, 0x00, offset, buf, destination.Length).GetAwaiter().GetResult();
             if (read > 0)
             {
                 buf.AsSpan(0, read).CopyTo(destination);
@@ -778,8 +966,12 @@ internal sealed class HfsPlusRawFileSystemProvider : IRawFileSystemProvider
         }
         catch (Exception ex)
         {
+            // Re-throw so the broker's Write callback logs the actual error to its debug
+            // log instead of silently returning 0. Without this, write failures cascade
+            // (Windows Explorer keeps retrying, the catalog gets into a bad state, and
+            // subsequent Creates fail with confusing bounds errors).
             Console.Error.WriteLine($"[HFS+ Native] WriteFile({path}) error: {ex.GetType().Name}: {ex.Message}");
-            return 0;
+            throw new IOException($"HFS+ WriteFile(path='{path}', cnid={cnid}, offset={offset}, len={source.Length}): {ex.Message}", ex);
         }
     }
 

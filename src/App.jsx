@@ -175,6 +175,34 @@ const App = () => {
     }
   };
 
+  const formatMountError = (result) => {
+    if (!result || typeof result !== 'object') {
+      return 'Unknown mount error.';
+    }
+
+    const parts = [];
+    const push = (value) => {
+      const text = String(value || '').trim();
+      if (!text) return;
+      if (!parts.includes(text)) parts.push(text);
+    };
+
+    push(result.error);
+    push(result.details);
+    push(result.nativeAttemptError);
+    push(result.suggestion);
+    push(result.nativeAttemptSuggestion);
+
+    const analysisNotes = result.analysis?.plan?.Notes
+      || result.nativeAttemptAnalysis?.plan?.Notes
+      || result.plan?.Notes;
+    if (analysisNotes && !/signature detected/i.test(String(analysisNotes))) {
+      push(`Analysis: ${analysisNotes}`);
+    }
+
+    return parts.join(' ');
+  };
+
   const mountDrive = async (id, password = '') => {
     setIsMounting(id);
     setErrorMessage(null);
@@ -202,8 +230,9 @@ const App = () => {
           setPasswordPrompt({ id, name: drive?.name || `Physical Drive ${id}` });
           return;
         }
-        setErrorMessage(`${result.error}. ${result.suggestion || ''}`);
-        logRemote(`Mount Failure: ${result.error}`, 'error');
+        const formattedError = formatMountError(result);
+        setErrorMessage(formattedError);
+        logRemote(`Mount Failure: ${formattedError}`, 'error');
       }
     } catch (error) {
       setErrorMessage("System error during mount.");
@@ -406,7 +435,11 @@ const App = () => {
                   <div className="mount-status">
                     <div className={`status-dot ${drive.mounted ? 'status-mounted' : 'status-unmounted'}`} />
                     {drive.mounted
-                      ? `Mounted${drive.driveLetter ? ` as ${drive.driveLetter}:` : ''}`
+                      ? (drive.driveLetter
+                          ? `Mounted as ${drive.driveLetter}:`
+                          : drive.mountPath && drive.mountPath.startsWith('\\\\')
+                            ? 'Mounted (R/W via WSL2 — click Open Explorer)'
+                            : 'Mounted')
                       : 'Unmounted'}
                   </div>
                   <div className="card-actions">

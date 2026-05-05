@@ -2,7 +2,7 @@ const { exec } = require('child_process');
 const fs = require('fs');
 
 module.exports = function mountDriveRoutes(app, ctx) {
-    const { addLog, nativeMountState, getBrokerMountedMap, PREFER_SUBST_LOCAL_FAST_PATH, PS_PATH, sendNativeWithBoot, cleanupGhostDriveLetters } = ctx;
+    const { addLog, nativeMountState, getBrokerMountedMap, PREFER_SUBST_LOCAL_FAST_PATH, PS_PATH, sendNativeWithBoot, cleanupGhostDriveLetters, awaitStartupCleanup } = ctx;
 
     // Cache to avoid spawning PowerShell on every 5-second poll
     let driveCache = { data: null, time: 0 };
@@ -44,7 +44,13 @@ module.exports = function mountDriveRoutes(app, ctx) {
         }
     }
 
-    app.get('/api/drives', (req, res) => {
+    app.get('/api/drives', async (req, res) => {
+        try {
+            await awaitStartupCleanup?.();
+        } catch {
+            // best-effort startup cleanup; continue with scan
+        }
+
         const now = Date.now();
         if (driveCache.data && (now - driveCache.time) < CACHE_TTL_MS) {
             return res.json(driveCache.data);
@@ -72,6 +78,21 @@ module.exports = function mountDriveRoutes(app, ctx) {
                     )
                 );
 
+                // Pre-pass: surface any drives currently held by a WSL2 mount even
+                // if the Windows-side enumeration no longer lists them (the disk is
+                // exclusively claimed by WSL2 while attached via `wsl --mount --bare`).
+                for (const [stateId, mount] of nativeMountState.entries()) {
+                    if (mount?.mountType !== 'wsl_kernel') continue;
+                    if (macDrives.some(d => String(d.id) === stateId)) continue;
+                    macDrives.push({
+                        id: Number(stateId) || stateId,
+                        friendlyName: mount.friendlyName || `Drive ${stateId} (mounted via WSL2)`,
+                        sizeGB: mount.sizeGB || null,
+                        format: mount.fsType || 'HFS+',
+                        isMac: true
+                    });
+                }
+
                 for (const drive of macDrives) {
                     const id = String(drive.id);
                     const plan = nativePlans.get(id) || null;
@@ -95,6 +116,9 @@ module.exports = function mountDriveRoutes(app, ctx) {
                             // disables and the UI shows a clear message.
                             drive.supported = false;
                             drive.mountHint = 'Hardware-bound encryption (T2 chip / Apple Silicon). Decrypt on the original Mac first.';
+                        } else if (drive.isEncrypted && (/^HFS\+$/i.test(fsType) || /^HFSX$/i.test(fsType))) {
+                            drive.supported = false;
+                            drive.mountHint = 'Encrypted HFS/CoreStorage-style volume. Decrypt on a Mac first; native HFS unlock is not implemented yet.';
                         } else if (/^CoreStorage$/i.test(fsType)) {
                             drive.supported = false;
                             drive.mountHint = 'CoreStorage/FileVault unlock is not implemented yet.';
@@ -112,6 +136,26 @@ module.exports = function mountDriveRoutes(app, ctx) {
                         drive.supported = true;
                         drive.mountHint = '';
                         drive.analysisNotes = '';
+                    }
+
+                    // WSL2-backed mount takes precedence over any native broker state.
+                    const wslMount = nativeMountState.get(id);
+                    if (wslMount?.mountType === 'wsl_kernel' && wslMount.uncPath) {
+                        drive.mounted = true;
+                        drive.mountType = 'wsl_kernel';
+                        drive.fsType = wslMount.fsType || drive.format;
+                        drive.supported = true;
+                        drive.mountHint = '';
+                        if (wslMount.driveLetter) {
+                            const ltr = String(wslMount.driveLetter).toUpperCase().replace(':', '');
+                            drive.driveLetter = ltr;
+                            drive.mountPath = `${ltr}:\\`;
+                            activeLetters.add(ltr);
+                        } else {
+                            drive.mountPath = wslMount.uncPath;
+                            drive.driveLetter = undefined;
+                        }
+                        continue;
                     }
 
                     const broker = brokerMounted.get(id);

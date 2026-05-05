@@ -6,7 +6,7 @@ $distDir = Join-Path $root "dist"
 $candidates = @(
     Get-ChildItem -LiteralPath $distDir -Filter "MacMount *.exe" -File -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -notlike "*Setup*" } |
-        Sort-Object LastWriteTime -Descending,
+        Sort-Object LastWriteTime -Descending
     Get-ChildItem -LiteralPath $distDir -Filter "MacMount Setup *.exe" -File -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending
 ) | Select-Object -First 1

@@ -24,6 +24,8 @@ public static class HfsPlusWriteTests
         results.Add(("TestManyFilesInSubdirectory", await RunTest("TestManyFilesInSubdirectory", () => TestManyFilesInSubdirectory(imageFilePath))));
         results.Add(("TestMixedCreatePattern", await RunTest("TestMixedCreatePattern", () => TestMixedCreatePattern(imageFilePath))));
         results.Add(("TestCatalogGrowth", await RunTest("TestCatalogGrowth", () => TestCatalogGrowth(imageFilePath))));
+        results.Add(("TestExplorerCopyPattern", await RunTest("TestExplorerCopyPattern", () => TestExplorerCopyPattern(imageFilePath))));
+        results.Add(("TestUserExactSequence", await RunTest("TestUserExactSequence", () => TestUserExactSequence(imageFilePath))));
         results.Add(("TestLongFilenames", await RunTest("TestLongFilenames", () => TestLongFilenames(imageFilePath))));
 
         Console.WriteLine();
@@ -989,7 +991,256 @@ public static class HfsPlusWriteTests
     }
 
     // ════════════════════════════════════════════════════════════════════════
-    // Test 15: Long filenames — 50, 100, 200, and 255 characters
+    // Test 15: Real-world Windows Explorer copy pattern
+    // Mimics the exact failure mode the user hit: files in subfolders with
+    // UUID-style randomly-ordered names, varying sizes, Create-then-Write-in-
+    // chunks instead of Create-with-data-in-one-shot. This is what WinFsp does
+    // when Explorer copies files in.
+    // ════════════════════════════════════════════════════════════════════════
+    private static async Task<bool> TestExplorerCopyPattern(string imageFilePath)
+    {
+        // Larger image to allow MB-to-tens-of-MB file copies, the size range
+        // where the user's failure surfaced.
+        const long imageSize = 2L * 1024 * 1024 * 1024; // 2 GB
+        if (File.Exists(imageFilePath)) File.Delete(imageFilePath);
+
+        using var device = FileBackedBlockDevice.CreateNew(imageFilePath, imageSize);
+        await HfsPlusNativeReader.FormatAsync(device, 0, imageSize, "TestVolume");
+
+        var reader = await HfsPlusNativeReader.OpenAsync(device, 0);
+        if (reader is null)
+        {
+            Console.WriteLine("  FAIL: open after format returned null.");
+            return false;
+        }
+
+        using (reader)
+        {
+            // Two subfolders, like the user's "Mature" and "Celebs"
+            var folderA = await reader.CreateFolderAsync(2, "Mature");
+            var folderB = await reader.CreateFolderAsync(2, "Celebs");
+            Console.WriteLine($"  Created folders: Mature(cnid={folderA}), Celebs(cnid={folderB})");
+
+            // Sizes closer to the user's real workload: 250 KB to 200 MB.
+            var fileSpecs = new (uint Folder, string Name, long Size)[]
+            {
+                (folderA, "6.mp4", 20_100_000L),                                          // 20.1 MB
+                (folderA, "10041976-7529a11be7f18478cfabfcd8ecab1a25.mp4", 182_000_000L), // 182 MB
+                (folderB, "6AE767AA-DF45-4508-ACBB-7F3EB88E162F.MP4", 875_000L),
+                (folderB, "7A19A067-EB90-4BC1-A035-C9834B3CCF62.MP4", 1_800_000L),
+                (folderB, "2025-01-04 12.37.22.jpg", 250_000L),
+                (folderA, "Admiregirls.com__0hblegzifvhe0v4mdqawn_source__Admiregirls.com.mp4", 35_000_000L),
+                (folderA, "vid_001.mp4", 600_000L),
+                (folderA, "vid_002.mp4", 5_200_000L),
+                (folderB, "img_a.jpg", 300_000L),
+                (folderB, "img_b.jpg", 450_000L),
+                (folderA, "deep_nested_name_with_many_chars_to_grow_keys.bin", 12_500_000L),
+                (folderB, "B47C29D1-FAFE-4B0E-9E02-1A33EE56CC8A.mp4", 50_100_000L),
+            };
+
+            // CRITICAL: NO SetFileSize call here. This matches the user's flow exactly —
+            // the broker debug log showed Windows Explorer creating files with alloc=0,
+            // meaning no pre-allocation. Writes incrementally extend the file, each one
+            // allocating a new extent slot. With only 8 inline extent slots in the HFS+
+            // catalog file record, a file written in more than 8 chunks fails.
+
+            // Phase 1: 50 small UUID-named files alternating between folders.
+            var rng = new Random(12345);
+            var phase1Names = new List<(uint Folder, string Name, uint Cnid)>();
+            for (int i = 0; i < 50; i++)
+            {
+                var folder = (i % 2 == 0) ? folderA : folderB;
+                var uuid = Guid.NewGuid().ToString().ToUpperInvariant();
+                var name = $"{uuid}.mp4";
+                var size = 250_000L + rng.Next(750_000); // 250 KB - 1 MB
+                Console.WriteLine($"  [P1 {i+1}/50] {(folder == folderA ? "Mature" : "Celebs")}/{name.Substring(0, 16)}... ({size:N0} bytes)");
+
+                var cnid = await reader.CreateFileAsync(folder, name, initialData: null);
+                // NO SetFileSize — write extends incrementally
+                const int chunkSize = 1 * 1024 * 1024;
+                long offset = 0;
+                int chunkIdx = 0;
+                while (offset < size)
+                {
+                    var thisChunk = (int)Math.Min(chunkSize, size - offset);
+                    var buf = new byte[thisChunk];
+                    new Random((int)(cnid * 1000 + chunkIdx)).NextBytes(buf);
+                    await reader.WriteFileDataAsync(cnid, offset, buf, thisChunk);
+                    offset += thisChunk;
+                    chunkIdx++;
+                }
+                phase1Names.Add((folder, name, cnid));
+            }
+
+            Console.WriteLine($"  Phase 1 complete: {phase1Names.Count} small files. Now interleaving large copies...");
+
+            // Phase 2: large files written in many 1 MB chunks — this is what
+            // exhausts the 8 inline extent slots.
+            foreach (var (folder, name, totalSize) in fileSpecs)
+            {
+                Console.WriteLine($"  [P2] Creating {(folder == folderA ? "Mature" : "Celebs")}/{name} ({totalSize:N0} bytes)...");
+
+                var cnid = await reader.CreateFileAsync(folder, name, initialData: null);
+                // NO SetFileSize
+
+                const int chunkSize = 1 * 1024 * 1024;
+                long offset = 0;
+                int chunkIdx = 0;
+                while (offset < totalSize)
+                {
+                    var thisChunk = (int)Math.Min(chunkSize, totalSize - offset);
+                    var buf = new byte[thisChunk];
+                    new Random((int)(cnid * 1000 + chunkIdx)).NextBytes(buf);
+                    await reader.WriteFileDataAsync(cnid, offset, buf, thisChunk);
+                    offset += thisChunk;
+                    chunkIdx++;
+                }
+
+                Console.WriteLine($"    OK ({chunkIdx} chunks, cnid={cnid})");
+            }
+
+            // Verify file counts match (phase1 + phase2)
+            var matureItems = await reader.ListDirectoryAsync(folderA);
+            var celebsItems = await reader.ListDirectoryAsync(folderB);
+            var expectedMature = fileSpecs.Count(s => s.Folder == folderA) + phase1Names.Count(n => n.Folder == folderA);
+            var expectedCelebs = fileSpecs.Count(s => s.Folder == folderB) + phase1Names.Count(n => n.Folder == folderB);
+            Console.WriteLine($"  Mature: {matureItems.Count}/{expectedMature}, Celebs: {celebsItems.Count}/{expectedCelebs}");
+
+            if (matureItems.Count != expectedMature)
+            {
+                Console.WriteLine($"  FAIL: Mature folder count mismatch. Got {matureItems.Count}, expected {expectedMature}.");
+                var found = new HashSet<string>(matureItems.Select(x => x.Name));
+                var expected = fileSpecs.Where(s => s.Folder == folderA).Select(s => s.Name).ToHashSet();
+                foreach (var missing in expected.Except(found))
+                    Console.WriteLine($"    MISSING: {missing}");
+                await DumpBTreeDiagnostics(reader, device);
+                return false;
+            }
+            if (celebsItems.Count != expectedCelebs)
+            {
+                Console.WriteLine($"  FAIL: Celebs folder count mismatch. Got {celebsItems.Count}, expected {expectedCelebs}.");
+                var found = new HashSet<string>(celebsItems.Select(x => x.Name));
+                var expected = fileSpecs.Where(s => s.Folder == folderB).Select(s => s.Name).ToHashSet();
+                foreach (var missing in expected.Except(found))
+                    Console.WriteLine($"    MISSING: {missing}");
+                await DumpBTreeDiagnostics(reader, device);
+                return false;
+            }
+
+            // Spot-check a few files: read first chunk back, verify it deserialises and
+            // matches the Random stream we wrote.
+            foreach (var (folder, name, totalSize) in fileSpecs.Take(3))
+            {
+                var items = folder == folderA ? matureItems : celebsItems;
+                var entry = items.FirstOrDefault(i => i.Name == name);
+                if (entry is null)
+                {
+                    Console.WriteLine($"  FAIL: Could not find entry for {name} during readback.");
+                    return false;
+                }
+                if (entry.DataFork is null || entry.DataFork.LogicalSize != totalSize)
+                {
+                    Console.WriteLine($"  FAIL: {name} size mismatch. DataFork={entry.DataFork?.LogicalSize.ToString() ?? "null"}, expected {totalSize}.");
+                    return false;
+                }
+            }
+
+            Console.WriteLine($"  Explorer copy pattern verified: {fileSpecs.Length} files across 2 folders, varied sizes, all readable.");
+            return true;
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Test 16: Mirror the user's EXACT failure sequence from the broker debug log:
+    //   Mature/, files in Mature with writes (some HUGE), then Celebs/ created LATER,
+    //   then small files in Celebs with writes. Simulates the cnid 23 failure.
+    // ════════════════════════════════════════════════════════════════════════
+    private static async Task<bool> TestUserExactSequence(string imageFilePath)
+    {
+        const long imageSize = 4L * 1024 * 1024 * 1024; // 4 GB to fit big test files
+        if (File.Exists(imageFilePath)) File.Delete(imageFilePath);
+
+        using var device = FileBackedBlockDevice.CreateNew(imageFilePath, imageSize);
+        await HfsPlusNativeReader.FormatAsync(device, 0, imageSize, "TestVolume");
+
+        var reader = await HfsPlusNativeReader.OpenAsync(device, 0);
+        if (reader is null) return false;
+
+        async Task WriteInChunksAsync(uint cnid, long totalSize)
+        {
+            const int chunkSize = 1 * 1024 * 1024;
+            long offset = 0;
+            while (offset < totalSize)
+            {
+                var thisChunk = (int)Math.Min(chunkSize, totalSize - offset);
+                var buf = new byte[thisChunk];
+                new Random((int)(cnid * 1000 + offset / chunkSize)).NextBytes(buf);
+                await reader.WriteFileDataAsync(cnid, offset, buf, thisChunk);
+                offset += thisChunk;
+            }
+        }
+
+        using (reader)
+        {
+            // Step 1: Mature folder
+            var matureCnid = await reader.CreateFolderAsync(2, "Mature");
+            Console.WriteLine($"  Mature cnid={matureCnid}");
+
+            // Step 2: 6.mp4 (HUGE — 1.5 GB to mimic user's video file)
+            var sixCnid = await reader.CreateFileAsync(matureCnid, "6.mp4");
+            Console.WriteLine($"  6.mp4 cnid={sixCnid}");
+            await WriteInChunksAsync(sixCnid, 1_500_000_000);
+
+            // Step 3: Admiregirls 1 (~400 MB)
+            var ag1Cnid = await reader.CreateFileAsync(matureCnid, "Admiregirls.com__0hblegzifvhe0v4mdqawn_source__Admiregirls.com.mp4");
+            Console.WriteLine($"  AG1 cnid={ag1Cnid}");
+            await WriteInChunksAsync(ag1Cnid, 400_000_000);
+
+            // Step 4: Admiregirls 2 (~300 MB)
+            var ag2Cnid = await reader.CreateFileAsync(matureCnid, "Admiregirls.com__0hbmzresjfy1bovfnk2bx_source__Admiregirls.com.mp4");
+            Console.WriteLine($"  AG2 cnid={ag2Cnid}");
+            await WriteInChunksAsync(ag2Cnid, 300_000_000);
+
+            // Step 5: Celebs folder — created LATE, after MUCH catalog activity in Mature
+            var celebsCnid = await reader.CreateFolderAsync(2, "Celebs");
+            Console.WriteLine($"  Celebs cnid={celebsCnid}");
+
+            // Step 6: .DS_Store (small)
+            var dsCnid = await reader.CreateFileAsync(celebsCnid, ".DS_Store");
+            Console.WriteLine($"  .DS_Store cnid={dsCnid}");
+            await WriteInChunksAsync(dsCnid, 6148);
+
+            // Step 7: 1C4EA5F6 file (3.7 MB — 4 chunks)
+            var firstUuidCnid = await reader.CreateFileAsync(celebsCnid, "1C4EA5F6-4FB1-4000-9D2A-A66173DEAD90.MP4");
+            Console.WriteLine($"  1C4EA5F6 cnid={firstUuidCnid}");
+            await WriteInChunksAsync(firstUuidCnid, 3_920_212);
+
+            // Step 8: THE CRITICAL ONE — 2025-01-04 12.36.36.jpg (100 KB)
+            // After Create succeeded for the user, Write failed with "Cannot find thread record"
+            var jpgCnid = await reader.CreateFileAsync(celebsCnid, "2025-01-04 12.36.36.jpg");
+            Console.WriteLine($"  2025-01-04 12.36.36.jpg cnid={jpgCnid}");
+
+            // Try to find the thread record IMMEDIATELY before writing — this is the
+            // sanity check that maps to the user's failure mode.
+            try
+            {
+                await reader.WriteFileDataAsync(jpgCnid, 0, new byte[102476], 102476);
+                Console.WriteLine($"  Write succeeded for jpg cnid={jpgCnid}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"  FAIL: Write failed: {ex.Message}");
+                Console.WriteLine($"  Dumping B-tree state to diagnose:");
+                await DumpBTreeDiagnostics(reader, device);
+                return false;
+            }
+
+            return true;
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Test 17: Long filenames — 50, 100, 200, and 255 characters
     // ════════════════════════════════════════════════════════════════════════
     private static async Task<bool> TestLongFilenames(string imageFilePath)
     {

@@ -169,9 +169,15 @@ public sealed class HfsPlusNativeReader : IDisposable
             }
         }
 
-        // Read the catalog B-tree header node (node 0)
+        // Read the catalog B-tree header node (node 0). Some real-world disks
+        // appear to have leading bytes before the first valid B-tree node, so
+        // scan for a plausible header instead of assuming the catalog fork
+        // begins exactly at node 0.
+        var catalogBaseOffset = await FindCatalogHeaderOffsetAsync(device, catalogExtents, header.BlockSize, partitionOffset, ct).ConfigureAwait(false);
+        if (catalogBaseOffset < 0) return null;
+
         var headerNodeBuf = new byte[Math.Max(header.BlockSize, 4096u)];
-        var headerNodeRead = await device.ReadAsync(catalogExtents[0].ByteOffset, headerNodeBuf, headerNodeBuf.Length, ct).ConfigureAwait(false);
+        var headerNodeRead = await device.ReadAsync(catalogBaseOffset, headerNodeBuf, headerNodeBuf.Length, ct).ConfigureAwait(false);
         if (headerNodeRead < 512) return null;
 
         // BTNodeDescriptor: fLink(4) bLink(4) kind(1) height(1) numRecords(2) reserved(2) = 14 bytes
@@ -193,10 +199,134 @@ public sealed class HfsPlusNativeReader : IDisposable
         if (nodeSize < 512) return null;
 
         return new HfsPlusNativeReader(device, partitionOffset, header, nodeSize, rootNode, firstLeafNode,
-            catalogExtents, catalogExtents[0].ByteOffset, allocationExtents, vhBuf,
+            catalogExtents, catalogBaseOffset, allocationExtents, vhBuf,
             nextCatalogId, header.FreeBlocks, volumeAttributes,
             totalNodes, freeNodes, leafRecords, lastLeafNode, treeDepth,
             extentsExtents, extentsNodeSize, extentsRootNode);
+    }
+
+    public static async Task<string> DiagnoseOpenFailureAsync(IRawBlockDevice device, long partitionOffset, CancellationToken ct = default)
+    {
+        try
+        {
+            var vhBuf = new byte[512];
+            var read = await device.ReadAsync(partitionOffset + 1024, vhBuf, vhBuf.Length, ct).ConfigureAwait(false);
+            if (read < 512)
+            {
+                return $"volume-header short read: offset={partitionOffset + 1024}, bytesRead={read}";
+            }
+
+            var sig = BinaryPrimitives.ReadUInt16BigEndian(vhBuf.AsSpan(0, 2));
+            if (sig != 0x482B && sig != 0x4858)
+            {
+                return $"invalid HFS signature at volume header: 0x{sig:X4}";
+            }
+
+            var header = ParseVolumeHeader(vhBuf);
+            if (header.BlockSize == 0 || header.TotalBlocks == 0)
+            {
+                return $"invalid volume header fields: blockSize={header.BlockSize}, totalBlocks={header.TotalBlocks}";
+            }
+
+            var catalogExtents = new List<(long ByteOffset, long ByteLength)>();
+            for (int i = 0; i < 8; i++)
+            {
+                var startBlock = header.CatalogExtents[i].StartBlock;
+                var blockCount = header.CatalogExtents[i].BlockCount;
+                if (blockCount == 0) break;
+                catalogExtents.Add((partitionOffset + (long)startBlock * header.BlockSize, (long)blockCount * header.BlockSize));
+            }
+
+            if (catalogExtents.Count == 0)
+            {
+                return "catalog fork has no inline extents in volume header";
+            }
+
+            var extentNotes = new List<string>(catalogExtents.Count);
+            foreach (var (byteOff, byteLen) in catalogExtents)
+            {
+                var sampleSize = (int)Math.Max(512, Math.Min((long)Math.Max(header.BlockSize, 4096u), 4096L));
+                var sample = new byte[sampleSize];
+                var sampleRead = await device.ReadAsync(byteOff, sample, sample.Length, ct).ConfigureAwait(false);
+                var kind = sampleRead > 8 ? (sbyte)sample[8] : (sbyte)-128;
+                var sampleHex = sampleRead > 0
+                    ? Convert.ToHexString(sample.AsSpan(0, Math.Min(sampleRead, 32)))
+                    : "NO_DATA";
+                extentNotes.Add($"off={byteOff},len={byteLen},kind8={kind},head32={sampleHex}");
+            }
+
+            var catalogBaseOffset = await FindCatalogHeaderOffsetAsync(device, catalogExtents, header.BlockSize, partitionOffset, ct).ConfigureAwait(false);
+            if (catalogBaseOffset < 0)
+            {
+                return $"no plausible catalog B-tree header found in scanned catalog extents. Extents: {string.Join(" | ", extentNotes)}";
+            }
+
+            var headerNodeBuf = new byte[Math.Max(header.BlockSize, 4096u)];
+            var headerNodeRead = await device.ReadAsync(catalogBaseOffset, headerNodeBuf, headerNodeBuf.Length, ct).ConfigureAwait(false);
+            if (headerNodeRead < 512)
+            {
+                return $"catalog header-node short read: offset={catalogBaseOffset}, bytesRead={headerNodeRead}";
+            }
+
+            var nodeKind = (sbyte)headerNodeBuf[8];
+            if (nodeKind != 1)
+            {
+                return $"catalog header node kind was {nodeKind} instead of 1";
+            }
+
+            var nodeSize = BinaryPrimitives.ReadUInt16BigEndian(headerNodeBuf.AsSpan(32, 2));
+            var rootNode = BinaryPrimitives.ReadUInt32BigEndian(headerNodeBuf.AsSpan(16, 4));
+            var firstLeafNode = BinaryPrimitives.ReadUInt32BigEndian(headerNodeBuf.AsSpan(24, 4));
+            if (nodeSize < 512)
+            {
+                return $"catalog B-tree nodeSize too small: {nodeSize}";
+            }
+
+            return $"open probe passed: sig=0x{sig:X4}, blockSize={header.BlockSize}, catalogExtents={catalogExtents.Count}, catalogBaseOffset={catalogBaseOffset}, nodeSize={nodeSize}, rootNode={rootNode}, firstLeafNode={firstLeafNode}, extents={string.Join(" | ", extentNotes)}";
+        }
+        catch (Exception ex)
+        {
+            return $"{ex.GetType().Name}: {ex.Message}";
+        }
+    }
+
+    private static async Task<long> FindCatalogHeaderOffsetAsync(
+        IRawBlockDevice device,
+        IReadOnlyList<(long ByteOffset, long ByteLength)> catalogExtents,
+        uint blockSize,
+        long partitionOffset,
+        CancellationToken ct)
+    {
+        var probeSize = (int)Math.Max(blockSize, 4096u);
+        var probe = new byte[probeSize];
+
+        foreach (var (byteOff, byteLen) in catalogExtents)
+        {
+            var maxScan = Math.Min(byteLen, 32L * 1024L * 1024L);
+            for (long rel = 0; rel + 512 <= maxScan; rel += 512)
+            {
+                var read = await device.ReadAsync(byteOff + rel, probe, probe.Length, ct).ConfigureAwait(false);
+                if (read < 512) continue;
+
+                var kind = (sbyte)probe[8];
+                if (kind != 1) continue;
+
+                var nodeSize = BinaryPrimitives.ReadUInt16BigEndian(probe.AsSpan(32, 2));
+                if (nodeSize < 512 || nodeSize > 65535) continue;
+                if ((nodeSize & 1) != 0) continue;
+
+                var rootNode = BinaryPrimitives.ReadUInt32BigEndian(probe.AsSpan(16, 4));
+                var firstLeafNode = BinaryPrimitives.ReadUInt32BigEndian(probe.AsSpan(24, 4));
+                var totalNodes = BinaryPrimitives.ReadUInt32BigEndian(probe.AsSpan(14 + 22, 4));
+                if (totalNodes == 0) continue;
+                if (rootNode >= totalNodes) continue;
+                if (firstLeafNode >= totalNodes) continue;
+
+                return byteOff + rel;
+            }
+        }
+
+        return -1;
     }
 
     /// <summary>
@@ -769,19 +899,51 @@ public sealed class HfsPlusNativeReader : IDisposable
     private async Task WriteCatalogNodeAsync(uint nodeIndex, byte[] nodeBuf, CancellationToken ct)
     {
         var nodeOffset = (long)nodeIndex * _nodeSize;
-        var remaining = nodeOffset;
+        var physicalOffset = MapCatalogLogicalOffsetToPhysical(nodeOffset);
+        if (physicalOffset < 0)
+        {
+            throw new InvalidOperationException($"Catalog node {nodeIndex} is beyond catalog extent range.");
+        }
+
+        await _device.WriteAsync(physicalOffset, nodeBuf, (int)_nodeSize, ct).ConfigureAwait(false);
+    }
+
+    private long MapCatalogLogicalOffsetToPhysical(long logicalOffset)
+    {
+        if (logicalOffset < 0) return -1;
+
+        var remaining = logicalOffset;
+        var started = false;
+
         foreach (var (byteOff, byteLen) in _catalogExtents)
         {
+            if (!started)
+            {
+                if (_catalogFileStart < byteOff || _catalogFileStart >= byteOff + byteLen)
+                {
+                    continue;
+                }
+
+                started = true;
+                var available = (byteOff + byteLen) - _catalogFileStart;
+                if (remaining < available)
+                {
+                    return _catalogFileStart + remaining;
+                }
+
+                remaining -= available;
+                continue;
+            }
+
             if (remaining < byteLen)
             {
-                var physicalOffset = byteOff + remaining;
-                await _device.WriteAsync(physicalOffset, nodeBuf, (int)_nodeSize, ct).ConfigureAwait(false);
-                return;
+                return byteOff + remaining;
             }
+
             remaining -= byteLen;
         }
 
-        throw new InvalidOperationException($"Catalog node {nodeIndex} is beyond catalog extent range.");
+        return -1;
     }
 
     private async Task UpdateBTreeHeaderAsync(CancellationToken ct)
@@ -1800,12 +1962,62 @@ public sealed class HfsPlusNativeReader : IDisposable
             // Flush volume header
             await FlushVolumeHeaderAsync(ct).ConfigureAwait(false);
 
+            // Self-check: thread record must be findable via descent immediately after insert.
+            // If this fires, B-tree state is corrupt; throw with diagnostic info so the caller
+            // doesn't silently leave a half-inserted file behind.
+            if (!await VerifyThreadRecordFindableAsync(cnid, ct).ConfigureAwait(false))
+            {
+                throw new InvalidOperationException(
+                    $"CreateFileAsync post-insert verification failed: thread record for CNID {cnid} (file '{name}', parent {parentCnid}) " +
+                    $"not findable via B-tree descent. _leafRecords={_leafRecords}, _totalNodes={_totalNodes}.");
+            }
+
             return cnid;
         }
         finally
         {
             _writeLock.Release();
         }
+    }
+
+    /// <summary>
+    /// Verify that a freshly-inserted thread record is findable via the same descent path
+    /// WriteFileDataAsync uses. If this returns false, B-tree split/index propagation has
+    /// left the catalog in an inconsistent state (records inserted into orphaned leaves,
+    /// stale index pointers, etc.).
+    /// </summary>
+    private async Task<bool> VerifyThreadRecordFindableAsync(uint cnid, CancellationToken ct)
+    {
+        var threadKey = BuildCatalogKey(cnid, "");
+        var (leaf, _) = await FindLeafForKeyAsync(threadKey, ct).ConfigureAwait(false);
+        if (leaf == 0) return false;
+
+        var visited = new HashSet<uint>();
+        var current = leaf;
+        // Forward sweep
+        while (current != 0)
+        {
+            if (!visited.Add(current)) break;
+            var nb = await ReadCatalogNodeAsync(current, ct).ConfigureAwait(false);
+            if (nb is null) break;
+            if ((sbyte)nb[8] != -1) break;
+            var nr = BinaryPrimitives.ReadUInt16BigEndian(nb.AsSpan(10, 2));
+            for (int i = 0; i < nr; i++)
+            {
+                var (ro, rl) = GetRecordOffsetAndLength(nb, i, nr);
+                if (ro < 14 || rl <= 0) continue;
+                var rp = BinaryPrimitives.ReadUInt32BigEndian(nb.AsSpan(ro + 2, 4));
+                if (rp != cnid) continue;
+                var kl = BinaryPrimitives.ReadUInt16BigEndian(nb.AsSpan(ro, 2));
+                var dOff = ro + 2 + kl;
+                if (dOff % 2 != 0) dOff++;
+                if (dOff + 2 > nb.Length) continue;
+                var rt = BinaryPrimitives.ReadInt16BigEndian(nb.AsSpan(dOff, 2));
+                if (rt == 4) return true;
+            }
+            current = BinaryPrimitives.ReadUInt32BigEndian(nb.AsSpan(0, 4));
+        }
+        return false;
     }
 
     /// <summary>
@@ -1942,15 +2154,19 @@ public sealed class HfsPlusNativeReader : IDisposable
         string fileName = "";
         HfsPlusForkInfo? currentFork = null;
 
-        // Walk leaf chain to find thread record for this CNID
-        var currentNode = threadLeaf;
+        // Walk leaf chain to find thread record for this CNID. We first walk forward via
+        // fLink starting at the leaf returned by FindLeafForKeyAsync. If that doesn't find
+        // it (e.g. because a recent split left a stale index pointer that routed us to a
+        // leaf AFTER the one containing the thread record), we also walk backward via
+        // bLink. Belt-and-braces: guarantees we examine every reachable leaf.
         var visited = new HashSet<uint>();
-        while (currentNode != 0 && parentCnid == 0)
+
+        async Task<bool> ScanLeafAsync(uint nodeIdx)
         {
-            if (!visited.Add(currentNode)) break;
-            var nodeBuf = await ReadCatalogNodeAsync(currentNode, ct).ConfigureAwait(false);
-            if (nodeBuf is null) break;
-            if ((sbyte)nodeBuf[8] != -1) break;
+            if (nodeIdx == 0 || !visited.Add(nodeIdx)) return false;
+            var nodeBuf = await ReadCatalogNodeAsync(nodeIdx, ct).ConfigureAwait(false);
+            if (nodeBuf is null) return false;
+            if ((sbyte)nodeBuf[8] != -1) return false;
 
             var numRecs = BinaryPrimitives.ReadUInt16BigEndian(nodeBuf.AsSpan(10, 2));
             for (int i = 0; i < numRecs; i++)
@@ -1975,12 +2191,46 @@ public sealed class HfsPlusNativeReader : IDisposable
                     for (int c = 0; c < nameLen; c++)
                         chars[c] = (char)BinaryPrimitives.ReadUInt16BigEndian(nodeBuf.AsSpan(dataOff + 10 + c * 2, 2));
                     fileName = new string(chars);
-                    break;
+                    return true;
                 }
             }
+            return false;
+        }
 
-            var fLink = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(0, 4));
-            currentNode = fLink;
+        // Forward sweep
+        var currentNode = threadLeaf;
+        while (currentNode != 0 && parentCnid == 0)
+        {
+            if (await ScanLeafAsync(currentNode).ConfigureAwait(false)) break;
+            var nodeBuf = await ReadCatalogNodeAsync(currentNode, ct).ConfigureAwait(false);
+            if (nodeBuf is null) break;
+            currentNode = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(0, 4)); // fLink
+        }
+
+        // Backward sweep — only if forward didn't find it
+        if (parentCnid == 0)
+        {
+            var startBuf = await ReadCatalogNodeAsync(threadLeaf, ct).ConfigureAwait(false);
+            currentNode = startBuf is not null ? BinaryPrimitives.ReadUInt32BigEndian(startBuf.AsSpan(4, 4)) : 0;
+            while (currentNode != 0 && parentCnid == 0)
+            {
+                if (await ScanLeafAsync(currentNode).ConfigureAwait(false)) break;
+                var nodeBuf = await ReadCatalogNodeAsync(currentNode, ct).ConfigureAwait(false);
+                if (nodeBuf is null) break;
+                currentNode = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(4, 4)); // bLink
+            }
+        }
+
+        // Exhaustive last-resort sweep — scan EVERY allocated B-tree node by index.
+        // Catches thread records in orphaned leaves whose fLink/bLink chain is broken
+        // (a known weakness in our B-tree split path).
+        if (parentCnid == 0)
+        {
+            for (uint idx = 1; idx < _totalNodes && parentCnid == 0; idx++)
+            {
+                if (visited.Contains(idx)) continue;
+                if (await ScanLeafAsync(idx).ConfigureAwait(false)) break;
+            }
         }
 
         if (parentCnid == 0)
@@ -1990,17 +2240,16 @@ public sealed class HfsPlusNativeReader : IDisposable
         var fileKey = BuildCatalogKey(parentCnid, fileName);
         var (fileLeaf, _fileParent) = await FindLeafForKeyAsync(fileKey, ct).ConfigureAwait(false);
 
-        currentNode = fileLeaf;
         visited.Clear();
         uint fileNodeIndex = 0;
         int fileRecordIndex = -1;
 
-        while (currentNode != 0)
+        async Task<bool> ScanLeafForFileRecordAsync(uint nodeIdx)
         {
-            if (!visited.Add(currentNode)) break;
-            var nodeBuf = await ReadCatalogNodeAsync(currentNode, ct).ConfigureAwait(false);
-            if (nodeBuf is null) break;
-            if ((sbyte)nodeBuf[8] != -1) break;
+            if (nodeIdx == 0 || !visited.Add(nodeIdx)) return false;
+            var nodeBuf = await ReadCatalogNodeAsync(nodeIdx, ct).ConfigureAwait(false);
+            if (nodeBuf is null) return false;
+            if ((sbyte)nodeBuf[8] != -1) return false;
 
             var numRecs = BinaryPrimitives.ReadUInt16BigEndian(nodeBuf.AsSpan(10, 2));
             for (int i = 0; i < numRecs; i++)
@@ -2011,8 +2260,7 @@ public sealed class HfsPlusNativeReader : IDisposable
                 if (keyLen < 6) continue;
 
                 var recParent = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(recOff + 2, 4));
-                if (recParent > parentCnid) goto doneSearch;
-                if (recParent < parentCnid) continue;
+                if (recParent != parentCnid) continue; // exact match — no early break here since exhaustive sweep visits arbitrary order
 
                 var recNameLen = BinaryPrimitives.ReadUInt16BigEndian(nodeBuf.AsSpan(recOff + 6, 2));
                 var recChars = new char[recNameLen];
@@ -2029,17 +2277,48 @@ public sealed class HfsPlusNativeReader : IDisposable
                 if (recType == 2) // file record
                 {
                     currentFork = ParseForkData(nodeBuf, dataOff + 88);
-                    fileNodeIndex = currentNode;
+                    fileNodeIndex = nodeIdx;
                     fileRecordIndex = i;
-                    goto doneSearch;
+                    return true;
                 }
             }
-
-            var fl = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(0, 4));
-            currentNode = fl;
+            return false;
         }
 
-        doneSearch:
+        // Forward sweep
+        currentNode = fileLeaf;
+        while (currentNode != 0 && currentFork is null)
+        {
+            if (await ScanLeafForFileRecordAsync(currentNode).ConfigureAwait(false)) break;
+            var nodeBuf = await ReadCatalogNodeAsync(currentNode, ct).ConfigureAwait(false);
+            if (nodeBuf is null) break;
+            currentNode = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(0, 4)); // fLink
+        }
+
+        // Backward sweep
+        if (currentFork is null)
+        {
+            var startBuf = await ReadCatalogNodeAsync(fileLeaf, ct).ConfigureAwait(false);
+            currentNode = startBuf is not null ? BinaryPrimitives.ReadUInt32BigEndian(startBuf.AsSpan(4, 4)) : 0;
+            while (currentNode != 0 && currentFork is null)
+            {
+                if (await ScanLeafForFileRecordAsync(currentNode).ConfigureAwait(false)) break;
+                var nodeBuf = await ReadCatalogNodeAsync(currentNode, ct).ConfigureAwait(false);
+                if (nodeBuf is null) break;
+                currentNode = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(4, 4)); // bLink
+            }
+        }
+
+        // Exhaustive last-resort sweep: scan every allocated B-tree node
+        if (currentFork is null)
+        {
+            for (uint idx = 1; idx < _totalNodes && currentFork is null; idx++)
+            {
+                if (visited.Contains(idx)) continue;
+                if (await ScanLeafForFileRecordAsync(idx).ConfigureAwait(false)) break;
+            }
+        }
+
         if (currentFork is null)
             throw new InvalidOperationException($"Cannot find file record for CNID {fileCnid}.");
 
@@ -2055,23 +2334,52 @@ public sealed class HfsPlusNativeReader : IDisposable
             var additionalBytes = requiredSize - currentAllocatedBytes;
             var additionalBlocks = (uint)((additionalBytes + _header.BlockSize - 1) / _header.BlockSize);
 
-            // Find first empty extent slot BEFORE allocating, so we can refuse
-            // cleanly instead of leaking allocated blocks if the fork is full.
             var extents = new List<HfsPlusExtent>(currentFork.Extents);
+
+            // Find the last NON-EMPTY extent so we can try to coalesce.
+            int lastNonEmpty = -1;
+            for (int i = extents.Count - 1; i >= 0; i--)
+            {
+                if (extents[i].BlockCount > 0) { lastNonEmpty = i; break; }
+            }
+
+            // Find the first empty slot for a new (non-coalescable) extent.
             int emptySlot = -1;
             for (int i = 0; i < extents.Count; i++)
             {
                 if (extents[i].BlockCount == 0) { emptySlot = i; break; }
             }
-            if (emptySlot < 0)
+
+            // Allocate the new blocks first so we can decide based on actual placement.
+            var newStart = await AllocateBlocksAsync(additionalBlocks, ct).ConfigureAwait(false);
+
+            // Coalesce: if the new range is contiguous with the tail of the last extent,
+            // just extend that extent instead of consuming a new slot. This is the path
+            // hit by sequential writes on a fresh drive (Windows Explorer's copy pattern).
+            bool coalesced = false;
+            if (lastNonEmpty >= 0)
             {
-                throw new InvalidOperationException(
-                    $"WriteFileData: file CNID {fileCnid} already uses all {extents.Count} inline extents; " +
-                    "extents-overflow file is not supported on write.");
+                var last = extents[lastNonEmpty];
+                if (last.StartBlock + last.BlockCount == newStart)
+                {
+                    extents[lastNonEmpty] = new HfsPlusExtent(last.StartBlock, last.BlockCount + additionalBlocks);
+                    coalesced = true;
+                }
             }
 
-            var newStart = await AllocateBlocksAsync(additionalBlocks, ct).ConfigureAwait(false);
-            extents[emptySlot] = new HfsPlusExtent(newStart, additionalBlocks);
+            if (!coalesced)
+            {
+                if (emptySlot < 0)
+                {
+                    // We allocated blocks we can't record — free them before erroring.
+                    await FreeBlocksAsync(newStart, additionalBlocks, ct).ConfigureAwait(false);
+                    throw new InvalidOperationException(
+                        $"WriteFileData: file CNID {fileCnid} already uses all {extents.Count} inline extents and " +
+                        $"the new allocation at block {newStart} is not contiguous with the last extent. " +
+                        "Extents-overflow file write is not yet supported.");
+                }
+                extents[emptySlot] = new HfsPlusExtent(newStart, additionalBlocks);
+            }
 
             currentFork = new HfsPlusForkInfo(Math.Max(currentFork.LogicalSize, requiredSize), extents.ToArray());
 
@@ -2145,13 +2453,13 @@ public sealed class HfsPlusNativeReader : IDisposable
 
         uint parentCnid = 0;
         string fileName = "";
-        var cn = tLeaf;
         var vis = new HashSet<uint>();
-        while (cn != 0 && parentCnid == 0)
+
+        async Task<bool> ScanLeafForThreadAsync(uint nodeIdx)
         {
-            if (!vis.Add(cn)) break;
-            var nb = await ReadCatalogNodeAsync(cn, ct).ConfigureAwait(false);
-            if (nb is null || (sbyte)nb[8] != -1) break;
+            if (nodeIdx == 0 || !vis.Add(nodeIdx)) return false;
+            var nb = await ReadCatalogNodeAsync(nodeIdx, ct).ConfigureAwait(false);
+            if (nb is null || (sbyte)nb[8] != -1) return false;
 
             var nr = BinaryPrimitives.ReadUInt16BigEndian(nb.AsSpan(10, 2));
             for (int i = 0; i < nr; i++)
@@ -2174,9 +2482,44 @@ public sealed class HfsPlusNativeReader : IDisposable
                     for (int c = 0; c < nl; c++)
                         ch[c] = (char)BinaryPrimitives.ReadUInt16BigEndian(nb.AsSpan(dOff + 10 + c * 2, 2));
                     fileName = new string(ch);
+                    return true;
                 }
             }
-            cn = BinaryPrimitives.ReadUInt32BigEndian(nb.AsSpan(0, 4));
+            return false;
+        }
+
+        // Forward sweep
+        var cn = tLeaf;
+        while (cn != 0 && parentCnid == 0)
+        {
+            if (await ScanLeafForThreadAsync(cn).ConfigureAwait(false)) break;
+            var nb = await ReadCatalogNodeAsync(cn, ct).ConfigureAwait(false);
+            if (nb is null) break;
+            cn = BinaryPrimitives.ReadUInt32BigEndian(nb.AsSpan(0, 4)); // fLink
+        }
+
+        // Backward sweep — only if forward didn't find it
+        if (parentCnid == 0)
+        {
+            var startBuf = await ReadCatalogNodeAsync(tLeaf, ct).ConfigureAwait(false);
+            cn = startBuf is not null ? BinaryPrimitives.ReadUInt32BigEndian(startBuf.AsSpan(4, 4)) : 0;
+            while (cn != 0 && parentCnid == 0)
+            {
+                if (await ScanLeafForThreadAsync(cn).ConfigureAwait(false)) break;
+                var nb = await ReadCatalogNodeAsync(cn, ct).ConfigureAwait(false);
+                if (nb is null) break;
+                cn = BinaryPrimitives.ReadUInt32BigEndian(nb.AsSpan(4, 4)); // bLink
+            }
+        }
+
+        // Exhaustive last-resort sweep — scan every allocated B-tree node by index.
+        if (parentCnid == 0)
+        {
+            for (uint idx = 1; idx < _totalNodes && parentCnid == 0; idx++)
+            {
+                if (vis.Contains(idx)) continue;
+                if (await ScanLeafForThreadAsync(idx).ConfigureAwait(false)) break;
+            }
         }
 
         if (parentCnid == 0)
@@ -2186,17 +2529,16 @@ public sealed class HfsPlusNativeReader : IDisposable
         var fileKey = BuildCatalogKey(parentCnid, fileName);
         var (fileLeaf, _fileParent) = await FindLeafForKeyAsync(fileKey, ct).ConfigureAwait(false);
 
-        cn = fileLeaf;
         vis.Clear();
         HfsPlusForkInfo? fork = null;
         uint fNodeIdx = 0;
         int fRecIdx = -1;
 
-        while (cn != 0)
+        async Task<bool> ScanLeafForFileSizeAsync(uint nodeIdx)
         {
-            if (!vis.Add(cn)) break;
-            var nb = await ReadCatalogNodeAsync(cn, ct).ConfigureAwait(false);
-            if (nb is null || (sbyte)nb[8] != -1) break;
+            if (nodeIdx == 0 || !vis.Add(nodeIdx)) return false;
+            var nb = await ReadCatalogNodeAsync(nodeIdx, ct).ConfigureAwait(false);
+            if (nb is null || (sbyte)nb[8] != -1) return false;
 
             var nr = BinaryPrimitives.ReadUInt16BigEndian(nb.AsSpan(10, 2));
             for (int i = 0; i < nr; i++)
@@ -2206,8 +2548,7 @@ public sealed class HfsPlusNativeReader : IDisposable
                 var kl = BinaryPrimitives.ReadUInt16BigEndian(nb.AsSpan(ro, 2));
                 if (kl < 6) continue;
                 var rp = BinaryPrimitives.ReadUInt32BigEndian(nb.AsSpan(ro + 2, 4));
-                if (rp > parentCnid) goto done2;
-                if (rp < parentCnid) continue;
+                if (rp != parentCnid) continue;
 
                 var rnl = BinaryPrimitives.ReadUInt16BigEndian(nb.AsSpan(ro + 6, 2));
                 var rch = new char[rnl];
@@ -2223,15 +2564,48 @@ public sealed class HfsPlusNativeReader : IDisposable
                 if (rt == 2)
                 {
                     fork = ParseForkData(nb, dOff + 88);
-                    fNodeIdx = cn;
+                    fNodeIdx = nodeIdx;
                     fRecIdx = i;
-                    goto done2;
+                    return true;
                 }
             }
-            cn = BinaryPrimitives.ReadUInt32BigEndian(nb.AsSpan(0, 4));
+            return false;
         }
 
-        done2:
+        // Forward sweep
+        cn = fileLeaf;
+        while (cn != 0 && fork is null)
+        {
+            if (await ScanLeafForFileSizeAsync(cn).ConfigureAwait(false)) break;
+            var nb = await ReadCatalogNodeAsync(cn, ct).ConfigureAwait(false);
+            if (nb is null) break;
+            cn = BinaryPrimitives.ReadUInt32BigEndian(nb.AsSpan(0, 4)); // fLink
+        }
+
+        // Backward sweep
+        if (fork is null)
+        {
+            var startBuf = await ReadCatalogNodeAsync(fileLeaf, ct).ConfigureAwait(false);
+            cn = startBuf is not null ? BinaryPrimitives.ReadUInt32BigEndian(startBuf.AsSpan(4, 4)) : 0;
+            while (cn != 0 && fork is null)
+            {
+                if (await ScanLeafForFileSizeAsync(cn).ConfigureAwait(false)) break;
+                var nb = await ReadCatalogNodeAsync(cn, ct).ConfigureAwait(false);
+                if (nb is null) break;
+                cn = BinaryPrimitives.ReadUInt32BigEndian(nb.AsSpan(4, 4)); // bLink
+            }
+        }
+
+        // Exhaustive last-resort sweep
+        if (fork is null)
+        {
+            for (uint idx = 1; idx < _totalNodes && fork is null; idx++)
+            {
+                if (vis.Contains(idx)) continue;
+                if (await ScanLeafForFileSizeAsync(idx).ConfigureAwait(false)) break;
+            }
+        }
+
         if (fork is null)
             throw new InvalidOperationException($"Cannot find file record for CNID {fileCnid}.");
 
@@ -2429,22 +2803,12 @@ public sealed class HfsPlusNativeReader : IDisposable
     private async Task<byte[]?> ReadCatalogNodeAsync(uint nodeIndex, CancellationToken ct)
     {
         var nodeOffset = (long)nodeIndex * _nodeSize;
+        var physicalOffset = MapCatalogLogicalOffsetToPhysical(nodeOffset);
+        if (physicalOffset < 0) return null;
+
         var buf = new byte[_nodeSize];
-
-        // Map node offset to physical disk offset through the catalog extent list
-        var remaining = nodeOffset;
-        foreach (var (byteOff, byteLen) in _catalogExtents)
-        {
-            if (remaining < byteLen)
-            {
-                var physicalOffset = byteOff + remaining;
-                var read = await _device.ReadAsync(physicalOffset, buf, buf.Length, ct).ConfigureAwait(false);
-                return read >= _nodeSize ? buf : null;
-            }
-            remaining -= byteLen;
-        }
-
-        return null; // node beyond extent range
+        var read = await _device.ReadAsync(physicalOffset, buf, buf.Length, ct).ConfigureAwait(false);
+        return read >= _nodeSize ? buf : null;
     }
 
     private (int Offset, int Length) GetRecordOffsetAndLength(byte[] nodeBuf, int recordIndex, int numRecords)

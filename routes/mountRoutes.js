@@ -2,6 +2,7 @@ const { exec } = require('child_process');
 const { promisify } = require('util');
 const fs = require('fs');
 const path = require('path');
+const { wslMountDrive, wslUnmountDrive } = require('../scripts/wslMountClient');
 
 const execAsync = promisify(exec);
 
@@ -91,6 +92,59 @@ module.exports = function mountMountRoutes(app, ctx) {
         inFlightOps.add(opKey);
         addLog(`USER ACTION: Requesting mount for Physical Drive ${driveId}`);
         try {
+            // Primary path: WSL2-backed mount via Linux kernel hfsplus / apfs-rw drivers.
+            // Skipped if the caller explicitly forces the native engine.
+            if (forceNative !== true) {
+                if (!hasRawDiskAccess?.()) {
+                    return res.status(403).json({
+                        error: 'Administrator privileges are required to attach a physical drive to WSL2.',
+                        suggestion: 'Restart MacMount as Administrator.',
+                        requiresAdmin: true,
+                        mode: 'wsl_kernel'
+                    });
+                }
+                const wslResult = await wslMountDrive(driveId, password, addLog);
+                if (!wslResult.error) {
+                    nativeMountState.set(String(driveId), {
+                        wslTarget: wslResult.wslTarget,
+                        uncPath: wslResult.uncPath,
+                        driveLetter: wslResult.driveLetter,
+                        mountType: 'wsl_kernel',
+                        fsType: wslResult.fsType
+                    });
+                    const friendlyTarget = wslResult.driveLetter ? `${wslResult.driveLetter}:\\` : wslResult.uncPath;
+                    addLog(`SUCCESS: Drive ${driveId} mounted at ${friendlyTarget}`, 'success');
+                    return res.json({
+                        success: true,
+                        path: friendlyTarget,
+                        mountPath: friendlyTarget,
+                        driveLetter: wslResult.driveLetter || undefined,
+                        uncPath: wslResult.uncPath,
+                        mountType: 'wsl_kernel',
+                        fsType: wslResult.fsType,
+                        mode: 'wsl_kernel'
+                    });
+                }
+                addLog(`WSL mount failed for drive ${driveId}: ${wslResult.error}`, 'warning');
+                if (wslResult.needsPassword === true && !password) {
+                    return res.status(409).json({
+                        error: wslResult.error || 'Encrypted APFS volume requires a password.',
+                        needsPassword: true,
+                        suggestion: 'Enter the disk password and retry.',
+                        mode: 'wsl_kernel'
+                    });
+                }
+                if (wslResult.needsAdmin === true) {
+                    return res.status(403).json({
+                        error: wslResult.error,
+                        requiresAdmin: true,
+                        mode: 'wsl_kernel'
+                    });
+                }
+                // Otherwise fall through to native engine as a last-ditch attempt.
+                addLog(`Falling back to native engine for drive ${driveId}.`, 'warning');
+            }
+
             const attemptNative = shouldAttemptNativeMountForDrive(driveId, forceNative === true);
             if (attemptNative) {
                 if (!hasRawDiskAccess?.()) {
@@ -140,6 +194,7 @@ module.exports = function mountMountRoutes(app, ctx) {
                 const analyzedFsType = String(analyzedPlan?.FileSystemType || '').trim();
                 const isApfsPlan = /^APFS$/i.test(analyzedFsType);
                 const isCoreStoragePlan = /^CoreStorage$/i.test(analyzedFsType);
+                const isEncryptedHfsPlan = analyzedPlan?.IsEncrypted === true && (/^HFS\+$/i.test(analyzedFsType) || /^HFSX$/i.test(analyzedFsType));
                 const isPasswordRequired = nativeResult.needsPassword === true && !password;
                 const isHardwareBound = nativeResult.hardwareBound === true || analyzedPlan?.HardwareBound === true;
 
@@ -167,6 +222,15 @@ module.exports = function mountMountRoutes(app, ctx) {
                     return res.status(501).json({
                         error: 'CoreStorage/FileVault unlock is not implemented yet.',
                         suggestion: 'This drive was detected as CoreStorage. Native APFS fallback cannot open it yet.',
+                        analysis: nativeResult.analysis || null,
+                        mode: RUNTIME_MOUNT_MODE
+                    });
+                }
+
+                if (isEncryptedHfsPlan) {
+                    return res.status(501).json({
+                        error: 'Encrypted HFS/CoreStorage-style volumes are detected but cannot be unlocked by the native HFS provider yet.',
+                        suggestion: 'Use a Mac to decrypt or convert the drive to an unencrypted external volume, then retry.',
                         analysis: nativeResult.analysis || null,
                         mode: RUNTIME_MOUNT_MODE
                     });
@@ -243,7 +307,8 @@ module.exports = function mountMountRoutes(app, ctx) {
     app.post('/api/unmount', async (req, res) => {
         const { id } = req.body;
         const driveId = String(id || '').trim();
-        const rememberedLetter = String(nativeMountState.get(driveId)?.letter || '').trim().toUpperCase().replace(':', '');
+        const mountInfo = nativeMountState.get(driveId);
+        const rememberedLetter = String(mountInfo?.letter || '').trim().toUpperCase().replace(':', '');
         const opKey = `unmount:${id}`;
         if (inFlightOps.has(opKey)) {
             return res.status(429).json({ error: 'Unmount already in progress for this drive.' });
@@ -252,6 +317,21 @@ module.exports = function mountMountRoutes(app, ctx) {
         addLog(`USER ACTION: Requesting unmount for Physical Drive ${id}`);
 
         try {
+            // WSL2-backed mounts: unmount via Linux + detach from WSL2.
+            if (mountInfo?.mountType === 'wsl_kernel') {
+                try {
+                    await wslUnmountDrive(driveId, {
+                        wslTarget: mountInfo.wslTarget,
+                        driveLetter: mountInfo.driveLetter
+                    }, addLog);
+                    addLog(`WSL unmount complete for drive ${id}`, 'success');
+                } catch (e) {
+                    addLog(`WSL unmount warning for drive ${id}: ${e.message}`, 'warning');
+                }
+                nativeMountState.delete(driveId);
+                return res.json({ success: true, mountType: 'wsl_kernel' });
+            }
+
             // 1. Broker unmount first — awaited so it completes before PS tears down the mount point
             if (RUNTIME_NATIVE_MOUNT_ENABLED && nativeMountState.has(driveId)) {
                 try {
