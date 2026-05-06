@@ -20,6 +20,8 @@ function getBrokerExecutable() {
   const candidates = [
     process.resourcesPath ? path.join(process.resourcesPath, 'native-bin', 'MacMount.NativeBroker.exe') : null,
     process.resourcesPath ? path.join(process.resourcesPath, 'native-bin', 'broker', 'MacMount.NativeBroker.exe') : null,
+    process.resourcesPath ? path.join(process.resourcesPath, 'app.asar.unpacked', 'native', 'bin', 'MacMount.NativeBroker.exe') : null,
+    process.resourcesPath ? path.join(process.resourcesPath, 'app.asar.unpacked', 'native', 'bin', 'broker', 'MacMount.NativeBroker.exe') : null,
     path.join(__dirname, '..', 'native', 'bin', 'MacMount.NativeBroker.exe'),
     path.join(__dirname, '..', 'native', 'bin', 'broker', 'MacMount.NativeBroker.exe'),
   ];

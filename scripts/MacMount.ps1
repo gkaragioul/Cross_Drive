@@ -76,7 +76,7 @@ Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;publ
         $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`""
         $userId = [Security.Principal.WindowsIdentity]::GetCurrent().Name
         $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited
-        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
+        $settings = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
         $task = New-ScheduledTask -Action $action -Principal $principal -Settings $settings
         Register-ScheduledTask -TaskName "MacMountMap$letter" -InputObject $task -Force | Out-Null
         Start-ScheduledTask -TaskName "MacMountMap$letter" | Out-Null
@@ -117,7 +117,8 @@ if (`$qLen -gt 0) {
         Set-Content -Path $scriptPath -Value $scriptContent -Force -Encoding UTF8
         $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`""
         $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive
-        $task = New-ScheduledTask -Action $action -Principal $principal
+        $settings = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
+        $task = New-ScheduledTask -Action $action -Principal $principal -Settings $settings
         Register-ScheduledTask -TaskName "MacMountUnmap$letter" -InputObject $task -Force | Out-Null
         Start-ScheduledTask -TaskName "MacMountUnmap$letter" | Out-Null
         Start-Sleep -Milliseconds 1000
@@ -161,7 +162,8 @@ function Invoke-InteractiveHiddenCommand($taskName, $command) {
         $escaped = $command.Replace('"', '`"')
         $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"$escaped`""
         $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive
-        $task = New-ScheduledTask -Action $action -Principal $principal
+        $settings = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
+        $task = New-ScheduledTask -Action $action -Principal $principal -Settings $settings
         Register-ScheduledTask -TaskName $taskName -InputObject $task -Force | Out-Null
         Start-ScheduledTask -TaskName $taskName | Out-Null
         Start-Sleep -Seconds 3
@@ -187,7 +189,7 @@ function Hide-MacMetadataItems($rootPath) {
 
 function Cleanup-OrphanedMacMountMappings {
     try {
-        $lines = cmd.exe /c subst 2>$null
+        $lines = & subst.exe 2>$null
         foreach ($line in $lines) {
             if ($line -match '^\s*([A-Z]):\\:\s*=>\s*(.+)$') {
                 $letter = $matches[1].ToUpper()
@@ -275,7 +277,7 @@ function Get-Drives {
                 Remove-UserSessionDriveMapping $driveLetter
                 Remove-DriveLetterMapping $driveLetter
                 $linkPath = "C:\ProgramData\MacMount\Drive$id"
-                if (Test-Path $linkPath) { cmd.exe /c "rmdir `"$linkPath`"" 2>$null | Out-Null }
+                if (Test-Path $linkPath) { Remove-Item -LiteralPath $linkPath -Force -ErrorAction SilentlyContinue }
                 Clear-AssignedLetter $id
                 $driveLetter = $null
             }
@@ -713,7 +715,7 @@ function Install-WinFsp {
         if (Test-Path $msi) {
             $msiAbs = (Resolve-Path $msi).Path
             [Console]::Error.WriteLine("[MacMount] Installing Winfsp from: $msiAbs")
-            $proc = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$msiAbs`" /quiet /norestart" -Wait -NoNewWindow -PassThru
+            $proc = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$msiAbs`" /quiet /norestart" -Wait -WindowStyle Hidden -PassThru
             if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010) {
                 Start-Sleep -Seconds 3
                 return @{ success = $true; method = "msi"; path = $msiAbs } | ConvertTo-Json
@@ -726,7 +728,7 @@ function Install-WinFsp {
     # 2. Fall back to winget
     [Console]::Error.WriteLine("[MacMount] Falling back to winget for WinFsp installation")
     try {
-        $wingetProc = Start-Process -FilePath "winget" -ArgumentList "install --id WinFsp.WinFsp --silent --accept-package-agreements --accept-source-agreements" -Wait -NoNewWindow -PassThru
+        $wingetProc = Start-Process -FilePath "winget" -ArgumentList "install --id WinFsp.WinFsp --silent --accept-package-agreements --accept-source-agreements" -Wait -WindowStyle Hidden -PassThru
         if ($wingetProc.ExitCode -eq 0 -or $wingetProc.ExitCode -eq 3010) {
             Start-Sleep -Seconds 3
             return @{ success = $true; method = "winget" } | ConvertTo-Json

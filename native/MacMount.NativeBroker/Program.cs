@@ -147,6 +147,10 @@ internal sealed class BrokerService
             {
                 response = HandleMountPassthrough(root, requestId);
             }
+            else if (string.Equals(action, "update_volume_info", StringComparison.Ordinal))
+            {
+                response = HandleUpdateVolumeInfo(root, requestId);
+            }
             else if (string.Equals(action, "mount_raw_provider", StringComparison.Ordinal))
             {
                 response = await HandleMountRawProviderAsync(root, requestId).ConfigureAwait(false);
@@ -157,7 +161,7 @@ internal sealed class BrokerService
             }
             else
             {
-                response = new { ok = false, requestId, error = "unsupported action", suggestion = "Use ping|status|mount_probe|mount_passthrough|mount_raw_provider|unmount" };
+                response = new { ok = false, requestId, error = "unsupported action", suggestion = "Use ping|status|mount_probe|mount_passthrough|update_volume_info|mount_raw_provider|unmount" };
             }
 
             await writer.WriteLineAsync(JsonSerializer.Serialize(response));
@@ -292,7 +296,7 @@ internal sealed class BrokerService
                 return new { ok = false, requestId, error = $"WinFsp mount failed: 0x{rc:X8}" };
             }
 
-            var mounted = new MountedDrive(driveId, letter, mountPoint + "\\", sourcePath, DateTimeOffset.UtcNow, host);
+            var mounted = new MountedDrive(driveId, letter, mountPoint + "\\", sourcePath, DateTimeOffset.UtcNow, host, fs);
             _mounted[driveId] = mounted;
             fs.WarmupRoot();
             return new { ok = true, requestId, driveId, path = mounted.Path, driveLetter = letter, broker = true, mountType = "passthrough" };
@@ -301,6 +305,30 @@ internal sealed class BrokerService
         {
             return new { ok = false, requestId, error = ex.ToString() };
         }
+    }
+
+    private object HandleUpdateVolumeInfo(JsonElement root, string? requestId)
+    {
+        var driveId = root.TryGetProperty("driveId", out var d) ? d.GetString() : null;
+        var totalBytes = root.TryGetProperty("totalBytes", out var tb) && tb.ValueKind == JsonValueKind.Number ? tb.GetInt64() : 0L;
+        var freeBytes = root.TryGetProperty("freeBytes", out var fb) && fb.ValueKind == JsonValueKind.Number ? fb.GetInt64() : 0L;
+
+        if (string.IsNullOrWhiteSpace(driveId))
+        {
+            return new { ok = false, requestId, error = "driveId is required" };
+        }
+
+        if (!_mounted.TryGetValue(driveId, out var mounted))
+        {
+            return new { ok = false, requestId, error = "drive not mounted" };
+        }
+
+        if (!mounted.UpdateVolumeInfo(totalBytes, freeBytes))
+        {
+            return new { ok = false, requestId, error = "mounted filesystem does not support live volume info updates" };
+        }
+
+        return new { ok = true, requestId, driveId, totalBytes = Math.Max(0, totalBytes), freeBytes = Math.Max(0, freeBytes) };
     }
 
     private async Task<object> HandleMountRawProviderAsync(JsonElement root, string? requestId)
@@ -534,7 +562,7 @@ internal sealed class BrokerService
                 return new { ok = false, requestId, error = $"WinFsp mount failed: 0x{rc:X8}" };
             }
 
-            var mounted = new MountedDrive(driveId, letter, mountPoint + "\\", physicalDrivePath, DateTimeOffset.UtcNow, host, provider);
+            var mounted = new MountedDrive(driveId, letter, mountPoint + "\\", physicalDrivePath, DateTimeOffset.UtcNow, host, resource: provider);
             _mounted[driveId] = mounted;
 
             return new
@@ -1147,8 +1175,8 @@ internal sealed class BrokerPassthroughFileSystem : FileSystemBase
     private readonly bool _enableLocalMirrorCache;
     private readonly bool _enableAggressivePrefetch;
     private readonly DirectoryBuffer _dirBuffer = new();
-    private readonly long _volumeTotalBytes;
-    private readonly long _volumeFreeBytes;
+    private long _volumeTotalBytes;
+    private long _volumeFreeBytes;
     private readonly ConcurrentDictionary<string, CachedDirectory> _dirCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, CachedEntry> _entryCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, CachedPrefix> _prefixCache = new(StringComparer.OrdinalIgnoreCase);
@@ -1252,13 +1280,35 @@ internal sealed class BrokerPassthroughFileSystem : FileSystemBase
         });
     }
 
+    public void UpdateVolumeInfo(long totalBytes, long freeBytes)
+    {
+        var total = Math.Max(0, totalBytes);
+        var free = Math.Max(0, freeBytes);
+        if (total > 0 && free > total)
+        {
+            free = total;
+        }
+
+        Interlocked.Exchange(ref _volumeTotalBytes, total);
+        Interlocked.Exchange(ref _volumeFreeBytes, free);
+    }
+
     public override int GetVolumeInfo(out Fsp.Interop.VolumeInfo volumeInfo)
     {
         volumeInfo = default;
-        if (_volumeTotalBytes > 0)
+        var hintedTotal = Interlocked.Read(ref _volumeTotalBytes);
+        var hintedFree = Interlocked.Read(ref _volumeFreeBytes);
+        if (TryGetLiveDiskSpace(out var liveTotal, out var liveFree))
         {
-            volumeInfo.TotalSize = (ulong)_volumeTotalBytes;
-            volumeInfo.FreeSize = (ulong)_volumeFreeBytes;
+            volumeInfo.TotalSize = (ulong)liveTotal;
+            volumeInfo.FreeSize = (ulong)Math.Min(liveFree, liveTotal);
+            return 0;
+        }
+
+        if (hintedTotal > 0)
+        {
+            volumeInfo.TotalSize = (ulong)hintedTotal;
+            volumeInfo.FreeSize = (ulong)Math.Min(hintedFree, hintedTotal);
             return 0;
         }
 
@@ -1277,6 +1327,60 @@ internal sealed class BrokerPassthroughFileSystem : FileSystemBase
             return 0;
         }
     }
+
+    private bool TryGetLiveDiskSpace(out long totalBytes, out long freeBytes)
+    {
+        totalBytes = 0;
+        freeBytes = 0;
+
+        try
+        {
+            var path = _rootPath.EndsWith(Path.DirectorySeparatorChar) || _rootPath.EndsWith(Path.AltDirectorySeparatorChar)
+                ? _rootPath
+                : _rootPath + Path.DirectorySeparatorChar;
+            if (!GetDiskFreeSpaceEx(path, out var available, out var total, out _))
+            {
+                return false;
+            }
+
+            var liveTotal = (long)Math.Min(total, (ulong)long.MaxValue);
+            var liveFree = (long)Math.Min(available, (ulong)long.MaxValue);
+            if (liveTotal <= 0)
+            {
+                return false;
+            }
+
+            // WSL UNC paths can report the WSL ext4 root if the Linux mount has
+            // disappeared. Never replace the Mac volume hint with an unrelated
+            // backing filesystem size; that is how Explorer shows convincing but
+            // false capacity for a stale folder.
+            var hintedTotal = Interlocked.Read(ref _volumeTotalBytes);
+            if (hintedTotal > 0)
+            {
+                var delta = Math.Abs(liveTotal - hintedTotal);
+                var allowedDelta = Math.Max(64L * 1024L * 1024L, hintedTotal / 20L);
+                if (delta > allowedDelta)
+                {
+                    return false;
+                }
+            }
+
+            totalBytes = liveTotal;
+            freeBytes = Math.Max(0, Math.Min(liveFree, liveTotal));
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool GetDiskFreeSpaceEx(
+        string lpDirectoryName,
+        out ulong lpFreeBytesAvailableToCaller,
+        out ulong lpTotalNumberOfBytes,
+        out ulong lpTotalNumberOfFreeBytes);
 
     public override int GetSecurityByName(string fileName, out uint fileAttributes, ref byte[] securityDescriptor)
     {
@@ -1297,6 +1401,77 @@ internal sealed class BrokerPassthroughFileSystem : FileSystemBase
         fileAttributes = 0;
         securityDescriptor = Array.Empty<byte>();
         return unchecked((int)0xC0000034);
+    }
+
+    public override int Create(string fileName, uint createOptions, uint grantedAccess, uint fileAttributes, byte[] securityDescriptor, ulong allocationSize, out object fileNode, out object fileDesc, out Fsp.Interop.FileInfo fileInfo, out string normalizedName)
+    {
+        fileNode = null!;
+        fileDesc = null!;
+        fileInfo = default;
+        normalizedName = null!;
+
+        if (ContainsHiddenSegment(fileName))
+        {
+            return unchecked((int)0xC0000034);
+        }
+
+        var full = ResolvePath(fileName);
+        normalizedName = NormalizeToFsPath(full);
+
+        if (TryGetEntryCached(full, resolveReparse: true, out _))
+        {
+            return unchecked((int)0xC0000035);
+        }
+
+        try
+        {
+            var isDirectory = (createOptions & FILE_DIRECTORY_FILE) != 0;
+            FileStream? stream = null;
+            if (isDirectory)
+            {
+                Directory.CreateDirectory(full);
+            }
+            else
+            {
+                var parent = Path.GetDirectoryName(full);
+                if (!string.IsNullOrWhiteSpace(parent))
+                {
+                    Directory.CreateDirectory(parent);
+                }
+
+                stream = OpenReadWriteStream(full, FileMode.CreateNew);
+                if (allocationSize > 0)
+                {
+                    stream.SetLength((long)allocationSize);
+                }
+            }
+
+            InvalidatePathCaches(full);
+            if (!TryCreateEntry(full, out var entry, resolveReparse: true))
+            {
+                stream?.Dispose();
+                return unchecked((int)0xC0000001);
+            }
+
+            var handle = new OpenHandle(entry, stream);
+            fileNode = handle;
+            fileDesc = handle;
+            normalizedName = NormalizeToFsPath(entry.FullPath);
+            PopulateFileInfo(entry, ref fileInfo);
+            return 0;
+        }
+        catch (IOException)
+        {
+            return unchecked((int)0xC0000035);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return unchecked((int)0xC0000022);
+        }
+        catch
+        {
+            return unchecked((int)0xC0000001);
+        }
     }
 
     public override int Open(string fileName, uint createOptions, uint grantedAccess, out object fileNode, out object fileDesc, out Fsp.Interop.FileInfo fileInfo, out string normalizedName)
@@ -1323,11 +1498,19 @@ internal sealed class BrokerPassthroughFileSystem : FileSystemBase
             try
             {
                 var readPath = GetReadPath(entry);
-                stream = OpenReadStream(readPath);
+                stream = OpenReadWriteStream(readPath, FileMode.Open);
             }
             catch
             {
-                return unchecked((int)0xC0000034);
+                try
+                {
+                    var readPath = GetReadPath(entry);
+                    stream = OpenReadStream(readPath);
+                }
+                catch
+                {
+                    return unchecked((int)0xC0000034);
+                }
             }
         }
 
@@ -1370,9 +1553,25 @@ internal sealed class BrokerPassthroughFileSystem : FileSystemBase
     public override int Flush(object fileNode, object fileDesc, out Fsp.Interop.FileInfo fileInfo)
     {
         fileInfo = default;
-        if (fileNode is OpenHandle h)
+        if (GetHandle(fileNode, fileDesc) is { } h)
         {
-            PopulateFileInfo(h.Entry, ref fileInfo);
+            try
+            {
+                h.Stream?.Flush(true);
+            }
+            catch
+            {
+                return unchecked((int)0xC0000001);
+            }
+
+            if (TryCreateEntry(h.Entry.FullPath, out var updated, resolveReparse: true))
+            {
+                PopulateFileInfo(updated, ref fileInfo);
+            }
+            else
+            {
+                PopulateFileInfo(h.Entry, ref fileInfo);
+            }
             return 0;
         }
         if (fileNode is Entry e)
@@ -1423,6 +1622,10 @@ internal sealed class BrokerPassthroughFileSystem : FileSystemBase
                 handle = new OpenHandle(entry, stream);
                 tempHandle = true;
             }
+            if (handle is null)
+            {
+                return unchecked((int)0xC000000D);
+            }
 
             try
             {
@@ -1467,17 +1670,164 @@ internal sealed class BrokerPassthroughFileSystem : FileSystemBase
     {
         bytesTransferred = 0;
         fileInfo = default;
-        return unchecked((int)0xC00000BB);
+
+        var handle = GetHandle(fileNode, fileDesc);
+        Entry entry;
+        if (handle is not null) entry = handle.Entry;
+        else if (fileNode is Entry e) entry = e;
+        else return unchecked((int)0xC000000D);
+
+        if (entry.IsDirectory)
+        {
+            return unchecked((int)0xC00000BA);
+        }
+
+        FileStream? tempStream = null;
+        try
+        {
+            var stream = handle?.Stream;
+            if (stream is null || !stream.CanWrite)
+            {
+                tempStream = OpenReadWriteStream(entry.EffectivePath, FileMode.OpenOrCreate);
+                stream = tempStream;
+            }
+
+            var rented = ArrayPool<byte>.Shared.Rent((int)length);
+            try
+            {
+                Marshal.Copy(buffer, rented, 0, (int)length);
+                lock (handle?.Sync ?? stream)
+                {
+                    stream.Position = writeToEndOfFile ? stream.Length : (long)offset;
+                    stream.Write(rented, 0, (int)length);
+                    bytesTransferred = length;
+                }
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(rented);
+            }
+
+            InvalidatePathCaches(entry.FullPath);
+            if (TryCreateEntry(entry.FullPath, out var updated, resolveReparse: true))
+            {
+                PopulateFileInfo(updated, ref fileInfo);
+            }
+            else
+            {
+                PopulateFileInfo(entry, ref fileInfo);
+            }
+            return 0;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return unchecked((int)0xC0000022);
+        }
+        catch
+        {
+            return unchecked((int)0xC0000001);
+        }
+        finally
+        {
+            tempStream?.Dispose();
+        }
     }
+
     public override int SetBasicInfo(object fileNode, object fileDesc, uint fileAttributes, ulong creationTime, ulong lastAccessTime, ulong lastWriteTime, ulong changeTime, out Fsp.Interop.FileInfo fileInfo)
     {
         fileInfo = default;
-        return unchecked((int)0xC00000BB);
+
+        var entry = GetEntry(fileNode, fileDesc);
+        if (entry is null)
+        {
+            return unchecked((int)0xC000000D);
+        }
+
+        try
+        {
+            var path = entry.EffectivePath;
+            if (fileAttributes != 0 && fileAttributes != uint.MaxValue)
+            {
+                File.SetAttributes(path, (FileAttributes)fileAttributes);
+            }
+            if (creationTime > 0) File.SetCreationTimeUtc(path, DateTime.FromFileTimeUtc((long)creationTime));
+            if (lastAccessTime > 0) File.SetLastAccessTimeUtc(path, DateTime.FromFileTimeUtc((long)lastAccessTime));
+            if (lastWriteTime > 0) File.SetLastWriteTimeUtc(path, DateTime.FromFileTimeUtc((long)lastWriteTime));
+
+            InvalidatePathCaches(entry.FullPath);
+            if (TryCreateEntry(entry.FullPath, out var updated, resolveReparse: true))
+            {
+                PopulateFileInfo(updated, ref fileInfo);
+            }
+            else
+            {
+                PopulateFileInfo(entry, ref fileInfo);
+            }
+            return 0;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return unchecked((int)0xC0000022);
+        }
+        catch
+        {
+            return unchecked((int)0xC0000001);
+        }
     }
+
     public override int SetFileSize(object fileNode, object fileDesc, ulong newSize, bool setAllocationSize, out Fsp.Interop.FileInfo fileInfo)
     {
         fileInfo = default;
-        return unchecked((int)0xC00000BB);
+
+        var handle = GetHandle(fileNode, fileDesc);
+        Entry entry;
+        if (handle is not null) entry = handle.Entry;
+        else if (fileNode is Entry e) entry = e;
+        else return unchecked((int)0xC000000D);
+
+        if (entry.IsDirectory)
+        {
+            return unchecked((int)0xC00000BA);
+        }
+
+        FileStream? tempStream = null;
+        try
+        {
+            var stream = handle?.Stream;
+            if (stream is null || !stream.CanWrite)
+            {
+                tempStream = OpenReadWriteStream(entry.EffectivePath, FileMode.OpenOrCreate);
+                stream = tempStream;
+            }
+
+            lock (handle?.Sync ?? stream)
+            {
+                stream.SetLength((long)newSize);
+            }
+
+            InvalidatePathCaches(entry.FullPath);
+            if (TryCreateEntry(entry.FullPath, out var updated, resolveReparse: true))
+            {
+                PopulateFileInfo(updated, ref fileInfo);
+            }
+            else
+            {
+                PopulateFileInfo(entry, ref fileInfo);
+            }
+            return 0;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return unchecked((int)0xC0000022);
+        }
+        catch
+        {
+            return unchecked((int)0xC0000001);
+        }
+        finally
+        {
+            tempStream?.Dispose();
+        }
     }
 
     public override int ReadDirectory(object fileNode, object fileDesc, string pattern, string marker, IntPtr buffer, uint length, out uint bytesTransferred)
@@ -1513,8 +1863,98 @@ internal sealed class BrokerPassthroughFileSystem : FileSystemBase
         return true;
     }
 
-    public override int CanDelete(object fileNode, object fileDesc, string fileName) => unchecked((int)0xC00000BB);
-    public override int Rename(object fileNode, object fileDesc, string fileName, string newFileName, bool replaceIfExists) => unchecked((int)0xC00000BB);
+    public override int CanDelete(object fileNode, object fileDesc, string fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName) || string.Equals(fileName.Trim(), "\\", StringComparison.Ordinal))
+        {
+            return unchecked((int)0xC0000022);
+        }
+
+        var full = ResolvePath(fileName);
+        return File.Exists(full) || Directory.Exists(full)
+            ? 0
+            : unchecked((int)0xC0000034);
+    }
+
+    public override void Cleanup(object fileNode, object fileDesc, string fileName, uint flags)
+    {
+        if ((flags & 1) == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var full = ResolvePath(fileName);
+            if (Directory.Exists(full))
+            {
+                Directory.Delete(full, recursive: true);
+            }
+            else if (File.Exists(full))
+            {
+                File.Delete(full);
+            }
+            InvalidatePathCaches(full);
+        }
+        catch
+        {
+            // WinFsp treats cleanup as best-effort; the originating operation reports errors.
+        }
+    }
+
+    public override int Rename(object fileNode, object fileDesc, string fileName, string newFileName, bool replaceIfExists)
+    {
+        if (ContainsHiddenSegment(fileName) || ContainsHiddenSegment(newFileName))
+        {
+            return unchecked((int)0xC0000034);
+        }
+
+        var oldPath = ResolvePath(fileName);
+        var newPath = ResolvePath(newFileName);
+
+        try
+        {
+            if (!replaceIfExists && (File.Exists(newPath) || Directory.Exists(newPath)))
+            {
+                return unchecked((int)0xC0000035);
+            }
+
+            var parent = Path.GetDirectoryName(newPath);
+            if (!string.IsNullOrWhiteSpace(parent))
+            {
+                Directory.CreateDirectory(parent);
+            }
+
+            if (Directory.Exists(oldPath))
+            {
+                if (replaceIfExists && Directory.Exists(newPath))
+                {
+                    Directory.Delete(newPath, recursive: true);
+                }
+                Directory.Move(oldPath, newPath);
+            }
+            else
+            {
+                if (replaceIfExists && File.Exists(newPath))
+                {
+                    File.Delete(newPath);
+                }
+                File.Move(oldPath, newPath);
+            }
+
+            InvalidatePathCaches(oldPath);
+            InvalidatePathCaches(newPath);
+            return 0;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return unchecked((int)0xC0000022);
+        }
+        catch
+        {
+            return unchecked((int)0xC0000001);
+        }
+    }
 
     private IEnumerable<Entry> EnumerateDirectory(string fullDir, string pattern)
     {
@@ -1634,7 +2074,9 @@ internal sealed class BrokerPassthroughFileSystem : FileSystemBase
 
     private static bool IsHiddenName(string name)
     {
-        return !string.IsNullOrEmpty(name) && name[0] == '.';
+        // Dot-prefixed files are normal on macOS (.DS_Store, .git, app config,
+        // shell profiles). Do not hide or block them in the Windows projection.
+        return false;
     }
 
     private static bool ContainsHiddenSegment(string? fsPath)
@@ -1678,6 +2120,42 @@ internal sealed class BrokerPassthroughFileSystem : FileSystemBase
         }
 
         return false;
+    }
+
+    private void InvalidatePathCaches(string fullPath)
+    {
+        _entryCache.TryRemove("R|" + fullPath, out _);
+        _entryCache.TryRemove("N|" + fullPath, out _);
+        _prefixCache.TryRemove(fullPath, out _);
+        _blobCache.TryRemove(fullPath, out _);
+
+        try
+        {
+            var parent = Directory.Exists(fullPath) ? fullPath : Path.GetDirectoryName(fullPath);
+            if (!string.IsNullOrWhiteSpace(parent))
+            {
+                _dirCache.TryRemove(parent, out _);
+            }
+        }
+        catch
+        {
+            // cache invalidation is best-effort
+        }
+    }
+
+    private static OpenHandle? GetHandle(object fileNode, object fileDesc)
+    {
+        if (fileDesc is OpenHandle hd) return hd;
+        if (fileNode is OpenHandle hn) return hn;
+        return null;
+    }
+
+    private static Entry? GetEntry(object fileNode, object fileDesc)
+    {
+        if (GetHandle(fileNode, fileDesc) is { } handle) return handle.Entry;
+        if (fileNode is Entry entry) return entry;
+        if (fileDesc is Entry descEntry) return descEntry;
+        return null;
     }
 
     private string NormalizeToFsPath(string fullPath)
@@ -2198,6 +2676,21 @@ internal sealed class BrokerPassthroughFileSystem : FileSystemBase
         );
     }
 
+    private static FileStream OpenReadWriteStream(string path, FileMode mode)
+    {
+        return new FileStream(
+            path,
+            new FileStreamOptions
+            {
+                Mode = mode,
+                Access = FileAccess.ReadWrite,
+                Share = FileShare.ReadWrite | FileShare.Delete,
+                BufferSize = 256 * 1024,
+                Options = FileOptions.RandomAccess
+            }
+        );
+    }
+
     private sealed class OpenHandle : IDisposable
     {
         public Entry Entry { get; }
@@ -2226,8 +2719,9 @@ internal sealed class MountedDrive : IDisposable
     public DateTimeOffset MountedAtUtc { get; }
     private readonly FileSystemHost _host;
     private readonly IDisposable? _resource;
+    private readonly BrokerPassthroughFileSystem? _passthroughFileSystem;
 
-    public MountedDrive(string driveId, string letter, string path, string sourceSummary, DateTimeOffset mountedAtUtc, FileSystemHost host, IDisposable? resource = null)
+    public MountedDrive(string driveId, string letter, string path, string sourceSummary, DateTimeOffset mountedAtUtc, FileSystemHost host, BrokerPassthroughFileSystem? passthroughFileSystem = null, IDisposable? resource = null)
     {
         DriveId = driveId;
         Letter = letter;
@@ -2235,7 +2729,15 @@ internal sealed class MountedDrive : IDisposable
         SourceSummary = sourceSummary;
         MountedAtUtc = mountedAtUtc;
         _host = host;
+        _passthroughFileSystem = passthroughFileSystem;
         _resource = resource;
+    }
+
+    public bool UpdateVolumeInfo(long totalBytes, long freeBytes)
+    {
+        if (_passthroughFileSystem is null) return false;
+        _passthroughFileSystem.UpdateVolumeInfo(totalBytes, freeBytes);
+        return true;
     }
 
     public void Dispose()

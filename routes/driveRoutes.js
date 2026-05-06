@@ -2,7 +2,7 @@ const { exec } = require('child_process');
 const fs = require('fs');
 
 module.exports = function mountDriveRoutes(app, ctx) {
-    const { addLog, nativeMountState, getBrokerMountedMap, PREFER_SUBST_LOCAL_FAST_PATH, PS_PATH, sendNativeWithBoot, cleanupGhostDriveLetters, awaitStartupCleanup } = ctx;
+    const { addLog, nativeMountState, inFlightOps, getBrokerMountedMap, PREFER_SUBST_LOCAL_FAST_PATH, PS_PATH, sendNativeWithBoot, cleanupGhostDriveLetters, awaitStartupCleanup } = ctx;
 
     // Cache to avoid spawning PowerShell on every 5-second poll
     let driveCache = { data: null, time: 0 };
@@ -14,6 +14,50 @@ module.exports = function mountDriveRoutes(app, ctx) {
         driveCache = { data: null, time: 0 };
         analysisCache.clear();
     };
+
+    function hasActiveWslMount() {
+        for (const mount of nativeMountState.values()) {
+            if (mount?.mountType === 'wsl_kernel') return true;
+        }
+        return false;
+    }
+
+    function isMountOperationInFlight() {
+        if (!inFlightOps || typeof inFlightOps.values !== 'function') return false;
+        for (const op of inFlightOps.values()) {
+            if (/^(mount|unmount):/.test(String(op))) return true;
+        }
+        return false;
+    }
+
+    function buildWslMountedDriveList() {
+        const drives = [];
+        for (const [id, mount] of nativeMountState.entries()) {
+            if (mount?.mountType !== 'wsl_kernel') continue;
+            const letter = String(mount.driveLetter || '').trim().toUpperCase().replace(':', '');
+            drives.push({
+                id,
+                type: 'WSL2',
+                size: mount.size || '',
+                format: mount.fsType || 'HFS+',
+                uncPath: mount.uncPath || null,
+                driveLetter: /^[A-Z]$/.test(letter) ? letter : null,
+                name: mount.friendlyName || `Physical Drive ${id}`,
+                mountPath: /^[A-Z]$/.test(letter) ? `${letter}:\\` : (mount.uncPath || null),
+                isMac: true,
+                mounted: true,
+                isEncrypted: false,
+                needsPassword: false,
+                hardwareBound: false,
+                analysisNotes: 'Mounted via WSL2. Raw Windows rescans are paused while mounted to keep the Linux mount stable.',
+                supported: true,
+                mountHint: '',
+                mountType: 'wsl_kernel',
+                fsType: mount.fsType || 'HFS+'
+            });
+        }
+        return drives;
+    }
 
     async function getNativeAnalysisForDrive(driveId) {
         const cacheKey = String(driveId);
@@ -52,6 +96,19 @@ module.exports = function mountDriveRoutes(app, ctx) {
         }
 
         const now = Date.now();
+        if (isMountOperationInFlight()) {
+            if (driveCache.data) {
+                return res.json(driveCache.data);
+            }
+            return res.json(buildWslMountedDriveList());
+        }
+
+        if (hasActiveWslMount()) {
+            const mounted = buildWslMountedDriveList();
+            driveCache = { data: mounted, time: now };
+            return res.json(mounted);
+        }
+
         if (driveCache.data && (now - driveCache.time) < CACHE_TTL_MS) {
             return res.json(driveCache.data);
         }

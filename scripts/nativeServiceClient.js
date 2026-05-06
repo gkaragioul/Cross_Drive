@@ -20,6 +20,8 @@ function getNativeServiceExecutable() {
   const candidates = [
     process.resourcesPath ? path.join(process.resourcesPath, 'native-bin', 'MacMount.NativeService.exe') : null,
     process.resourcesPath ? path.join(process.resourcesPath, 'native-bin', 'service', 'MacMount.NativeService.exe') : null,
+    process.resourcesPath ? path.join(process.resourcesPath, 'app.asar.unpacked', 'native', 'bin', 'MacMount.NativeService.exe') : null,
+    process.resourcesPath ? path.join(process.resourcesPath, 'app.asar.unpacked', 'native', 'bin', 'service', 'MacMount.NativeService.exe') : null,
     path.join(__dirname, '..', 'native', 'bin', 'MacMount.NativeService.exe'),
     path.join(__dirname, '..', 'native', 'bin', 'service', 'MacMount.NativeService.exe'),
   ];

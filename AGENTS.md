@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-MacMount is a Windows desktop app for mounting, browsing, and reading APFS/HFS+ Mac drives on Windows as real local drive letters. Built on Electron + React + .NET with WinFsp filesystem integration.
+MacMount is a Windows desktop app for mounting, browsing, and reading/writing APFS/HFS+ Mac drives on Windows as real local drive letters. Built on Electron + React + WSL2 kernel filesystem drivers, with the legacy .NET/WinFsp path kept as a fallback.
 
 **Status:** Pre-GA. APFS write is experimental. Code-signing certificate not yet configured.
 
@@ -11,24 +11,26 @@ MacMount is a Windows desktop app for mounting, browsing, and reading APFS/HFS+ 
 - **Frontend:** React 18 + Vite 5 (dev on port 5173)
 - **Desktop shell:** Electron 32 (requires admin/UAC elevation)
 - **Backend:** Express on `127.0.0.1:3001` (loopback only, started from `server.js`)
-- **Native:** .NET 8 (three projects under `native/`)
+- **Filesystem driver (primary):** Custom WSL2 kernel with `hfsplus.ko`, `hfs.ko`, and `apfs.ko`, exposed to Windows through `\\wsl.localhost\Ubuntu\...` and mapped with `subst`.
+- **Native fallback:** .NET 9 (projects under `native/`)
   - `MacMount.NativeService` — named-pipe filesystem service
   - `MacMount.RawDiskEngine` — low-level APFS/HFS+ parser + direct disk I/O
   - `MacMount.NativeBroker` — privileged broker for UAC-separated ops
-- **Filesystem layer:** WinFsp (FUSE) + WSL 2 UNC fallback
+- **Filesystem layer:** WSL2 kernel mount + Windows drive-letter mapping; WinFsp is legacy fallback only
 
 ## Architecture
 
 ```
-Electron (main.js) → Express API (server.js :3001) → .NET services (named-pipe IPC)
-React UI (src/)    ← polls Express for drive/mount/status updates     ↓
-                                                              WinFsp / WSL mount
+Electron (main.js) → Express API (server.js :3001) ─┬─ WSL2 kernel mount (primary)
+React UI (src/)    ← polls Express for drive state   └─ .NET/WinFsp fallback
 ```
 
 **Mount modes** (set via `MACMOUNT_MOUNT_MODE` env var):
-- `hybrid_canary` — default, splits traffic between native engine and WSL
-- `wsl_unc` — all mounts via WSL, max compatibility
-- `experimental_raw` — all mounts via native engine, max performance
+- `wsl_kernel` — default, mounts through WSL2 kernel drivers and maps a local drive letter
+- `native_first` — debug fallback, tries the legacy native raw provider first
+- `native_only` — debug fallback, disables the native bridge fallback path
+- `wsl_unc` / `hybrid_canary` — legacy aliases that now resolve to `wsl_kernel`
+- `experimental_raw` — legacy alias that now resolves to `native_only`
 
 ## Project Structure
 

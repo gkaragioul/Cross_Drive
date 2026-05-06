@@ -2,46 +2,49 @@ const { exec } = require('child_process');
 const { promisify } = require('util');
 const fs = require('fs');
 const path = require('path');
-const { wslMountDrive, wslUnmountDrive } = require('../scripts/wslMountClient');
+const { wslMountDrive, wslUnmountDrive, verifyWslMountStillAlive, findFreeDriveLetter, substMapDriveLetter } = require('../scripts/wslMountClient');
 
 const execAsync = promisify(exec);
+const ENABLE_WSL_WINFSP_PRESENTATION = process.env.MACMOUNT_DISABLE_WSL_WINFSP !== '1';
+const ENABLE_WSL_DRIVE_LETTER = process.env.MACMOUNT_ENABLE_WSL_DRIVE_LETTER !== '0';
 
-function mapDriveLetterInUserSession(letter, mapScriptPath, logFn) {
+async function mapDriveLetterInUserSession(letter, mapScriptPath, logFn) {
     // WinFsp mounts in the elevated session; Explorer runs non-elevated.
     // scripts/map-drive-user-session.ps1 maps the same NT device into the
-    // interactive user's session (correct DOMAIN\\user principal + SHChangeNotify).
-    // NOTE: runs async (fire-and-forget) so it never blocks the HTTP response.
+    // interactive user's session (correct DOMAIN\\user principal + SHChangeNotify)
+    // via the GUI-subsystem helper, so no console window flashes.
     const L = String(letter || '').trim().toUpperCase().replace(':', '');
-    if (!/^[A-Z]$/.test(L)) return;
+    if (!/^[A-Z]$/.test(L)) return false;
     const scriptPath = String(mapScriptPath || '').trim();
     if (!scriptPath || !fs.existsSync(scriptPath)) {
         logFn?.(`User-session map skipped: script missing (${scriptPath || 'unset'})`, 'warning');
-        return;
+        return false;
     }
-    exec(
+    try {
+        await execAsync(
         `powershell -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${scriptPath}" -Letter "${L}"`,
-        { timeout: 60000, windowsHide: true },
-        (error) => {
-            if (error) {
-                const tail = (() => {
-                    try {
-                        const logFile = path.join(process.env.ProgramData || 'C:\\ProgramData', 'MacMount', 'user-session-map.log');
-                        if (fs.existsSync(logFile)) {
-                            const lines = fs.readFileSync(logFile, 'utf8').trim().split(/\r?\n/);
-                            return lines.slice(-6).join(' | ');
-                        }
-                    } catch { /* ignore */ }
-                    return '';
-                })();
-                logFn?.(
-                    `User-session drive map failed for ${L}: ${error.message || error}. ${tail ? `Log tail: ${tail}` : 'See C:\\ProgramData\\MacMount\\user-session-map.log'}`,
-                    'warning'
-                );
-            } else {
-                logFn?.(`User-session drive map completed for ${L}: (Explorer should list this PC).`, 'info');
+        { timeout: 60000, windowsHide: true }
+        );
+        logFn?.(`User-session drive map completed for ${L}: (Explorer should list this PC).`, 'info');
+        return true;
+    } catch (error) {
+        const tail = (() => {
+            try {
+                const logFile = path.join(process.env.ProgramData || 'C:\\ProgramData', 'MacMount', 'user-session-map.log');
+                if (fs.existsSync(logFile)) {
+                    const lines = fs.readFileSync(logFile, 'utf8').trim().split(/\r?\n/);
+                    return lines.slice(-6).join(' | ');
+                }
             }
-        }
-    );
+            catch { /* ignore */ }
+            return '';
+        })();
+        logFn?.(
+            `User-session drive map failed for ${L}: ${error.message || error}. ${tail ? `Log tail: ${tail}` : 'See C:\\ProgramData\\MacMount\\user-session-map.log'}`,
+            'warning'
+        );
+        return false;
+    }
 }
 
 function syncAssignedLetter(driveId, letter = null) {
@@ -71,13 +74,141 @@ function syncAssignedLetter(driveId, letter = null) {
     }, () => {});
 }
 
+async function mountWslThroughWinFsp({ driveId, wslResult, ensureBrokerReady, sendBrokerRequest, addLog }) {
+    if (!ENABLE_WSL_WINFSP_PRESENTATION) {
+        throw new Error('WinFsp WSL passthrough is disabled while WSL mount stability is being validated.');
+    }
+
+    if (typeof sendBrokerRequest !== 'function') {
+        throw new Error('Native broker IPC is unavailable.');
+    }
+
+    if (typeof ensureBrokerReady === 'function') {
+        const ready = await ensureBrokerReady(8, true);
+        if (!ready) {
+            throw new Error('Native broker is unavailable or not elevated.');
+        }
+    }
+
+    const letter = await findFreeDriveLetter();
+    if (!letter) {
+        throw new Error('No free drive letter is available.');
+    }
+
+    const result = await sendBrokerRequest({
+        action: 'mount_passthrough',
+        requestId: String(Date.now()),
+        driveId: String(driveId),
+        letter,
+        sourcePath: String(wslResult.uncPath),
+        totalBytes: Number(wslResult.totalBytes) || 0,
+        freeBytes: Number(wslResult.freeBytes) || 0
+    }, 20000);
+
+    if (!result?.ok) {
+        throw new Error(result?.error || 'WinFsp passthrough mount failed.');
+    }
+
+    addLog?.(`WinFsp presentation mounted ${wslResult.uncPath} as ${letter}:`, 'success');
+    return {
+        driveLetter: letter,
+        path: `${letter}:\\`,
+        mountType: 'wsl_winfsp_passthrough'
+    };
+}
+
+function startWslMountMonitor(ctx) {
+    if (ctx._wslMountMonitorStarted) return;
+    ctx._wslMountMonitorStarted = true;
+    let running = false;
+    const failureCounts = new Map();
+    setInterval(async () => {
+        if (running) return;
+        running = true;
+        try {
+            for (const [driveId, mountInfo] of ctx.nativeMountState.entries()) {
+                if (mountInfo?.mountType !== 'wsl_kernel') continue;
+                if (!mountInfo.wslTarget || !mountInfo.device || !mountInfo.fsType) continue;
+
+                const health = await verifyWslMountStillAlive(mountInfo);
+                if (health.ok) {
+                    failureCounts.delete(driveId);
+                    if (mountInfo.brokerPassthrough === true && health.totalBytes > 0) {
+                        try {
+                            await ctx.sendBrokerRequest?.({
+                                action: 'update_volume_info',
+                                requestId: String(Date.now()),
+                                driveId,
+                                totalBytes: Number(health.totalBytes) || 0,
+                                freeBytes: Number(health.freeBytes) || 0
+                            }, 10000);
+                            mountInfo.totalBytes = Number(health.totalBytes) || mountInfo.totalBytes;
+                            mountInfo.freeBytes = Number(health.freeBytes) || 0;
+                            mountInfo.size = mountInfo.totalBytes ? `${(mountInfo.totalBytes / (1024 ** 3)).toFixed(2)} GB` : mountInfo.size;
+                        } catch (e) {
+                            ctx.addLog?.(`WinFsp volume info refresh warning for drive ${driveId}: ${e.message}`, 'warning');
+                        }
+                    }
+                    continue;
+                }
+
+                if (health.transient === true) {
+                    ctx.addLog?.(
+                        `WSL mount health check transient warning for drive ${driveId}: ${String(health.error || 'unknown').slice(0, 300)}. Keeping Windows drive mounted.`,
+                        'warning'
+                    );
+                    continue;
+                }
+
+                const failures = (failureCounts.get(driveId) || 0) + 1;
+                failureCounts.set(driveId, failures);
+                if (failures < 4) {
+                    ctx.addLog?.(
+                        `WSL mount health check warning for drive ${driveId} (${failures}/4): ${String(health.error || 'unknown').slice(0, 300)}. Keeping Windows drive mounted while retrying.`,
+                        'warning'
+                    );
+                    continue;
+                }
+
+                ctx.addLog?.(
+                    `WSL mount health failed for drive ${driveId} after ${failures} consecutive checks: ${health.error}. Unmounting Windows presentation so writes cannot land in a stale WSL folder.`,
+                    'error'
+                );
+                if (mountInfo.brokerPassthrough === true) {
+                    try {
+                        await ctx.sendBrokerRequest?.({
+                            action: 'unmount',
+                            requestId: String(Date.now()),
+                            driveId
+                        }, 10000);
+                    } catch (e) {
+                        ctx.addLog?.(`WinFsp health cleanup warning for drive ${driveId}: ${e.message}`, 'warning');
+                    }
+                    try { ctx.cleanupSingleDriveLetter?.(mountInfo.driveLetter); } catch {}
+                } else {
+                    try {
+                        await wslUnmountDrive(driveId, mountInfo, ctx.addLog);
+                    } catch (e) {
+                        ctx.addLog?.(`WSL health cleanup warning for drive ${driveId}: ${e.message}`, 'warning');
+                    }
+                }
+                ctx.nativeMountState.delete(driveId);
+                ctx.invalidateDriveCache?.();
+            }
+        } finally {
+            running = false;
+        }
+    }, 15000).unref?.();
+}
+
 module.exports = function mountMountRoutes(app, ctx) {
     const {
         addLog, inFlightOps, nativeMountState,
-        shouldAttemptNativeMountForDrive, tryMountRawWithFallbackLetters, execPsMount, sendBrokerRequest,
+        shouldAttemptNativeMountForDrive, tryMountRawWithFallbackLetters, execPsMount, sendBrokerRequest, ensureBrokerReady,
         RUNTIME_MOUNT_MODE, RUNTIME_NATIVE_MOUNT_ENABLED, RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK,
         PS_PATH, MAP_USER_SESSION_PS_PATH, hasRawDiskAccess, cleanupGhostDriveLetters, cleanupSingleDriveLetter
     } = ctx;
+    startWslMountMonitor(ctx);
 
     app.post('/api/mount', async (req, res) => {
         const { id, password, forceNative } = req.body || {};
@@ -103,24 +234,124 @@ module.exports = function mountMountRoutes(app, ctx) {
                         mode: 'wsl_kernel'
                     });
                 }
-                const wslResult = await wslMountDrive(driveId, password, addLog);
+                const wslResult = await wslMountDrive(driveId, password, addLog, { mapDriveLetter: false, mountNamespace: 'elevated' });
                 if (!wslResult.error) {
+                    let presentation = null;
+                    try {
+                        presentation = await mountWslThroughWinFsp({
+                            driveId,
+                            wslResult,
+                            ensureBrokerReady,
+                            sendBrokerRequest,
+                            addLog
+                        });
+                    } catch (presentationError) {
+                        addLog(`WinFsp presentation failed for drive ${driveId}: ${presentationError.message}. Direct WSL fallback is disabled for elevated WSL mounts to avoid exposing a stale namespace.`, 'error');
+                        try {
+                            await wslUnmountDrive(driveId, {
+                                wslTarget: wslResult.wslTarget,
+                                presentationPath: wslResult.presentationPath,
+                                driveLetter: null
+                            }, addLog);
+                        } catch (e) {
+                            addLog(`WSL cleanup after WinFsp failure warning for drive ${driveId}: ${e.message}`, 'warning');
+                        }
+                        return res.status(502).json({
+                            error: presentationError.message || 'WinFsp presentation failed.',
+                            suggestion: 'MacMount could mount the Linux filesystem but could not expose it as a local Windows drive. Direct WSL fallback was intentionally skipped because it would use the wrong namespace.',
+                            mode: 'wsl_kernel'
+                        });
+                    }
+
+                    if (presentation.mountType === 'wsl_winfsp_passthrough' && presentation.driveLetter) {
+                        try {
+                            const mappedForExplorer = await mapDriveLetterInUserSession(presentation.driveLetter, MAP_USER_SESSION_PS_PATH, addLog);
+                            if (!mappedForExplorer) {
+                                addLog(`WinFsp mounted ${presentation.driveLetter}: but Explorer session mapping did not complete; falling back to WSL network mapping.`, 'warning');
+                                try {
+                                    await sendBrokerRequest({
+                                        action: 'unmount',
+                                        requestId: String(Date.now()),
+                                        driveId
+                                    }, 10000);
+                                } catch (e) {
+                                    addLog(`WinFsp fallback cleanup warning for drive ${driveId}: ${e.message}`, 'warning');
+                                }
+                                const fallbackLetter = ENABLE_WSL_DRIVE_LETTER ? await substMapDriveLetter(wslResult.uncPath, addLog) : null;
+                                presentation = fallbackLetter
+                                    ? { driveLetter: fallbackLetter, path: `${fallbackLetter}:\\`, mountType: 'wsl_network_fallback' }
+                                    : { driveLetter: null, path: wslResult.uncPath, mountType: 'wsl_unc_fallback' };
+                            }
+                        } catch (e) {
+                            addLog(`User-session WinFsp map warning for drive ${driveId}: ${e.message}`, 'warning');
+                        }
+                    }
+
+                    await new Promise((resolve) => setTimeout(resolve, 5000));
+                    const finalHealth = await verifyWslMountStillAlive({
+                        wslTarget: wslResult.wslTarget,
+                        device: wslResult.device,
+                        fsType: wslResult.fsType,
+                        mountNamespace: wslResult.mountNamespace
+                    });
+                    if (!finalHealth.ok) {
+                        addLog(
+                            `WSL mount vanished before presentation completed for drive ${driveId}: ${finalHealth.error}. Refusing to expose ${presentation.driveLetter || wslResult.uncPath}.`,
+                            'error'
+                        );
+                        if (presentation.mountType === 'wsl_winfsp_passthrough') {
+                            try {
+                                await sendBrokerRequest({
+                                    action: 'unmount',
+                                    requestId: String(Date.now()),
+                                    driveId
+                                }, 10000);
+                            } catch (e) {
+                                addLog(`WinFsp final-validation cleanup warning for drive ${driveId}: ${e.message}`, 'warning');
+                            }
+                            try { cleanupSingleDriveLetter(presentation.driveLetter); } catch {}
+                        }
+                        try {
+                            await wslUnmountDrive(driveId, {
+                                wslTarget: wslResult.wslTarget,
+                                presentationPath: wslResult.presentationPath,
+                                driveLetter: presentation.mountType === 'wsl_winfsp_passthrough' ? null : presentation.driveLetter
+                            }, addLog);
+                        } catch (e) {
+                            addLog(`WSL final-validation cleanup warning for drive ${driveId}: ${e.message}`, 'warning');
+                        }
+
+                        return res.status(502).json({
+                            error: `WSL mount vanished before Windows presentation completed: ${finalHealth.error}`,
+                            suggestion: 'MacMount refused to expose a stale WSL folder as a writable Windows drive. Retry mount; if this repeats, keep the drive connected and share logs.',
+                            mode: 'wsl_kernel'
+                        });
+                    }
+
                     nativeMountState.set(String(driveId), {
                         wslTarget: wslResult.wslTarget,
                         uncPath: wslResult.uncPath,
-                        driveLetter: wslResult.driveLetter,
+                        presentationPath: wslResult.presentationPath,
+                        driveLetter: presentation.driveLetter,
+                        brokerPassthrough: presentation.mountType === 'wsl_winfsp_passthrough',
                         mountType: 'wsl_kernel',
-                        fsType: wslResult.fsType
+                        presentationMountType: presentation.mountType,
+                        device: wslResult.device,
+                        fsType: wslResult.fsType,
+                        mountNamespace: wslResult.mountNamespace,
+                        totalBytes: Number(wslResult.totalBytes) || 0,
+                        freeBytes: Number(wslResult.freeBytes) || 0,
+                        size: wslResult.totalBytes ? `${(wslResult.totalBytes / (1024 ** 3)).toFixed(2)} GB` : ''
                     });
-                    const friendlyTarget = wslResult.driveLetter ? `${wslResult.driveLetter}:\\` : wslResult.uncPath;
+                    const friendlyTarget = presentation.path;
                     addLog(`SUCCESS: Drive ${driveId} mounted at ${friendlyTarget}`, 'success');
                     return res.json({
                         success: true,
                         path: friendlyTarget,
                         mountPath: friendlyTarget,
-                        driveLetter: wslResult.driveLetter || undefined,
+                        driveLetter: presentation.driveLetter || undefined,
                         uncPath: wslResult.uncPath,
-                        mountType: 'wsl_kernel',
+                        mountType: presentation.mountType,
                         fsType: wslResult.fsType,
                         mode: 'wsl_kernel'
                     });
@@ -141,8 +372,16 @@ module.exports = function mountMountRoutes(app, ctx) {
                         mode: 'wsl_kernel'
                     });
                 }
-                // Otherwise fall through to native engine as a last-ditch attempt.
-                addLog(`Falling back to native engine for drive ${driveId}.`, 'warning');
+                if (RUNTIME_MOUNT_MODE === 'wsl_kernel') {
+                    return res.status(502).json({
+                        error: wslResult.error || 'WSL2 kernel mount failed.',
+                        suggestion: 'MacMount uses the WSL2 kernel path for writable Mac drives. Native HFS+ write fallback is disabled by default because it is not reliable for real-world copies.',
+                        mode: 'wsl_kernel'
+                    });
+                }
+
+                // Debug fallback only. The legacy native writer is not the commercial path.
+                addLog(`Falling back to native engine for drive ${driveId} because runtime mode is ${RUNTIME_MOUNT_MODE}.`, 'warning');
             }
 
             const attemptNative = shouldAttemptNativeMountForDrive(driveId, forceNative === true);
@@ -175,7 +414,9 @@ module.exports = function mountMountRoutes(app, ctx) {
                         }
                         // Map drive letter in non-elevated user session so Explorer can see it
                         try {
-                            mapDriveLetterInUserSession(resolvedLetter, MAP_USER_SESSION_PS_PATH, addLog);
+                            mapDriveLetterInUserSession(resolvedLetter, MAP_USER_SESSION_PS_PATH, addLog).catch((e) => {
+                                addLog(`User session drive map warning: ${e.message}`, 'warning');
+                            });
                         } catch (e) {
                             addLog(`User session drive map warning: ${e.message}`, 'warning');
                         }
@@ -319,10 +560,29 @@ module.exports = function mountMountRoutes(app, ctx) {
         try {
             // WSL2-backed mounts: unmount via Linux + detach from WSL2.
             if (mountInfo?.mountType === 'wsl_kernel') {
+                if (mountInfo.brokerPassthrough === true) {
+                    try {
+                        const r = await sendBrokerRequest({
+                            action: 'unmount',
+                            requestId: String(Date.now()),
+                            driveId
+                        }, 10000);
+                        if (r?.ok) {
+                            addLog(`WinFsp presentation unmounted for drive ${id}`, 'info');
+                        } else {
+                            addLog(`WinFsp presentation unmount warning for drive ${id}: ${r?.error || 'unknown error'}`, 'warning');
+                        }
+                    } catch (e) {
+                        addLog(`WinFsp presentation unmount warning for drive ${id}: ${e.message}`, 'warning');
+                    }
+                    try { cleanupSingleDriveLetter(mountInfo.driveLetter); } catch {}
+                }
+
                 try {
                     await wslUnmountDrive(driveId, {
                         wslTarget: mountInfo.wslTarget,
-                        driveLetter: mountInfo.driveLetter
+                        presentationPath: mountInfo.presentationPath,
+                        driveLetter: mountInfo.brokerPassthrough === true ? null : mountInfo.driveLetter
                     }, addLog);
                     addLog(`WSL unmount complete for drive ${id}`, 'success');
                 } catch (e) {

@@ -47,46 +47,35 @@ if (-not $target) {
 Write-MapLog "Resolved ${Letter}: -> $target"
 [System.IO.File]::WriteAllText($deviceFile, $target, [System.Text.UTF8Encoding]::new($false))
 
-# Script that runs in the interactive user's logon session (limited token)
-$innerPath = Join-Path $dataDir "user-define-$Letter.ps1"
-$inner = @'
-param([string]$Ltr, [string]$DevFile)
-$ErrorActionPreference = 'Stop'
-Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-public class MacMountUm {
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
-    public static extern bool DefineDosDevice(uint dwFlags, string lpDeviceName, string lpTargetPath);
+function Resolve-UserSessionHelper {
+    $candidates = @(
+        (Join-Path $PSScriptRoot '..\native-bin\user-session\MacMount.UserSessionHelper.exe'),
+        (Join-Path $PSScriptRoot '..\native-bin\MacMount.UserSessionHelper.exe'),
+        (Join-Path $PSScriptRoot '..\native\bin\user-session\MacMount.UserSessionHelper.exe'),
+        (Join-Path $PSScriptRoot '..\native\bin\MacMount.UserSessionHelper.exe')
+    )
+
+    foreach ($candidate in $candidates) {
+        try {
+            $resolved = [System.IO.Path]::GetFullPath($candidate)
+            if (Test-Path -LiteralPath $resolved) {
+                return $resolved
+            }
+        } catch { }
+    }
+
+    return $null
 }
-"@ -ErrorAction Stop
-Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-public class MacMountSh {
-    public const uint SHCNE_DRIVEADD = 0x100;
-    public const uint SHCNE_MEDIAINSERTED = 0x20;
-    public const uint SHCNF_PATHW = 5;
-    [DllImport("shell32.dll")]
-    public static extern void SHChangeNotify(uint wEventId, uint uFlags, IntPtr dwItem1, IntPtr dwItem2);
+
+function Quote-TaskArgument([string]$Value) {
+    '"' + ($Value -replace '"', '\"') + '"'
 }
-"@ -ErrorAction Stop
-$dev = ([System.IO.File]::ReadAllText($DevFile)).Trim()
-if (-not $dev) { exit 3 }
-$ok = [MacMountUm]::DefineDosDevice(1, "$Ltr`:", $dev)
-if (-not $ok) {
-    $err = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-    throw "DefineDosDevice failed: $err"
+
+$helperPath = Resolve-UserSessionHelper
+if (-not $helperPath) {
+    Write-MapLog "MacMount.UserSessionHelper.exe not found; cannot silently map ${Letter}:"
+    exit 6
 }
-$p = "$Ltr`:\"
-$ptr = [Runtime.InteropServices.Marshal]::StringToHGlobalUni($p)
-try {
-    [MacMountSh]::SHChangeNotify([MacMountSh]::SHCNE_DRIVEADD -bor [MacMountSh]::SHCNE_MEDIAINSERTED, [MacMountSh]::SHCNF_PATHW, $ptr, [IntPtr]::Zero)
-} finally {
-    [Runtime.InteropServices.Marshal]::FreeHGlobal($ptr)
-}
-'@
-Set-Content -LiteralPath $innerPath -Value $inner -Encoding UTF8 -Force
 
 $userId = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 if ([string]::IsNullOrWhiteSpace($userId)) {
@@ -96,9 +85,10 @@ if ([string]::IsNullOrWhiteSpace($userId)) {
 
 $taskName = "MacMountMap_${Letter}_$([guid]::NewGuid().ToString('N').Substring(0, 12))"
 try {
-    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$innerPath`" -Ltr `"$Letter`" -DevFile `"$deviceFile`""
+    $helperArgs = @('map', "$Letter`:", $target) | ForEach-Object { Quote-TaskArgument $_ }
+    $action = New-ScheduledTaskAction -Execute $helperPath -Argument ($helperArgs -join ' ')
     $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited
-    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
+    $settings = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
     $task = New-ScheduledTask -Action $action -Principal $principal -Settings $settings
     Register-ScheduledTask -TaskName $taskName -InputObject $task -Force | Out-Null
     Start-ScheduledTask -TaskName $taskName | Out-Null

@@ -31,7 +31,7 @@ React UI (src/)                                      │   wsl --mount → fsck.
 1. WSL2 path: attach drive via `wsl --mount \\.\PHYSICALDRIVEN --bare`, run [`scripts/wsl_mount.sh`](scripts/wsl_mount.sh) which fscks + mounts via the kernel, then `subst <L>:` from a Scheduled Task with `LogonType Interactive` so Explorer (non-elevated) sees the drive letter.
 2. Native fallback: only used if WSL is unavailable; for HFS+ writes it is unreliable — DO NOT recommend it.
 
-Set `forceNative: true` in `/api/mount` body to skip WSL2 (debugging only). Legacy env vars `MACMOUNT_MOUNT_MODE`, `MACMOUNT_CANARY_PERCENT` still parsed but no longer route writes through the broken native engine.
+Set `forceNative: true` in `/api/mount` body to skip WSL2 (debugging only). `MACMOUNT_MOUNT_MODE=wsl_kernel` is the default; legacy aliases `wsl_unc` and `hybrid_canary` resolve to the same WSL2 path. Use `native_first` or `native_only` only for debugging the legacy native engine.
 
 ## WSL2 Setup (required for primary mount path)
 
@@ -131,7 +131,7 @@ npm run release:candidate    # Full production release pipeline
 - **Admin required:** App uses `\\.\PHYSICALDRIVE#` raw disk access. Electron main process checks admin and relaunches with UAC if needed.
 - **Security:** Electron uses `contextIsolation: true`, `sandbox: true`, `nodeIntegration: false`. CORS is restricted to `localhost:5173` and `127.0.0.1:5173`. Express binds to loopback only.
 - **No external network calls:** Backend communicates only with local .NET services via named pipes and local WSL.
-- **Env vars:** `MACMOUNT_MOUNT_MODE`, `MACMOUNT_CANARY_PERCENT` control mount behavior.
+- **Env vars:** `MACMOUNT_MOUNT_MODE` defaults to `wsl_kernel`; `MACMOUNT_CANARY_PERCENT` is legacy telemetry/config only.
 - **Secrets never committed:** `.gitignore` excludes `.env*`, `*.pfx`, `*.p12`, `signing-env.ps1`.
 
 ## Testing

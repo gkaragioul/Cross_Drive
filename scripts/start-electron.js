@@ -8,6 +8,7 @@ const child = spawn(electronBinary, ['.'], {
   stdio: 'inherit',
   env,
   shell: false,
+  windowsHide: true,
 });
 
 child.on('exit', (code) => {

@@ -18,13 +18,13 @@ const host = '127.0.0.1';
 let httpServer = null;
 
 let logs = [];
-const VALID_RUNTIME_MOUNT_MODES = new Set(['native_first', 'native_only']);
+const VALID_RUNTIME_MOUNT_MODES = new Set(['wsl_kernel', 'native_first', 'native_only']);
 const RUNTIME_MOUNT_MODE = (() => {
     const raw = String(process.env.MACMOUNT_MOUNT_MODE || '').trim().toLowerCase();
-    if (!raw) return 'native_first';
+    if (!raw) return 'wsl_kernel';
     if (raw === 'experimental_raw') return 'native_only';
-    if (raw === 'wsl_unc' || raw === 'hybrid_canary') return 'native_first';
-    return VALID_RUNTIME_MOUNT_MODES.has(raw) ? raw : 'native_first';
+    if (raw === 'wsl_unc' || raw === 'hybrid_canary') return 'wsl_kernel';
+    return VALID_RUNTIME_MOUNT_MODES.has(raw) ? raw : 'wsl_kernel';
 })();
 const RUNTIME_CANARY_PERCENT = (() => {
     const raw = Number.parseInt(String(process.env.MACMOUNT_CANARY_PERCENT || '100'), 10);
@@ -50,7 +50,7 @@ let setupState = {
 
 function isAdmin() {
     try {
-        execSync('net session', { stdio: 'ignore' });
+        execSync('net session', { stdio: 'ignore', windowsHide: true });
         return true;
     } catch {
         return false;
@@ -93,9 +93,7 @@ function bucketizeDriveId(driveId) {
 
 function shouldAttemptNativeMountForDrive(driveId, forceNative = false) {
     if (!RUNTIME_NATIVE_MOUNT_ENABLED) return false;
-    // Always attempt native broker first — it supports HFS+, HFSX, and APFS.
-    // PowerShell fallback only handles APFS via apfs-fuse.
-    return true;
+    return forceNative || RUNTIME_MOUNT_MODE === 'native_first' || RUNTIME_MOUNT_MODE === 'native_only';
 }
 
 function execPsMount(driveId, password = '', skipLetter = false) {
@@ -238,7 +236,10 @@ function getAvailableDriveLetter(preferred = '') {
 
 function getUsedDriveLetters() {
     try {
-        const out = execSync('cmd /c fsutil fsinfo drives', { stdio: ['ignore', 'pipe', 'ignore'] }).toString('utf8');
+        const out = execSync('cmd /c fsutil fsinfo drives', {
+            stdio: ['ignore', 'pipe', 'ignore'],
+            windowsHide: true
+        }).toString('utf8');
         const matches = out.match(/[A-Z]:\\/g) || [];
         return new Set(matches.map((m) => m[0].toUpperCase()));
     } catch {
@@ -303,7 +304,7 @@ function removeUserSessionDriveMapping(letter) {
         `$tmp = '${safeScript}';`,
         `$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $tmp + '"');`,
         `$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited;`,
-        `$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries;`,
+        `$settings = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries;`,
         `$task = New-ScheduledTask -Action $action -Principal $principal -Settings $settings;`,
         `Register-ScheduledTask -TaskName '${taskName}' -InputObject $task -Force | Out-Null;`,
         `Start-ScheduledTask -TaskName '${taskName}' | Out-Null;`,
@@ -580,7 +581,7 @@ app.use((err, req, res, next) => {
 addLog("MacMount Backend started and logging initialized.");
 addLog(
     `Runtime mount mode: ${RUNTIME_MOUNT_MODE}` +
-    ` (nativeEnabled=${RUNTIME_NATIVE_MOUNT_ENABLED}, canaryPercent=${RUNTIME_CANARY_PERCENT}, allowBridgeFallback=${RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK})`
+    ` (wslPrimary=${RUNTIME_MOUNT_MODE === 'wsl_kernel'}, nativeEnabled=${RUNTIME_NATIVE_MOUNT_ENABLED}, canaryPercent=${RUNTIME_CANARY_PERCENT}, allowBridgeFallback=${RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK})`
 );
 startNativeService();
 addLog("Native service started for raw-disk analysis endpoints.");
@@ -601,9 +602,14 @@ addLog("Native service started for raw-disk analysis endpoints.");
     }
 })();
 
+function packagedAssetPath(...parts) {
+    return process.resourcesPath ? path.join(process.resourcesPath, 'app.asar.unpacked', ...parts) : '';
+}
+
 const PS_PATH = (() => {
     const candidates = [
         process.resourcesPath ? path.join(process.resourcesPath, 'scripts', 'MacMount.ps1') : '',
+        packagedAssetPath('scripts', 'MacMount.ps1'),
         path.join(__dirname, 'scripts', 'MacMount.ps1')
     ].filter(Boolean);
     for (const p of candidates) {
@@ -617,6 +623,7 @@ const PS_PATH = (() => {
 const MAP_USER_SESSION_PS_PATH = (() => {
     const candidates = [
         process.resourcesPath ? path.join(process.resourcesPath, 'scripts', 'map-drive-user-session.ps1') : '',
+        packagedAssetPath('scripts', 'map-drive-user-session.ps1'),
         path.join(__dirname, 'scripts', 'map-drive-user-session.ps1')
     ].filter(Boolean);
     for (const p of candidates) {

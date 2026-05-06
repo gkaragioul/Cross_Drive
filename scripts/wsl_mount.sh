@@ -29,6 +29,55 @@ json_escape() {
     python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1" 2>/dev/null \
         || printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\n')"
 }
+emit_success() {
+    target="$1"
+    fs_type="$2"
+    device="$3"
+    total_bytes=0
+    free_bytes=0
+    if df_line=$(df -B1 "$target" 2>/dev/null | awk 'NR==2 {print $2 " " $4}'); then
+        total_bytes=$(echo "$df_line" | awk '{print $1}')
+        free_bytes=$(echo "$df_line" | awk '{print $2}')
+    fi
+    case "$total_bytes" in ''|*[!0-9]*) total_bytes=0 ;; esac
+    case "$free_bytes" in ''|*[!0-9]*) free_bytes=0 ;; esac
+    emit_json "{\"success\":true,\"target\":$(json_escape "$target"),\"fsType\":$(json_escape "$fs_type"),\"device\":$(json_escape "$device"),\"totalBytes\":$total_bytes,\"freeBytes\":$free_bytes}"
+}
+verify_mount() {
+    target="$1"
+    expected_device="$2"
+    expected_fs="$3"
+
+    if ! mountpoint -q "$target" 2>/dev/null; then
+        rmdir "$target" 2>/dev/null || true
+        fail "Mounted path verification failed: $target is not a mountpoint. MacMount refused to expose a stale WSL folder as a Windows drive."
+    fi
+
+    actual_device=$(findmnt -rn -T "$target" -o SOURCE 2>/dev/null | head -n 1)
+    actual_fs=$(findmnt -rn -T "$target" -o FSTYPE 2>/dev/null | head -n 1)
+    mount_opts=$(findmnt -rn -T "$target" -o OPTIONS 2>/dev/null | head -n 1)
+
+    if [ "$actual_device" != "$expected_device" ]; then
+        umount "$target" 2>/dev/null || true
+        rmdir "$target" 2>/dev/null || true
+        fail "Mounted path verification failed: expected $expected_device at $target but found ${actual_device:-none}."
+    fi
+
+    case "$expected_fs:$actual_fs" in
+        hfsplus:hfsplus|hfsplus:hfs|hfs:hfs|hfs:hfsplus|apfs:apfs) ;;
+        *)
+            umount "$target" 2>/dev/null || true
+            rmdir "$target" 2>/dev/null || true
+            fail "Mounted path verification failed: expected filesystem $expected_fs but found ${actual_fs:-unknown}."
+            ;;
+    esac
+
+    if printf '%s' "$mount_opts" | tr ',' '\n' | grep -qx 'ro'; then
+        umount "$target" 2>/dev/null || true
+        rmdir "$target" 2>/dev/null || true
+        fail "Kernel mounted as read-only (volume state may be inconsistent). Run fsck.hfsplus on a Mac/Linux box."
+    fi
+}
 
 echo "== wsl_mount.sh drive_id=$DRIVE_ID =="
 
@@ -120,16 +169,9 @@ case "$FSTYPE" in
 
         # umask=000 + uid/gid=1000 ensures Explorer can write through the 9P bridge.
         if mount -t hfsplus -o rw,uid=1000,gid=1000,umask=000,force "$DEVPATH" "$TARGET" 2>/tmp/mm_mount_err; then
-            # Verify the mount actually came up read-write (kernel still goes RO if
-            # it's not happy with the volume state even after fsck).
-            if mount | grep -q " on $TARGET .*\\bro\\b"; then
-                ERR="Kernel mounted as read-only (volume state may be inconsistent). Run fsck.hfsplus on a Mac/Linux box."
-                umount "$TARGET" 2>/dev/null || true
-                rmdir "$TARGET" 2>/dev/null || true
-                fail "$ERR"
-            fi
+            verify_mount "$TARGET" "$DEVPATH" "hfsplus"
             chmod 777 "$TARGET" 2>/dev/null || true
-            emit_json "{\"success\":true,\"target\":$(json_escape "$TARGET"),\"fsType\":\"hfsplus\",\"device\":$(json_escape "$DEVPATH")}"
+            emit_success "$TARGET" "hfsplus" "$DEVPATH"
             exit 0
         fi
         ERR=$(cat /tmp/mm_mount_err 2>/dev/null | tr '\n' ' ' | head -c 500)
@@ -146,8 +188,9 @@ case "$FSTYPE" in
         APFS_OPTS="rw,uid=1000,gid=1000"
         [ -n "$PASSWORD" ] && APFS_OPTS="$APFS_OPTS,pass=$PASSWORD"
         if mount -t apfs -o "$APFS_OPTS" "$DEVPATH" "$TARGET" 2>/tmp/mm_mount_err; then
+            verify_mount "$TARGET" "$DEVPATH" "apfs"
             chmod 777 "$TARGET"
-            emit_json "{\"success\":true,\"target\":$(json_escape "$TARGET"),\"fsType\":\"apfs\",\"device\":$(json_escape "$DEVPATH")}"
+            emit_success "$TARGET" "apfs" "$DEVPATH"
             exit 0
         fi
         ERR=$(cat /tmp/mm_mount_err 2>/dev/null | tr '\n' ' ' | head -c 500)

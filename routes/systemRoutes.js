@@ -111,7 +111,8 @@ module.exports = function mountSystemRoutes(app, ctx) {
             `$p='${psEscaped}'; ` +
             `$a=New-ScheduledTaskAction -Execute 'explorer.exe' -Argument $p; ` +
             `$pr=New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive; ` +
-            `$t=New-ScheduledTask -Action $a -Principal $pr; ` +
+            `$set=New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries; ` +
+            `$t=New-ScheduledTask -Action $a -Principal $pr -Settings $set; ` +
             `Register-ScheduledTask -TaskName '${taskName}' -InputObject $t -Force | Out-Null; ` +
             `Start-ScheduledTask -TaskName '${taskName}' | Out-Null; ` +
             `Start-Sleep -Seconds 1; ` +

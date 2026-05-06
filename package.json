@@ -1,6 +1,6 @@
 {
   "name": "my-mac-drive",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "description": "Mac-formatted drive manager for Windows with local drive-letter mounting.",
   "author": "MacMount",
   "license": "MIT",
@@ -62,7 +62,17 @@
       "server.js",
       "routes/**/*.js",
       "scripts/**/*.js",
+      "scripts/**/*.ps1",
+      "scripts/**/*.sh",
+      "native/bin/**/*",
+      "prereqs/**/*",
       "package.json"
+    ],
+    "asarUnpack": [
+      "scripts/**/*.ps1",
+      "scripts/**/*.sh",
+      "native/bin/**/*",
+      "prereqs/**/*"
     ],
     "extraResources": [
       {

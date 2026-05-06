@@ -72,7 +72,8 @@ Built on Electron + React + .NET, with a high-performance native caching engine 
 
 | Mode | Description |
 |---|---|
-| `native_first` | Default. Try the raw-disk provider first, then fall back to the native bridge path when available |
+| `wsl_kernel` | Default. Mount through WSL2 kernel drivers, then expose the mount as a Windows drive letter |
+| `native_first` | Debug fallback. Try the raw-disk provider first, then fall back to the native bridge path when available |
 | `native_only` | Raw-disk provider only. Disables the native bridge fallback path |
 
 ---
@@ -169,10 +170,13 @@ Place the offline WinFsp installer at `prereqs/winfsp.msi` before building the f
 Configure via environment variable before launching:
 
 ```powershell
-# Default: raw provider first, then native bridge fallback if present
+# Default: WSL2 kernel-backed drive-letter mount
+$env:MACMOUNT_MOUNT_MODE = "wsl_kernel"
+
+# Debug fallback: raw provider first, then native bridge fallback if present
 $env:MACMOUNT_MOUNT_MODE = "native_first"
 
-# Raw provider only
+# Debug fallback: raw provider only
 $env:MACMOUNT_MOUNT_MODE = "native_only"
 ```
 
