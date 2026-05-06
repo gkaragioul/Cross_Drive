@@ -67,7 +67,11 @@ let backendModule = null;
 // Check if running as Administrator (required for wsl --mount)
 function isAdmin() {
     try {
-        execSync('net session', { stdio: 'ignore' });
+        // windowsHide:true keeps `net.exe` from flashing a console window on
+        // every app start. stdio:'ignore' alone isn't enough — `net.exe` is
+        // a console-subsystem app and Windows allocates a conhost for it
+        // unless we pass CREATE_NO_WINDOW (which Node maps from windowsHide).
+        execSync('net session', { stdio: 'ignore', windowsHide: true });
         return true;
     } catch {
         return false;
@@ -94,7 +98,7 @@ function relaunchAsAdmin() {
 
     execFile(
         'powershell.exe',
-        ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', psCommand],
+        ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-Command', psCommand],
         { env: process.env, windowsHide: true },
         (error) => {
             if (error) {

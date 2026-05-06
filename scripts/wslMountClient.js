@@ -82,15 +82,16 @@ const RESERVED_LETTERS = new Set(['A', 'B', 'C']);
  */
 async function findFreeDriveLetter() {
     const used = new Set();
+    // List in-use drive letters via PowerShell — replaces deprecated `wmic`
+    // (which prints a deprecation banner that flashes a window even under
+    // windowsHide on some Win11 builds).
     try {
-        const { stdout } = await execAsync('wmic logicaldisk get name', {
-            timeout: 10000,
-            windowsHide: true,
-            maxBuffer: 65536
-        });
-        for (const line of String(stdout).split(/\r?\n/)) {
-            const m = /^([A-Z]):/i.exec(line.trim());
-            if (m) used.add(m[1].toUpperCase());
+        const { stdout } = await execAsync(
+            `powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command "(Get-PSDrive -PSProvider FileSystem).Name -join ','"`,
+            { timeout: 10000, windowsHide: true, maxBuffer: 65536 }
+        );
+        for (const ltr of String(stdout).trim().split(/[\s,]+/)) {
+            if (/^[A-Z]$/i.test(ltr)) used.add(ltr.toUpperCase());
         }
     } catch { /* fall back to subst output */ }
     try {
@@ -116,15 +117,25 @@ async function findFreeDriveLetter() {
  * MacMount runs elevated; subst/net-use mappings made there don't show up in the
  * user's Explorer (each token has its own DOS device namespace). The Scheduled
  * Task trick (-LogonType Interactive) executes our command as the logged-in user.
+ *
+ * SILENCE: every layer here must be invisible. The outer powershell uses
+ * windowsHide + -WindowStyle Hidden. The Scheduled Task action itself runs
+ * powershell.exe with -WindowStyle Hidden too — without that flag, the task
+ * scheduler briefly allocates a visible conhost in the user's interactive
+ * session every time it fires. Inner commands MUST avoid cmd.exe (each
+ * cmd.exe /c spawn pops its own console window even under hidden parents).
  */
 async function runInUserSession(psCommand, timeoutMs = 15000) {
     const taskName = `MacMountSubst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     // Encode the inner command to avoid quoting hell.
     const innerB64 = Buffer.from(psCommand, 'utf16le').toString('base64');
     const wrapper =
-        `$a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${innerB64}'; ` +
+        // -WindowStyle Hidden on the action's powershell prevents the brief
+        // conhost flash in the user session every time the task fires.
+        `$a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -EncodedCommand ${innerB64}'; ` +
         `$pr = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive; ` +
-        `$t = New-ScheduledTask -Action $a -Principal $pr; ` +
+        `$set = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries; ` +
+        `$t = New-ScheduledTask -Action $a -Principal $pr -Settings $set; ` +
         `Register-ScheduledTask -TaskName '${taskName}' -InputObject $t -Force | Out-Null; ` +
         `Start-ScheduledTask -TaskName '${taskName}' | Out-Null; ` +
         `Start-Sleep -Milliseconds 800; ` +
@@ -148,18 +159,21 @@ async function substMapDriveLetter(uncPath, logFn = () => {}) {
         logFn('No free drive letter available for subst mapping; UNC path only.', 'warning');
         return null;
     }
-    // Confirm by polling for the new letter to appear in user session by
-    // dispatching a probe via the same scheduled task (one shot).
     try {
-        // The user-session command. We log success/failure to a per-mount file
-        // we can read back to confirm the mapping actually took.
+        // Log success/failure to a per-mount file we can read back to confirm
+        // the mapping actually took. Use Start-Process -WindowStyle Hidden
+        // -Wait for subst.exe so the console subsystem app doesn't flash a
+        // window in the user session — `cmd.exe /c "subst ..."` does, every
+        // call. Direct subst.exe under a hidden Start-Process does not.
         const logFile = path.join(process.env.ProgramData || 'C:\\ProgramData', 'MacMount', `subst-${letter}.log`).replace(/\\/g, '\\\\');
         const userCmd =
             `try { ` +
-            `  cmd.exe /c "subst ${letter}: /d" 2>&1 | Out-Null; ` +    // clean up any stale mapping in user session
-            `  cmd.exe /c "subst ${letter}: \\"${uncPath}\\"" 2>&1 | Out-File -FilePath '${logFile}' -Encoding utf8 -Force; ` +
-            `  Add-Content -Path '${logFile}' -Value ('exit ' + $LASTEXITCODE); ` +
-            `} catch { Add-Content -Path '${logFile}' -Value ('error ' + $_.Exception.Message) }`;
+            // Best-effort: clear any prior mapping (silent, ignore errors).
+            `  Start-Process -FilePath subst.exe -ArgumentList '${letter}:','/D' -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue; ` +
+            // Apply the new mapping. Capture exit code via -PassThru.
+            `  $p = Start-Process -FilePath subst.exe -ArgumentList '${letter}:','"${uncPath}"' -WindowStyle Hidden -Wait -PassThru; ` +
+            `  Set-Content -Path '${logFile}' -Value ('exit ' + $p.ExitCode) -Encoding utf8 -Force; ` +
+            `} catch { Set-Content -Path '${logFile}' -Value ('error ' + $_.Exception.Message) -Encoding utf8 -Force }`;
         await runInUserSession(userCmd);
         // Give Explorer's drive-letter watcher a moment.
         await new Promise(r => setTimeout(r, 1200));
@@ -175,7 +189,9 @@ async function substRemoveDriveLetter(letter, logFn = () => {}) {
     const L = String(letter || '').trim().toUpperCase().replace(':', '');
     if (!/^[A-Z]$/.test(L)) return;
     try {
-        const userCmd = `cmd.exe /c "subst ${L}: /d" 2>&1 | Out-Null`;
+        // Direct subst.exe via Start-Process -WindowStyle Hidden — no cmd.exe
+        // wrapper, no visible console flash in the user session.
+        const userCmd = `Start-Process -FilePath subst.exe -ArgumentList '${L}:','/D' -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue`;
         await runInUserSession(userCmd);
         // Also try in our own (elevated) session as a belt-and-braces.
         try { await execAsync(`subst ${L}: /D`, { timeout: 5000, windowsHide: true }); } catch {}
@@ -362,6 +378,10 @@ let _wslKeepAliveProc = null;
  * Spawn a long-running `wsl -d Ubuntu -- bash -c "while sleep 3600; do :; done"`
  * so the WSL2 VM stays running even if vmIdleTimeout was missed in .wslconfig.
  * Idempotent — safe to call repeatedly.
+ *
+ * SILENCE: detached + stdio:'ignore' + windowsHide:true gives Node a
+ * CREATE_NO_WINDOW + DETACHED_PROCESS combo so wsl.exe never gets a console
+ * allocated. unref() ensures Node's exit isn't blocked by the child.
  */
 function ensureWslKeepAlive() {
     if (_wslKeepAliveProc && !_wslKeepAliveProc.killed) return;
@@ -370,10 +390,14 @@ function ensureWslKeepAlive() {
         _wslKeepAliveProc = spawn(
             'wsl.exe',
             ['-d', WSL_DISTRO, '--', 'bash', '-c', 'trap "exit 0" TERM; while true; do sleep 3600; done'],
-            { detached: false, stdio: 'ignore', windowsHide: true }
+            { detached: true, stdio: 'ignore', windowsHide: true }
         );
         _wslKeepAliveProc.on('exit', () => { _wslKeepAliveProc = null; });
         _wslKeepAliveProc.on('error', () => { _wslKeepAliveProc = null; });
+        // Without unref(), Node's event loop waits on this child forever and the
+        // process can't gracefully exit. We still keep a reference so SIGTERM
+        // works from stopWslKeepAlive().
+        try { _wslKeepAliveProc.unref(); } catch { /* old node */ }
     } catch {
         _wslKeepAliveProc = null;
     }

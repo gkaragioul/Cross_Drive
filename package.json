@@ -1,6 +1,6 @@
 {
   "name": "my-mac-drive",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Mac-formatted drive manager for Windows with local drive-letter mounting.",
   "author": "MacMount",
   "license": "MIT",

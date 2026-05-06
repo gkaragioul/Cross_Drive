@@ -19,7 +19,7 @@ function mapDriveLetterInUserSession(letter, mapScriptPath, logFn) {
         return;
     }
     exec(
-        `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}" -Letter "${L}"`,
+        `powershell -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${scriptPath}" -Letter "${L}"`,
         { timeout: 60000, windowsHide: true },
         (error) => {
             if (error) {
