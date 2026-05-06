@@ -1,6 +1,6 @@
 {
   "name": "my-mac-drive",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Mac-formatted drive manager for Windows with local drive-letter mounting.",
   "author": "MacMount",
   "license": "MIT",
@@ -74,8 +74,28 @@
         "to": "scripts/map-drive-user-session.ps1"
       },
       {
+        "from": "scripts/wsl_mount.sh",
+        "to": "scripts/wsl_mount.sh"
+      },
+      {
+        "from": "scripts/wsl_unmount.sh",
+        "to": "scripts/wsl_unmount.sh"
+      },
+      {
+        "from": "scripts/wsl_install_modules.sh",
+        "to": "scripts/wsl_install_modules.sh"
+      },
+      {
+        "from": "scripts/wsl_format_and_mount.sh",
+        "to": "scripts/wsl_format_and_mount.sh"
+      },
+      {
         "from": "prereqs",
         "to": "prereqs"
+      },
+      {
+        "from": "prereqs/macmount-kernel",
+        "to": "macmount-kernel"
       },
       {
         "from": "native/bin",

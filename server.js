@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const { startNativeService, stopNativeService, sendNativeRequest, getNativeStatus } = require('./scripts/nativeServiceClient');
 const { sendBrokerRequest, ensureBrokerReady } = require('./scripts/nativeBrokerClient');
+const { ensureWslMountPathReady } = require('./scripts/wslSetup');
 
 const mountSystemRoutes = require('./routes/systemRoutes');
 const mountDriveRoutes = require('./routes/driveRoutes');
@@ -583,6 +584,22 @@ addLog(
 );
 startNativeService();
 addLog("Native service started for raw-disk analysis endpoints.");
+
+// First-launch / on-launch WSL2 setup — idempotent, best-effort.
+// Stages the bundled custom kernel + modules and writes .wslconfig so the
+// WSL-backed R/W mount path works on a fresh install.
+(async () => {
+    try {
+        const summary = await ensureWslMountPathReady(addLog);
+        if (summary.error) {
+            addLog(`WSL mount path setup incomplete: ${summary.error}. Native fallback will be used for mounts.`, 'warning');
+        } else if (summary.modulesLoaded?.length) {
+            addLog(`WSL mount path ready: kernel modules loaded [${summary.modulesLoaded.join(', ')}].`, 'success');
+        }
+    } catch (e) {
+        addLog(`WSL setup failed: ${e.message}`, 'warning');
+    }
+})();
 
 const PS_PATH = (() => {
     const candidates = [

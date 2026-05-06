@@ -36,9 +36,24 @@ function toWslPath(winPath) {
     return `/mnt/${m[1].toLowerCase()}/${m[2]}`;
 }
 
-const PROJECT_ROOT = path.join(__dirname, '..');
-const WSL_MOUNT_SCRIPT_LINUX = toWslPath(path.join(PROJECT_ROOT, 'scripts', 'wsl_mount.sh'));
-const WSL_UNMOUNT_SCRIPT_LINUX = toWslPath(path.join(PROJECT_ROOT, 'scripts', 'wsl_unmount.sh'));
+// Prefer the packaged copy in process.resourcesPath/scripts; fall back to the
+// dev project root so `npm run start` works without a packaged build.
+function resolveScriptPath(name) {
+    const candidates = [];
+    if (process.resourcesPath) {
+        candidates.push(path.join(process.resourcesPath, 'scripts', name));
+    }
+    candidates.push(path.join(__dirname, name));
+    candidates.push(path.join(__dirname, '..', 'scripts', name));
+    for (const p of candidates) {
+        try { if (fs.existsSync(p)) return p; } catch { /* ignore */ }
+    }
+    // Best-effort fallback: assume project root layout.
+    return path.join(__dirname, '..', 'scripts', name);
+}
+
+const WSL_MOUNT_SCRIPT_LINUX   = toWslPath(resolveScriptPath('wsl_mount.sh'));
+const WSL_UNMOUNT_SCRIPT_LINUX = toWslPath(resolveScriptPath('wsl_unmount.sh'));
 
 function shellQuoteSingle(s) {
     // For passing args to bash through `wsl -e bash -c "..."`.

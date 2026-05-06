@@ -1,0 +1,5 @@
+Placeholder: this path held a prebuilt WSL kernel image used by CrossDrive
+builds before v1.5.35. It was removed from the published history because its
+complete corresponding GPL source could not be verified, and those builds are
+no longer distributed. The v1.5.35 kernel (tag v1.5.35) ships with its GPL
+source in the v1.5.35 release. See README.md.
