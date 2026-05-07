@@ -34,6 +34,8 @@ for (const p of [pkgPath, mainPath, preloadPath, serverPath, auditPath, secAudit
 const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
 const auditScript = fs.readFileSync(auditPath, 'utf8');
 const validateReleaseScript = fs.existsSync(validateReleasePath) ? fs.readFileSync(validateReleasePath, 'utf8') : '';
+const nativeBrokerClientScript = fs.readFileSync(path.join(root, 'scripts', 'nativeBrokerClient.js'), 'utf8');
+const nativeBrokerProgram = fs.readFileSync(path.join(root, 'native', 'MacMount.NativeBroker', 'Program.cs'), 'utf8');
 const licenseText = fs.readFileSync(licensePath, 'utf8');
 const noticesText = fs.readFileSync(noticesPath, 'utf8');
 const gplManifestText = fs.readFileSync(gplManifestPath, 'utf8');
@@ -132,6 +134,18 @@ if (!mainJs.includes('About ${APP_NAME}') || !mainJs.includes('WinFsp - Windows 
   fail('main.js missing About dialog legal attribution');
 } else {
   pass('About dialog legal attribution wired');
+}
+
+if (!nativeBrokerProgram.includes('Global\\\\GKMacOpener.NativeBroker') || !nativeBrokerProgram.includes('exiting duplicate process')) {
+  fail('NativeBroker missing single-instance guard');
+} else {
+  pass('NativeBroker has single-instance guard');
+}
+
+if (!nativeBrokerClientScript.includes('brokerStartPromise') || !nativeBrokerClientScript.includes('concurrent startup/runtime probes')) {
+  fail('nativeBrokerClient missing broker start coalescing');
+} else {
+  pass('nativeBrokerClient coalesces broker starts');
 }
 
 assertDependencyMajor('dependencies', 'express', 5);

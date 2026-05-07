@@ -8,13 +8,37 @@ using System.Security.Principal;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using Fsp;
 using MacMount.RawDiskEngine;
 
-EnsureWinFspRuntimePath();
+Mutex? singleInstanceMutex = null;
+try
+{
+    singleInstanceMutex = new Mutex(initiallyOwned: true, "Global\\GKMacOpener.NativeBroker", out var ownsMutex);
+    if (!ownsMutex)
+    {
+        Console.Error.WriteLine("MacMount.NativeBroker already running; exiting duplicate process.");
+        return;
+    }
+}
+catch (UnauthorizedAccessException)
+{
+    singleInstanceMutex = new Mutex(initiallyOwned: true, "Local\\GKMacOpener.NativeBroker", out var ownsMutex);
+    if (!ownsMutex)
+    {
+        Console.Error.WriteLine("MacMount.NativeBroker already running in this logon session; exiting duplicate process.");
+        return;
+    }
+}
 
-var broker = new BrokerService();
-await broker.RunAsync();
+using (singleInstanceMutex)
+{
+    EnsureWinFspRuntimePath();
+
+    var broker = new BrokerService();
+    await broker.RunAsync();
+}
 
 static void EnsureWinFspRuntimePath()
 {

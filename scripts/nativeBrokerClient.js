@@ -5,6 +5,7 @@ const { exec, spawn } = require('child_process');
 
 const PIPE_PATH = '\\\\.\\pipe\\macmount.broker';
 const BROKER_TASK = 'MacMountStartUserBroker';
+let brokerStartPromise = null;
 
 function resolveExistingPath(candidates) {
   for (const p of candidates) {
@@ -77,6 +78,16 @@ function sendBrokerRequest(payload, timeoutMs = 5000) {
 }
 
 function startBrokerInInteractiveSession() {
+  if (brokerStartPromise) return brokerStartPromise;
+
+  brokerStartPromise = startBrokerInInteractiveSessionInner().finally(() => {
+    brokerStartPromise = null;
+  });
+
+  return brokerStartPromise;
+}
+
+function startBrokerInInteractiveSessionInner() {
   return new Promise((resolve, reject) => {
     const brokerExe = getBrokerExecutable();
 
@@ -130,12 +141,10 @@ function startBrokerInInteractiveSession() {
 }
 
 async function ensureBrokerReady(retries = 8, requireElevated = false) {
-  // Only attempt to launch the broker at most twice per call (once at the
-  // start, once at the midpoint) regardless of requireElevated.  Launching on
-  // every retry creates N simultaneous broker processes all racing to bind the
-  // same named pipe — only one wins, the rest fail silently and waste seconds.
+  // Only attempt to launch the broker once per call. startBrokerInInteractiveSession()
+  // is guarded by a module-level promise so concurrent startup/runtime probes
+  // do not create duplicate broker processes that split WinFsp mount state.
   let startCount = 0;
-  const MAX_STARTS = 2;
 
   for (let i = 0; i < retries; i++) {
     try {
@@ -145,8 +154,7 @@ async function ensureBrokerReady(retries = 8, requireElevated = false) {
       // broker not yet up — fall through to start logic
     }
 
-    const atStartBoundary = i === 0 || i === Math.floor(retries / 2);
-    if (atStartBoundary && startCount < MAX_STARTS) {
+    if (i === 0 && startCount < 1) {
       startCount += 1;
       try { await startBrokerInInteractiveSession(); } catch {}
     }
