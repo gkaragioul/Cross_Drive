@@ -159,7 +159,7 @@
         "nsis",
         "portable"
       ],
-      "signAndEditExecutable": false,
+      "signAndEditExecutable": true,
       "requestedExecutionLevel": "requireAdministrator"
     },
     "nsis": {
