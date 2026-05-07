@@ -89,6 +89,23 @@ else pass('win target includes nsis');
 if (!winTargets.includes('portable')) fail('package.json build.win.target missing portable');
 else pass('win target includes portable');
 
+const nsisCfg = (pkg.build && pkg.build.nsis) || {};
+if (nsisCfg.oneClick !== false) fail('nsis.oneClick must be false (assisted wizard with EULA gate)');
+else pass('nsis.oneClick is false');
+
+if (nsisCfg.allowToChangeInstallationDirectory !== false) fail('nsis.allowToChangeInstallationDirectory must be false (locked install path for updates)');
+else pass('nsis.allowToChangeInstallationDirectory is false');
+
+if (nsisCfg.artifactName !== 'GKMacOpenerSetup.exe') fail(`nsis.artifactName must be 'GKMacOpenerSetup.exe', found '${nsisCfg.artifactName}'`);
+else pass('nsis.artifactName is GKMacOpenerSetup.exe');
+
+if (nsisCfg.license !== 'build/EULA.txt') fail(`nsis.license must be 'build/EULA.txt', found '${nsisCfg.license}'`);
+else pass('nsis.license points to build/EULA.txt');
+
+const portableCfg = (pkg.build && pkg.build.portable) || {};
+if (portableCfg.artifactName !== 'GKMacOpener-${version}.exe') fail(`portable.artifactName must be 'GKMacOpener-\${version}.exe', found '${portableCfg.artifactName}'`);
+else pass('portable.artifactName is versioned');
+
 const mainJs = fs.readFileSync(mainPath, 'utf8');
 if (!mainJs.includes('contextIsolation: true')) fail('main.js missing contextIsolation: true');
 else pass('contextIsolation enabled');
