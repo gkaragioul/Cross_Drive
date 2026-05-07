@@ -4,6 +4,7 @@ const os = require('os');
 const crypto = require('crypto');
 const https = require('https');
 const { spawn } = require('child_process');
+const express = require('express');
 
 const STATE_DIR = path.join(
   process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
@@ -135,6 +136,77 @@ module.exports = function mountUpdateRoutes(app, ctx) {
         releaseNotes: release.body || ''
       });
     });
+  });
+
+  let activeDownload = null; // { totalBytes, bytesDone, status: 'running'|'done'|'error', error, path, version }
+
+  app.get('/api/update/progress', (req, res) => {
+    res.json(activeDownload || { status: 'idle' });
+  });
+
+  app.post('/api/update/download', express.json(), (req, res) => {
+    const { downloadUrl, sha256, version } = req.body || {};
+    if (!downloadUrl || !sha256 || !version) return res.status(400).json({ error: 'downloadUrl, sha256, and version are required' });
+    if (activeDownload && activeDownload.status === 'running') return res.status(409).json({ error: 'a download is already in progress' });
+
+    const tmpPath = path.join(os.tmpdir(), `gkmo_${crypto.randomUUID()}_${INSTALLER_ASSET}`);
+    activeDownload = { totalBytes: 0, bytesDone: 0, status: 'running', error: null, path: tmpPath, version };
+    log(`download starting: ${version} -> ${tmpPath}`);
+
+    function downloadOnce(url, redirectsLeft) {
+      const req2 = https.request(url, { method: 'GET', headers: { 'User-Agent': `GKMacOpener/${getCurrentVersion()}` }, timeout: 30000 }, (resp) => {
+        if ([301, 302, 303, 307, 308].includes(resp.statusCode) && resp.headers.location && redirectsLeft > 0) {
+          resp.resume();
+          return downloadOnce(resp.headers.location, redirectsLeft - 1);
+        }
+        if (resp.statusCode !== 200) {
+          activeDownload.status = 'error';
+          activeDownload.error = `HTTP ${resp.statusCode}`;
+          resp.resume();
+          return;
+        }
+        activeDownload.totalBytes = parseInt(resp.headers['content-length'] || '0', 10) || 0;
+        const file = fs.createWriteStream(tmpPath);
+        resp.on('data', (chunk) => { activeDownload.bytesDone += chunk.length; });
+        resp.pipe(file);
+        file.on('finish', () => {
+          file.close(() => {
+            const hash = crypto.createHash('sha256');
+            const rs = fs.createReadStream(tmpPath);
+            rs.on('data', c => hash.update(c));
+            rs.on('end', () => {
+              const actual = hash.digest('hex').toLowerCase();
+              if (actual !== String(sha256).toLowerCase()) {
+                try { fs.unlinkSync(tmpPath); } catch {}
+                activeDownload.status = 'error';
+                activeDownload.error = `Integrity check failed. Expected ${sha256}, got ${actual}.`;
+                log(`download SHA256 mismatch: ${actual} vs ${sha256}`, 'error');
+                return;
+              }
+              activeDownload.status = 'done';
+              log(`download verified: ${tmpPath}`);
+            });
+            rs.on('error', err => {
+              activeDownload.status = 'error';
+              activeDownload.error = err.message;
+            });
+          });
+        });
+        file.on('error', err => {
+          activeDownload.status = 'error';
+          activeDownload.error = err.message;
+        });
+      });
+      req2.on('timeout', () => { req2.destroy(new Error('download timeout')); });
+      req2.on('error', err => {
+        activeDownload.status = 'error';
+        activeDownload.error = err.message;
+      });
+      req2.end();
+    }
+
+    downloadOnce(downloadUrl, 5);
+    res.json({ accepted: true, path: tmpPath });
   });
 
   return { STATE_DIR, ETAG_FILE, DISMISSED_FILE, PENDING_FILE, PREVIOUS_FILE };
