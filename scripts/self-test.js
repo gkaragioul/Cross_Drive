@@ -22,10 +22,11 @@ const secAuditPath = path.join(root, 'scripts', 'security-audit.js');
 const gatePath = path.join(root, 'scripts', 'commercial-gate.js');
 const noticesPath = path.join(root, 'build', 'THIRD_PARTY_NOTICES.txt');
 const gplOfferPath = path.join(root, 'build', 'GPL_SOURCE_OFFER.txt');
+const gplManifestPath = path.join(root, 'docs', 'GPL_SOURCE_MANIFEST.md');
 const licensePath = path.join(root, 'LICENSE');
 const routesDir = path.join(root, 'routes');
 
-for (const p of [pkgPath, mainPath, preloadPath, serverPath, auditPath, secAuditPath, gatePath, noticesPath, gplOfferPath, licensePath]) {
+for (const p of [pkgPath, mainPath, preloadPath, serverPath, auditPath, secAuditPath, gatePath, noticesPath, gplOfferPath, gplManifestPath, licensePath]) {
   if (!fs.existsSync(p)) fail(`missing file: ${p}`);
   else pass(`exists: ${path.basename(p)}`);
 }
@@ -35,6 +36,7 @@ const auditScript = fs.readFileSync(auditPath, 'utf8');
 const validateReleaseScript = fs.existsSync(validateReleasePath) ? fs.readFileSync(validateReleasePath, 'utf8') : '';
 const licenseText = fs.readFileSync(licensePath, 'utf8');
 const noticesText = fs.readFileSync(noticesPath, 'utf8');
+const gplManifestText = fs.readFileSync(gplManifestPath, 'utf8');
 const eulaText = fs.readFileSync(path.join(root, 'build', 'EULA.txt'), 'utf8');
 
 function parseMajor(range) {
@@ -141,6 +143,15 @@ for (const needle of [
 if (!auditScript.includes('Extracted WinFsp payload not packaged')) fail('release audit does not block extracted WinFsp payloads');
 else pass('release audit blocks extracted WinFsp payloads');
 
+if (!auditScript.includes('Packaging avoids dev script globs') || !auditScript.includes('Dev/release scripts not packaged')) {
+  fail('release audit does not block dev/release scripts from packaging');
+} else {
+  pass('release audit blocks dev/release scripts from packaging');
+}
+
+if (!auditScript.includes('GPL source manifest present')) fail('release audit missing GPL source manifest check');
+else pass('release audit checks GPL source manifest');
+
 if (!licenseText.includes('Copyright (c) 2026 GKMacOpener contributors')) fail('LICENSE copyright is not GKMacOpener 2026');
 else pass('LICENSE copyright is GKMacOpener 2026');
 
@@ -154,6 +165,12 @@ if (!noticesText.includes('WinFsp - Windows File System Proxy, Copyright (C) Bil
   fail('third-party notices missing WinFsp or WSL GPL notices');
 } else {
   pass('third-party notices include WinFsp and WSL GPL notices');
+}
+
+if (!/linux-msft-wsl-6\.6\.87\.2/.test(gplManifestText) || !/linux-apfs-rw/.test(gplManifestText) || !/0\.3\.20/.test(gplManifestText) || !/kernel `\.config`/.test(gplManifestText)) {
+  fail('GPL source manifest missing kernel/APFS source requirements');
+} else {
+  pass('GPL source manifest documents kernel/APFS source requirements');
 }
 
 if (validateReleaseScript.includes('Encrypted APFS volumes will not be unlockable')) {

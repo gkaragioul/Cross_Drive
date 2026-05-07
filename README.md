@@ -24,6 +24,7 @@ Binary distributions include third-party components under their own terms. See:
 
 - `build/THIRD_PARTY_NOTICES.txt`
 - `build/GPL_SOURCE_OFFER.txt`
+- `docs/GPL_SOURCE_MANIFEST.md`
 
 Required WinFsp attribution:
 
@@ -123,6 +124,13 @@ The installer should ship:
 
 The installer should not ship extracted WinFsp SDK/runtime folders such as
 `prereqs/winfsp-extract`.
+
+The bundled WSL kernel/modules are GPL-covered components. Keep
+`build/GPL_SOURCE_OFFER.txt` and `docs/GPL_SOURCE_MANIFEST.md` up to date for
+every binary release. Before distributing a public installer, publish the
+complete corresponding source package for those GPL-covered binaries, including
+the exact source revisions, kernel `.config`, local patches, and build
+commands/scripts.
 
 ## Known Limitations
 

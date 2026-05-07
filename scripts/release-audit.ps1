@@ -148,6 +148,54 @@ $checks += [pscustomobject]@{
     Detail = "package.json build.files/asarUnpack/extraResources"
 }
 
+$devScriptGlobsPacked = $false
+try {
+    $devScriptGlobsPacked = @($pkg.build.files | Where-Object {
+        $_ -in @("scripts/**/*.js", "scripts/**/*.ps1", "scripts/**/*.sh")
+    }).Count -gt 0 -or
+    @($pkg.build.asarUnpack | Where-Object {
+        $_ -in @("scripts/**/*.js", "scripts/**/*.ps1", "scripts/**/*.sh")
+    }).Count -gt 0
+} catch {
+    $devScriptGlobsPacked = $true
+}
+$checks += [pscustomobject]@{
+    Check = "Packaging avoids dev script globs"
+    Passed = -not $devScriptGlobsPacked
+    Detail = "package.json build.files/asarUnpack scripts entries"
+}
+
+$forbiddenPackagedScripts = @(
+    "setup-signing-env.ps1",
+    "configure-real-signing.ps1",
+    "verify-signing-config.ps1",
+    "build-release-unsigned.ps1",
+    "release-audit.ps1",
+    "release-candidate.ps1",
+    "security-audit.js",
+    "commercial-gate.js",
+    "self-test.js",
+    "validate-release.ps1",
+    "start-electron.js"
+)
+$forbiddenFound = @()
+$packagedScriptRoots = @(
+    (Join-Path $root "dist\win-unpacked\resources\scripts"),
+    (Join-Path $root "dist\win-unpacked\resources\app.asar.unpacked\scripts")
+)
+foreach ($scriptRoot in $packagedScriptRoots) {
+    if (-not (Test-Path $scriptRoot)) { continue }
+    foreach ($scriptName in $forbiddenPackagedScripts) {
+        $candidate = Join-Path $scriptRoot $scriptName
+        if (Test-Path $candidate) { $forbiddenFound += $candidate }
+    }
+}
+$checks += [pscustomobject]@{
+    Check = "Dev/release scripts not packaged"
+    Passed = ($forbiddenFound.Count -eq 0)
+    Detail = $(if ($forbiddenFound.Count -eq 0) { "No forbidden scripts found in resources/scripts or app.asar.unpacked/scripts" } else { ($forbiddenFound -join "; ") })
+}
+
 $noticePath = Join-Path $root "build\THIRD_PARTY_NOTICES.txt"
 $noticeText = if (Test-Path $noticePath) { Get-Content $noticePath -Raw } else { "" }
 $checks += [pscustomobject]@{
@@ -160,6 +208,17 @@ $checks += [pscustomobject]@{
     Check = "GKMacOpener MIT copyright documented"
     Passed = ($noticeText -match "Copyright \(c\) 2026 GKMacOpener contributors") -and ((Get-Content (Join-Path $root "LICENSE") -Raw) -match "Copyright \(c\) 2026 GKMacOpener contributors")
     Detail = "LICENSE + THIRD_PARTY_NOTICES.txt"
+}
+
+$gplManifestPath = Join-Path $root "docs\GPL_SOURCE_MANIFEST.md"
+$gplManifestText = if (Test-Path $gplManifestPath) { Get-Content $gplManifestPath -Raw } else { "" }
+$checks += [pscustomobject]@{
+    Check = "GPL source manifest present"
+    Passed = ($gplManifestText -match "linux-msft-wsl-6\.6\.87\.2") -and
+             ($gplManifestText -match "linux-apfs-rw") -and
+             ($gplManifestText -match "0\.3\.20") -and
+             ($gplManifestText -match "kernel ``\.config``|kernel `\.config`|kernel \.config")
+    Detail = $gplManifestPath
 }
 
 $kernelPath = Join-Path $root "prereqs\macmount-kernel\wsl_kernel"

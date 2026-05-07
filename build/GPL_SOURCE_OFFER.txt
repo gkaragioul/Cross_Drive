@@ -16,9 +16,13 @@ GPL license.
 How to Obtain Source
 --------------------
 
-The official GKMacOpener release notes or repository documentation must record
-the exact upstream source revisions, configuration, patches, and build scripts
-used for every GPL-covered binary included in that release.
+The public repository includes a GPL source manifest at:
+
+docs/GPL_SOURCE_MANIFEST.md
+
+The official GKMacOpener release notes or repository documentation must also
+record the exact upstream source revisions, configuration, patches, and build
+scripts used for every GPL-covered binary included in that release.
 
 If the corresponding source is not already published in the GKMacOpener
 repository, request it through the support or issue tracker published with the
