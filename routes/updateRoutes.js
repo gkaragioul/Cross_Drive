@@ -219,6 +219,14 @@ module.exports = function mountUpdateRoutes(app, ctx) {
       `$oldApp = '${escSingle(oldExePath)}'`,
       `$newApp = '${escSingle(newApp)}'`,
       `Start-Sleep -Seconds 2`,
+      // Belt-and-braces: kill any spawned native helpers that survived the
+      // Electron parent's app.quit(). Without this they hold file locks on
+      // their own .exe inside the install folder and the installer fails to
+      // overwrite them. NSIS's customInit macro does the same (see
+      // build/installer.nsh) — duplicating here so older installs can still
+      // upgrade cleanly.
+      `Get-Process -Name GKMacOpener,MacMount.NativeBroker,MacMount.NativeService,MacMount.UserSessionHelper -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue`,
+      `Start-Sleep -Seconds 1`,
       `try { $proc = Start-Process $installer -Wait -PassThru } catch { $proc = $null }`,
       `if (Test-Path $newApp) { Start-Process $newApp }`,
       `elseif (Test-Path $oldApp) { Start-Process $oldApp }`,
