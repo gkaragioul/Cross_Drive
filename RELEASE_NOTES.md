@@ -3,11 +3,11 @@
 
 ## Summary
 
-Fixes the in-app update flow ending with the app silently closing and no installer wizard appearing. The PowerShell relaunch helper was using `Start-Process -Wait`, which returned prematurely when NSIS spawned its elevated child, then triggered the post-install fallback against the just-killed old exe path. v1.5.8 launches the installer detached with an explicit normal window style and lets NSIS' `runAfterFinish` handle relaunch.
+Smoke-test release. v1.5.9 is identical to v1.5.8 in behaviour and exists to verify that v1.5.8's fixed updater can take an installed v1.5.8 to a newer version end-to-end (banner appears → download → SHA256 verify → installer wizard appears → Finish → app relaunches with the new version).
 
 ## Notable changes
 
-- **Updater (PowerShell relaunch helper):** `Start-Process -FilePath $installer -WindowStyle Normal` (no `-Wait`, no post-launch fallback). The wizard UI now displays reliably; the new app launches via NSIS Finish-page checkbox after the install completes.
+- Version bump only.
 
 ## Where to download
 
