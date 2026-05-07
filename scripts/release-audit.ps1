@@ -14,8 +14,9 @@ $productName = if (-not [string]::IsNullOrWhiteSpace($pkg.build.productName)) { 
 if ([string]::IsNullOrWhiteSpace($productName)) { $productName = "GKMacOpener" }
 
 $setupPatterns = @(
-    "$productName-Setup-*.exe",
-    "$productName Setup *.exe"
+    "${productName}Setup.exe",        # current stable artifactName
+    "$productName-Setup-*.exe",       # legacy
+    "$productName Setup *.exe"        # legacy
 )
 $setupExe = $null
 foreach ($pattern in $setupPatterns) {
@@ -25,10 +26,25 @@ foreach ($pattern in $setupPatterns) {
         break
     }
 }
-$portableExe = Get-ChildItem -Path $distDir -Filter "$productName *.exe" -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -notlike "$productName Setup *" -and $_.Name -notlike "$productName-Setup-*" } |
-    Sort-Object LastWriteTime -Descending |
-    Select-Object -First 1
+$portablePatterns = @(
+    "$productName-*.exe",             # current artifactName: GKMacOpener-<version>.exe
+    "$productName *.exe"              # legacy: GKMacOpener <version>.exe
+)
+$portableExe = $null
+foreach ($pattern in $portablePatterns) {
+    $candidate = Get-ChildItem -Path $distDir -Filter $pattern -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.Name -notlike "$productName Setup *" -and
+            $_.Name -notlike "$productName-Setup-*" -and
+            $_.Name -ne "${productName}Setup.exe"
+        } |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if ($candidate) {
+        $portableExe = $candidate
+        break
+    }
+}
 $releaseExe = if ($setupExe) { $setupExe } else { $portableExe }
 
 Write-Host "$productName Release Audit"

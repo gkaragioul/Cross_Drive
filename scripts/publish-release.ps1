@@ -41,9 +41,15 @@ try {
   & npm run release:win:full
   if ($LASTEXITCODE -ne 0) { throw "release:win:full failed" }
 
-  Write-Host "[3/6] Running release gate..." -ForegroundColor Yellow
-  & npm run release:gate
-  if ($LASTEXITCODE -ne 0) { throw "release:gate failed" }
+  Write-Host "[3/6] Running release gate (unsigned)..." -ForegroundColor Yellow
+  & npm run test
+  if ($LASTEXITCODE -ne 0) { throw "self-test failed" }
+  & npm run security:audit
+  if ($LASTEXITCODE -ne 0) { throw "security:audit failed" }
+  & npm run commercial:gate
+  if ($LASTEXITCODE -ne 0) { throw "commercial:gate failed" }
+  & npm run release:audit:unsigned
+  if ($LASTEXITCODE -ne 0) { throw "release:audit:unsigned failed" }
 
   # 4. Locate artifacts and compute hash
   $setupExe = Join-Path $root "dist\GKMacOpenerSetup.exe"
