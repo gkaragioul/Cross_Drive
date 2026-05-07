@@ -162,7 +162,7 @@
       "requestedExecutionLevel": "requireAdministrator"
     },
     "nsis": {
-      "oneClick": true,
+      "oneClick": false,
       "perMachine": true,
       "allowElevation": true,
       "allowToChangeInstallationDirectory": false,
@@ -172,7 +172,13 @@
       "include": "build/installer.nsh",
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico",
-      "installerHeaderIcon": "build/icon.ico"
+      "installerHeaderIcon": "build/icon.ico",
+      "artifactName": "GKMacOpenerSetup.exe",
+      "uninstallDisplayName": "GKMacOpener",
+      "runAfterFinish": true
+    },
+    "portable": {
+      "artifactName": "GKMacOpener-${version}.exe"
     }
   }
 }
