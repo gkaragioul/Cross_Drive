@@ -209,6 +209,46 @@ module.exports = function mountUpdateRoutes(app, ctx) {
     res.json({ accepted: true, path: tmpPath });
   });
 
+  function buildRelaunchScript(installerPath, oldExePath) {
+    // Verbatim port of MyLocalBackup.Core/Services/UpdateService.cs:399-415.
+    // Sleep 2s -> run installer (full UI, no /passive) -> wait -> launch new app.
+    const escSingle = (s) => String(s).replace(/'/g, "''");
+    const newApp = `${process.env.LOCALAPPDATA}\\Programs\\GKMacOpener\\GKMacOpener.exe`;
+    return [
+      `$installer = '${escSingle(installerPath)}'`,
+      `$oldApp = '${escSingle(oldExePath)}'`,
+      `$newApp = '${escSingle(newApp)}'`,
+      `Start-Sleep -Seconds 2`,
+      `try { $proc = Start-Process $installer -Wait -PassThru } catch { $proc = $null }`,
+      `if (Test-Path $newApp) { Start-Process $newApp }`,
+      `elseif (Test-Path $oldApp) { Start-Process $oldApp }`,
+      `Remove-Item $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue`
+    ].join('\r\n');
+  }
+
+  app.post('/api/update/launch', express.json(), (req, res) => {
+    const { installerPath, version } = req.body || {};
+    if (!installerPath || !version) return res.status(400).json({ error: 'installerPath and version are required' });
+    if (!fs.existsSync(installerPath)) return res.status(400).json({ error: 'installer not found at path' });
+
+    writeState(PENDING_FILE, version);
+    writeState(PREVIOUS_FILE, `${getCurrentVersion()}|`);
+
+    const oldExe = process.execPath; // current Electron exe — fallback if installer is cancelled
+    const helperPath = path.join(os.tmpdir(), `gkmo_relaunch_${crypto.randomUUID()}.ps1`);
+    fs.writeFileSync(helperPath, buildRelaunchScript(installerPath, oldExe), 'utf8');
+
+    const child = spawn(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', helperPath],
+      { detached: true, stdio: 'ignore', windowsHide: true }
+    );
+    child.unref();
+    log(`launch helper spawned: ${helperPath}`);
+
+    res.json({ accepted: true, helperPath });
+  });
+
   return { STATE_DIR, ETAG_FILE, DISMISSED_FILE, PENDING_FILE, PREVIOUS_FILE };
 };
 
