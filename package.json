@@ -40,6 +40,7 @@
     "release:gate": "npm run test && npm run security:audit && npm run commercial:gate && npm run release:audit",
     "signing:verify": "powershell -ExecutionPolicy Bypass -File scripts/verify-signing-config.ps1",
     "release:candidate": "powershell -ExecutionPolicy Bypass -File scripts/release-candidate.ps1",
+    "publish:release": "powershell -ExecutionPolicy Bypass -File scripts/publish-release.ps1",
     "signing:setup:test": "powershell -ExecutionPolicy Bypass -File scripts/setup-signing-env.ps1",
     "signing:setup:real": "powershell -ExecutionPolicy Bypass -File scripts/configure-real-signing.ps1",
     "release:win:signed": "npm run release:win:full && npm run release:audit",
