@@ -18,7 +18,16 @@ async function main() {
     console.error(`Source logo not found: ${SOURCE}`);
     process.exit(1);
   }
-  const padded = await sharp(SOURCE)
+  // 1) Trim transparent borders so the subject fills the canvas (without this
+  //    the drive image ends up tiny inside a sea of transparent padding).
+  // 2) Pad to a square ~8% larger than the long side, then resize to 1024x1024.
+  //    The 8% margin keeps the subject from touching the icon edge.
+  const trimmed = await sharp(SOURCE).trim({ threshold: 5 }).png().toBuffer();
+  const meta = await sharp(trimmed).metadata();
+  const longSide = Math.max(meta.width || 1, meta.height || 1);
+  const target = Math.round(longSide / 0.92);
+  const padded = await sharp(trimmed)
+    .resize({ width: target, height: target, fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
     .resize({ width: 1024, height: 1024, fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
     .png()
     .toBuffer();
