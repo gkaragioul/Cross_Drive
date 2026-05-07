@@ -496,6 +496,7 @@ const App = () => {
       <div style={{ background: '#0e0e0e', border: '1px solid var(--border)', padding: '16px' }}>
         <SettingsRow label="App" value="GKMacOpener" />
         <SettingsRow label="Version" value={setup?.version || APP_VERSION_FALLBACK} />
+        <SettingsRow label="Developed by" value="George Karagioules" />
         <SettingsRow label="License" value="MIT" />
         <SettingsRow label="Copyright" value={COPYRIGHT_NOTICE} />
         <div style={{ padding: '12px 0 0', color: 'var(--text-dim)', fontSize: '12px', lineHeight: 1.6 }}>
@@ -535,6 +536,41 @@ const App = () => {
             <SettingsIcon /> Settings
           </li>
         </nav>
+        <div style={{
+          marginTop: 'auto',
+          padding: '14px 16px',
+          borderTop: '1px solid var(--border)',
+          background: '#050505'
+        }}>
+          {update?.available ? (
+            <button
+              className="btn btn-primary"
+              style={{ width: '100%', padding: '8px 10px', fontSize: '11px', letterSpacing: '0.5px' }}
+              onClick={onUpdateNow}
+            >
+              Update to {update.version}
+            </button>
+          ) : (
+            <button
+              className="btn btn-outline"
+              style={{ width: '100%', padding: '8px 10px', fontSize: '11px', letterSpacing: '0.5px' }}
+              onClick={runManualUpdateCheck}
+              disabled={manualCheckBusy}
+            >
+              {manualCheckBusy ? 'Checking...' : 'Check for updates'}
+            </button>
+          )}
+          <div style={{
+            marginTop: '8px',
+            textAlign: 'center',
+            opacity: 0.4,
+            fontSize: '10px',
+            fontFamily: 'var(--font-mono)',
+            letterSpacing: '1px'
+          }}>
+            v{setup?.version || APP_VERSION_FALLBACK}
+          </div>
+        </div>
       </aside>
 
       <main className="main-content">

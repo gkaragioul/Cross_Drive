@@ -56,6 +56,7 @@ function showAboutDialog() {
         message: APP_NAME,
         detail: [
             `Version ${app.getVersion()}`,
+            'Developed by George Karagioules',
             COPYRIGHT_NOTICE,
             'License: MIT',
             '',
