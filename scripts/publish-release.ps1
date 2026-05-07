@@ -25,12 +25,14 @@ try {
   $dirty = & git status --porcelain
   if ($dirty) { throw "Working tree is dirty. Commit or stash first." }
 
-  # 2. Bump package.json version
+  # 2. Bump package.json version. Use Node so key order + indentation are
+  #    preserved and the file is written as UTF-8 without BOM.
+  #    (PowerShell's ConvertTo-Json reorders keys, and Set-Content -Encoding
+  #    UTF8 adds a BOM that Vite's PostCSS loader rejects as invalid JSON.)
   Write-Host "[1/6] Bumping package.json version..." -ForegroundColor Yellow
-  $pkgPath = Join-Path $root "package.json"
-  $pkg = Get-Content $pkgPath -Raw | ConvertFrom-Json
-  $pkg.version = $Version
-  ($pkg | ConvertTo-Json -Depth 32) | Set-Content $pkgPath -Encoding UTF8
+  $bumpScript = "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version='$Version';fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n');"
+  & node -e $bumpScript
+  if ($LASTEXITCODE -ne 0) { throw "package.json version bump failed" }
   & git add package.json
   & git commit -m "chore(release): v$Version"
 
