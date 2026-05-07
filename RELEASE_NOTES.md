@@ -3,11 +3,12 @@
 
 ## Summary
 
-Smoke-test release. v1.5.11 is identical to v1.5.10 in behaviour and exists to verify v1.5.10's updater can take an installed app to a newer version end-to-end (banner appears → download → SHA256 verify → installer wizard appears → Finish → app relaunches with the new version). v1.5.10's `cmd /c start /B` shim was experimentally proven to keep the relaunch helper alive past Electron's exit on Windows.
+Adds a **Refresh** button on each mounted drive card to clear stale kernel directory state after heavy writes. Workaround for a known Linux `hfsplus.ko` + WSL2 9P issue where deleting a folder via Explorer can leave one file behind because the kernel's catalog B-tree iterator loses an entry while files are unlinked under it.
 
 ## Notable changes
 
-- Version bump only.
+- **Drive card → Refresh button:** unmounts the drive, waits 800ms for the kernel/9P side to release, then remounts it. The drive letter and contents come back exactly as they were. One click; ~3-5 seconds.
+- **When to use:** if a folder delete on a mounted drive leaves a single file stranded, click Refresh and try the delete again.
 
 ## Where to download
 

@@ -230,6 +230,29 @@ const App = () => {
     }
   };
 
+  const refreshDrive = async (id) => {
+    setIsMounting(id);
+    setErrorMessage(null);
+    logRemote(`Frontend: User requested refresh (unmount+mount) for ${id}`);
+    try {
+      await apiUnmountDrive(id);
+      // Small delay so the kernel/9P side fully releases the mount
+      // before we try to remount. Without this, the remount can race
+      // and fail with EBUSY.
+      await new Promise(r => setTimeout(r, 800));
+      const result = await apiMountDrive(id);
+      logRemote(`SUCCESS: Drive ${id} refreshed at ${result.path}`, 'success');
+      const { drives: d } = await apiFetchDrives();
+      setDrives(d);
+    } catch (err) {
+      const detail = err.result?.error || err.message || 'unknown error';
+      setErrorMessage(`Refresh failed: ${detail}`);
+      logRemote(`Refresh Failure: ${detail}`, 'error');
+    } finally {
+      setIsMounting(null);
+    }
+  };
+
   const onUpdateLater = () => setUpdate(null);
   const onUpdateSkip = async () => {
     if (!update?.version) return;
@@ -378,6 +401,16 @@ const App = () => {
                     >
                       Open Explorer
                     </button>
+                    {drive.mounted && (
+                      <button
+                        className="btn btn-outline"
+                        disabled={isMounting !== null}
+                        onClick={() => refreshDrive(drive.id)}
+                        title="Unmount and remount the drive. Use after heavy file operations if folder deletes leave files behind."
+                      >
+                        {isMounting === drive.id ? 'Refreshing...' : 'Refresh'}
+                      </button>
+                    )}
                   </div>
                 </div>
               );
