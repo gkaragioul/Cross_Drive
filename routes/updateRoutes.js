@@ -249,6 +249,28 @@ module.exports = function mountUpdateRoutes(app, ctx) {
     res.json({ accepted: true, helperPath });
   });
 
+  app.post('/api/update/dismiss', express.json(), (req, res) => {
+    const { version } = req.body || {};
+    if (!version) return res.status(400).json({ error: 'version required' });
+    writeState(DISMISSED_FILE, version);
+    log(`dismissed version: ${version}`);
+    res.json({ ok: true });
+  });
+
+  // Startup check: if pending_update.txt exists and version didn't advance, the install failed silently.
+  try {
+    const pending = (readState(PENDING_FILE) || '').trim();
+    if (pending) {
+      const current = getCurrentVersion();
+      if (compareVersions(pending, current) > 0) {
+        log(`pending update did not complete (expected ${pending}, on ${current})`, 'warn');
+      } else {
+        log(`pending update succeeded: now on ${current}`);
+      }
+      deleteState(PENDING_FILE);
+    }
+  } catch (e) { log(`pending check failed: ${e.message}`, 'warn'); }
+
   return { STATE_DIR, ETAG_FILE, DISMISSED_FILE, PENDING_FILE, PREVIOUS_FILE };
 };
 
