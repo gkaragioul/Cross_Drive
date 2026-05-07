@@ -1907,22 +1907,101 @@ internal sealed class BrokerPassthroughFileSystem : FileSystemBase
             return;
         }
 
+        if (string.IsNullOrWhiteSpace(fileName) || string.Equals(fileName.Trim(), "\\", StringComparison.Ordinal))
+        {
+            return;
+        }
+
         try
         {
             var full = ResolvePath(fileName);
-            if (Directory.Exists(full))
-            {
-                Directory.Delete(full, recursive: true);
-            }
-            else if (File.Exists(full))
-            {
-                File.Delete(full);
-            }
+            DeletePathWithRetry(full);
             InvalidatePathCaches(full);
+            InvalidateParentDirectoryCache(full);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[WinFsp] Passthrough delete failed for '{fileName}': {ex.GetType().Name}: {ex.Message}");
+            try
+            {
+                var full = ResolvePath(fileName);
+                InvalidatePathCaches(full);
+                InvalidateParentDirectoryCache(full);
+            }
+            catch
+            {
+                // cache invalidation is best-effort
+            }
+        }
+    }
+
+    private static void DeletePathWithRetry(string full)
+    {
+        Exception? lastError = null;
+        for (var attempt = 0; attempt < 4; attempt++)
+        {
+            try
+            {
+                DeletePathOnce(full);
+                return;
+            }
+            catch (DirectoryNotFoundException)
+            {
+                return;
+            }
+            catch (FileNotFoundException)
+            {
+                return;
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                lastError = ex;
+                Thread.Sleep(75 * (attempt + 1));
+            }
+        }
+
+        if (lastError is not null)
+        {
+            throw lastError;
+        }
+    }
+
+    private static void DeletePathOnce(string full)
+    {
+        if (Directory.Exists(full))
+        {
+            ClearAttributesForDelete(full);
+            Directory.Delete(full, recursive: true);
+            return;
+        }
+
+        if (File.Exists(full))
+        {
+            ClearAttributesForDelete(full);
+            File.Delete(full);
+        }
+    }
+
+    private static void ClearAttributesForDelete(string full)
+    {
+        try
+        {
+            if (File.Exists(full))
+            {
+                File.SetAttributes(full, FileAttributes.Normal);
+                return;
+            }
+
+            if (!Directory.Exists(full)) return;
+            foreach (var path in Directory.EnumerateFileSystemEntries(full, "*", SearchOption.AllDirectories))
+            {
+                try { File.SetAttributes(path, FileAttributes.Normal); } catch {}
+            }
+            try { File.SetAttributes(full, FileAttributes.Directory); } catch {}
         }
         catch
         {
-            // WinFsp treats cleanup as best-effort; the originating operation reports errors.
+            // Attribute changes are only a compatibility aid for Windows delete semantics.
         }
     }
 
@@ -2156,6 +2235,22 @@ internal sealed class BrokerPassthroughFileSystem : FileSystemBase
         try
         {
             var parent = Directory.Exists(fullPath) ? fullPath : Path.GetDirectoryName(fullPath);
+            if (!string.IsNullOrWhiteSpace(parent))
+            {
+                _dirCache.TryRemove(parent, out _);
+            }
+        }
+        catch
+        {
+            // cache invalidation is best-effort
+        }
+    }
+
+    private void InvalidateParentDirectoryCache(string fullPath)
+    {
+        try
+        {
+            var parent = Path.GetDirectoryName(fullPath);
             if (!string.IsNullOrWhiteSpace(parent))
             {
                 _dirCache.TryRemove(parent, out _);

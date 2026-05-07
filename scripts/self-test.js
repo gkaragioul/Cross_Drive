@@ -148,6 +148,12 @@ if (!nativeBrokerClientScript.includes('brokerStartPromise') || !nativeBrokerCli
   pass('nativeBrokerClient coalesces broker starts');
 }
 
+if (!nativeBrokerProgram.includes('DeletePathWithRetry') || !nativeBrokerProgram.includes('Passthrough delete failed')) {
+  fail('NativeBroker passthrough delete cleanup can silently fail');
+} else {
+  pass('NativeBroker logs and retries passthrough delete cleanup');
+}
+
 assertDependencyMajor('dependencies', 'express', 5);
 assertDependencyMajor('devDependencies', 'electron', 42);
 assertDependencyMajor('devDependencies', 'electron-builder', 26);
