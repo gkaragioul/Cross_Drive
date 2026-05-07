@@ -3,12 +3,11 @@
 
 ## Summary
 
-Reliability hotfix for the in-app updater. v1.5.3/v1.5.4 could leave the upgrade installer crashing partway through file replacement, because the native broker/service/user-session helpers (spawned by Electron via `child_process.spawn`) survived the parent's quit and held file locks on their own .exe files inside the install folder. v1.5.5 makes the installer self-protective.
+Smoke-test release. v1.5.6 is identical to v1.5.5 in behaviour and exists to verify that the in-app updater can take an installed v1.5.5 to a newer version end-to-end (banner appears → download → SHA256 verify → installer runs → app relaunches with the new version).
 
 ## Notable changes
 
-- **Installer:** new NSIS `customInit` and `customUnInit` macros run `taskkill /F /IM` against `GKMacOpener.exe`, `MacMount.NativeBroker.exe`, `MacMount.NativeService.exe`, and `MacMount.UserSessionHelper.exe` before any install or uninstall step. Eliminates "sharing violation" crashes during upgrade.
-- **In-app updater (PowerShell relaunch helper):** also runs `Stop-Process -Force` on the same process names before launching the installer. Belt-and-braces for installs triggered from already-deployed app builds whose helpers predate this fix.
+- Version bump only.
 
 ## Where to download
 
