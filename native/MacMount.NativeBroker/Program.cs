@@ -1196,6 +1196,7 @@ internal sealed class BrokerPassthroughFileSystem : FileSystemBase
 {
     private readonly string _rootPath;
     private readonly string _localCacheRoot;
+    private readonly bool _enableMetadataCache;
     private readonly bool _enableLocalMirrorCache;
     private readonly bool _enableAggressivePrefetch;
     private readonly DirectoryBuffer _dirBuffer = new();
@@ -1229,9 +1230,13 @@ internal sealed class BrokerPassthroughFileSystem : FileSystemBase
     public BrokerPassthroughFileSystem(string rootPath, long totalBytes = 0, long freeBytes = 0)
     {
         _rootPath = Path.GetFullPath(rootPath);
+        var isUncBacked = _rootPath.StartsWith("\\\\", StringComparison.Ordinal);
+        _enableMetadataCache =
+            !isUncBacked ||
+            string.Equals(Environment.GetEnvironmentVariable("MACMOUNT_ENABLE_UNC_METADATA_CACHE"), "1", StringComparison.Ordinal);
         _enableLocalMirrorCache =
             string.Equals(Environment.GetEnvironmentVariable("MACMOUNT_ENABLE_LOCAL_MIRROR_CACHE"), "1", StringComparison.Ordinal) &&
-            !_rootPath.StartsWith("\\\\", StringComparison.Ordinal);
+            !isUncBacked;
         _enableAggressivePrefetch =
             string.Equals(Environment.GetEnvironmentVariable("MACMOUNT_ENABLE_AGGRESSIVE_PREFETCH"), "1", StringComparison.Ordinal);
         _localCacheRoot = BuildLocalCacheRoot(_rootPath);
@@ -2066,7 +2071,7 @@ internal sealed class BrokerPassthroughFileSystem : FileSystemBase
         var nowUtc = DateTimeOffset.UtcNow;
         var dirStamp = GetDirectoryStampUtc(fullDir);
 
-        if (_dirCache.TryGetValue(cacheKey, out var cached))
+        if (_enableMetadataCache && _dirCache.TryGetValue(cacheKey, out var cached))
         {
             if ((nowUtc - cached.CreatedUtc) <= DirCacheTtl && cached.DirectoryStampUtc == dirStamp)
             {
@@ -2103,11 +2108,14 @@ internal sealed class BrokerPassthroughFileSystem : FileSystemBase
             entries = results.ToArray();
         }
 
-        _dirCache[cacheKey] = new CachedDirectory(nowUtc, dirStamp, entries);
-        // Prime non-reparse cache so Explorer follow-up probes avoid extra stat calls.
-        foreach (var e in entries)
+        if (_enableMetadataCache)
         {
-            _entryCache["N|" + e.FullPath] = new CachedEntry(nowUtc, e);
+            _dirCache[cacheKey] = new CachedDirectory(nowUtc, dirStamp, entries);
+            // Prime non-reparse cache so Explorer follow-up probes avoid extra stat calls.
+            foreach (var e in entries)
+            {
+                _entryCache["N|" + e.FullPath] = new CachedEntry(nowUtc, e);
+            }
         }
         QueueThumbnailPrefetch(entries);
         if (_enableLocalMirrorCache)
@@ -2206,7 +2214,7 @@ internal sealed class BrokerPassthroughFileSystem : FileSystemBase
     private bool TryGetEntryCached(string fullPath, bool resolveReparse, out Entry entry)
     {
         var cacheKey = (resolveReparse ? "R|" : "N|") + fullPath;
-        if (_entryCache.TryGetValue(cacheKey, out var cached))
+        if (_enableMetadataCache && _entryCache.TryGetValue(cacheKey, out var cached))
         {
             if ((DateTimeOffset.UtcNow - cached.CreatedUtc) <= EntryCacheTtl)
             {
@@ -2218,7 +2226,10 @@ internal sealed class BrokerPassthroughFileSystem : FileSystemBase
 
         if (TryCreateEntry(fullPath, out entry, resolveReparse))
         {
-            _entryCache[cacheKey] = new CachedEntry(DateTimeOffset.UtcNow, entry);
+            if (_enableMetadataCache)
+            {
+                _entryCache[cacheKey] = new CachedEntry(DateTimeOffset.UtcNow, entry);
+            }
             return true;
         }
 

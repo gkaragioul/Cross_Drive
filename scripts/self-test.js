@@ -154,6 +154,12 @@ if (!nativeBrokerProgram.includes('DeletePathWithRetry') || !nativeBrokerProgram
   pass('NativeBroker logs and retries passthrough delete cleanup');
 }
 
+if (!nativeBrokerProgram.includes('MACMOUNT_ENABLE_UNC_METADATA_CACHE') || !nativeBrokerProgram.includes('_enableMetadataCache && _dirCache')) {
+  fail('NativeBroker can serve stale WSL passthrough metadata cache');
+} else {
+  pass('NativeBroker disables WSL passthrough metadata cache by default');
+}
+
 assertDependencyMajor('dependencies', 'express', 5);
 assertDependencyMajor('devDependencies', 'electron', 42);
 assertDependencyMajor('devDependencies', 'electron-builder', 26);
