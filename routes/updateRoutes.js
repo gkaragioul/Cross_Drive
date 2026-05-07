@@ -213,23 +213,25 @@ module.exports = function mountUpdateRoutes(app, ctx) {
     // Verbatim port of MyLocalBackup.Core/Services/UpdateService.cs:399-415.
     // Sleep 2s -> run installer (full UI, no /passive) -> wait -> launch new app.
     const escSingle = (s) => String(s).replace(/'/g, "''");
-    const newApp = `${process.env.LOCALAPPDATA}\\Programs\\GKMacOpener\\GKMacOpener.exe`;
     return [
       `$installer = '${escSingle(installerPath)}'`,
-      `$oldApp = '${escSingle(oldExePath)}'`,
-      `$newApp = '${escSingle(newApp)}'`,
       `Start-Sleep -Seconds 2`,
-      // Belt-and-braces: kill any spawned native helpers that survived the
-      // Electron parent's app.quit(). Without this they hold file locks on
-      // their own .exe inside the install folder and the installer fails to
-      // overwrite them. NSIS's customInit macro does the same (see
-      // build/installer.nsh) — duplicating here so older installs can still
-      // upgrade cleanly.
+      // Kill spawned native helpers (broker/service/user-session) and any
+      // residual Electron process so the installer can replace files in the
+      // install folder. NSIS's customInit macro does the same (see
+      // build/installer.nsh); keeping it here too so installs triggered
+      // from older deployed builds upgrade cleanly.
       `Get-Process -Name GKMacOpener,MacMount.NativeBroker,MacMount.NativeService,MacMount.UserSessionHelper -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue`,
       `Start-Sleep -Seconds 1`,
-      `try { $proc = Start-Process $installer -Wait -PassThru } catch { $proc = $null }`,
-      `if (Test-Path $newApp) { Start-Process $newApp }`,
-      `elseif (Test-Path $oldApp) { Start-Process $oldApp }`,
+      // Launch the installer:
+      // - No -Wait: NSIS handles app relaunch via `runAfterFinish: true`,
+      //   and -Wait was returning early when NSIS spawned its elevated
+      //   re-launch, leaving the helper to fall through to the (now
+      //   killed) old exe path which silently failed.
+      // - -WindowStyle Normal explicitly resets any hidden-window flag
+      //   inherited from the spawned-detached PS host so the wizard UI
+      //   actually shows.
+      `Start-Process -FilePath $installer -WindowStyle Normal`,
       `Remove-Item $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue`
     ].join('\r\n');
   }

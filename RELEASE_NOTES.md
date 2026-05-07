@@ -3,13 +3,11 @@
 
 ## Summary
 
-UI tweaks. Adds developer attribution to the About surfaces and a permanent "Check for updates" entry point in the sidebar so the auto-update flow doesn't depend solely on the launch-time check or the Settings page.
+Fixes the in-app update flow ending with the app silently closing and no installer wizard appearing. The PowerShell relaunch helper was using `Start-Process -Wait`, which returned prematurely when NSIS spawned its elevated child, then triggered the post-install fallback against the just-killed old exe path. v1.5.8 launches the installer detached with an explicit normal window style and lets NSIS' `runAfterFinish` handle relaunch.
 
 ## Notable changes
 
-- **About dialog (Help → About GKMacOpener):** new line "Developed by George Karagioules".
-- **Settings → About card:** new "Developed by" row showing the same.
-- **Sidebar:** new footer pinned to the bottom of the left nav. Shows the current version. Button says "Check for updates" by default; flips to a primary "Update to vX.Y.Z" button when an update is available, opening the update modal directly.
+- **Updater (PowerShell relaunch helper):** `Start-Process -FilePath $installer -WindowStyle Normal` (no `-Wait`, no post-launch fallback). The wizard UI now displays reliably; the new app launches via NSIS Finish-page checkbox after the install completes.
 
 ## Where to download
 
