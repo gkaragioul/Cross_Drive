@@ -1,6 +1,7 @@
 const { exec } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const pkg = require('../package.json');
 
 module.exports = function mountSystemRoutes(app, ctx) {
     const {
@@ -32,6 +33,7 @@ module.exports = function mountSystemRoutes(app, ctx) {
             wslSetup: setupState.wslSetup || null,
             elevated: !!isAdmin?.(),
             rawDiskAccess: !!hasRawDiskAccess?.(),
+            version: pkg.version,
             runtime: {
                 mountMode: RUNTIME_MOUNT_MODE,
                 nativeMountEnabled: RUNTIME_NATIVE_MOUNT_ENABLED,

@@ -128,7 +128,12 @@ export default function UpdateModal({ update, onClose }) {
             <button className="btn btn-outline" style={{ width: 'auto' }} disabled>Launching installer...</button>
           )}
           {phase === 'error' && (
-            <button className="btn btn-outline" style={{ width: 'auto' }} onClick={onClose}>Close</button>
+            <>
+              {error && !error.includes('Integrity check') && (
+                <button className="btn btn-primary" style={{ width: 'auto' }} onClick={startDownload}>Retry</button>
+              )}
+              <button className="btn btn-outline" style={{ width: 'auto' }} onClick={onClose}>Close</button>
+            </>
           )}
         </div>
       </div>

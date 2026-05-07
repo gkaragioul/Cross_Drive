@@ -87,7 +87,7 @@ const SettingsRow = ({ label, value }) => (
   </div>
 );
 
-const APP_VERSION = '1.5.2';
+const APP_VERSION_FALLBACK = '1.5.2';
 const COPYRIGHT_NOTICE = 'Copyright (c) 2026 GKMacOpener contributors';
 const WINFSP_NOTICE = 'WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos';
 
@@ -448,7 +448,7 @@ const App = () => {
 
       <h3 style={{ marginTop: '24px', marginBottom: '12px', opacity: 0.5, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '2.5px', fontFamily: 'var(--font-heading)', color: 'var(--primary)' }}>Updates</h3>
       <div style={{ background: '#0e0e0e', border: '1px solid var(--border)', padding: '16px' }}>
-        <SettingsRow label="Installed Version" value={APP_VERSION} />
+        <SettingsRow label="Installed Version" value={setup?.version || APP_VERSION_FALLBACK} />
         <SettingsRow label="Latest Available" value={update?.available ? update.version : (update ? 'Up to date' : 'Unknown')} />
         <SettingsRow label="Last Check" value={lastCheckedAt ? lastCheckedAt.toLocaleString() : '—'} />
         <div style={{ marginTop: '12px', display: 'flex', gap: '8px' }}>
@@ -495,7 +495,7 @@ const App = () => {
       <h3 style={{ marginTop: '24px', marginBottom: '12px', opacity: 0.5, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '2.5px', fontFamily: 'var(--font-heading)', color: 'var(--primary)' }}>About</h3>
       <div style={{ background: '#0e0e0e', border: '1px solid var(--border)', padding: '16px' }}>
         <SettingsRow label="App" value="GKMacOpener" />
-        <SettingsRow label="Version" value={APP_VERSION} />
+        <SettingsRow label="Version" value={setup?.version || APP_VERSION_FALLBACK} />
         <SettingsRow label="License" value="MIT" />
         <SettingsRow label="Copyright" value={COPYRIGHT_NOTICE} />
         <div style={{ padding: '12px 0 0', color: 'var(--text-dim)', fontSize: '12px', lineHeight: 1.6 }}>
