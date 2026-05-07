@@ -248,9 +248,17 @@ module.exports = function mountUpdateRoutes(app, ctx) {
     const helperPath = path.join(os.tmpdir(), `gkmo_relaunch_${crypto.randomUUID()}.ps1`);
     fs.writeFileSync(helperPath, buildRelaunchScript(installerPath, oldExe), 'utf8');
 
+    // Launch via `cmd /c start "" /B`. This is critical on Windows: Electron
+    // places its child processes in a Job Object, and Windows terminates all
+    // processes in the job when Electron exits — even those spawned with
+    // `detached: true` (Node doesn't set CREATE_BREAKAWAY_FROM_JOB on
+    // Windows). `start` re-spawns through cmd, breaking the new process out
+    // of Electron's job so the helper survives `app.quit()` long enough to
+    // launch the installer.
     const child = spawn(
-      'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', helperPath],
+      'cmd.exe',
+      ['/c', 'start', '""', '/B', 'powershell.exe',
+       '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', helperPath],
       { detached: true, stdio: 'ignore', windowsHide: true }
     );
     child.unref();
