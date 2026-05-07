@@ -569,8 +569,12 @@ async function ensureWslKeepAlive(logFn = () => {}, mountNamespace = 'user') {
 
         _wslElevatedKeepAlivePromise = runWsl([
             '-d', WSL_DISTRO, '-u', 'root', '--', 'bash', '-lc',
-            "pgrep -f macmount-elevated-keepalive >/dev/null 2>&1 || nohup bash -lc 'exec -a macmount-elevated-keepalive sleep 2147483647' >/dev/null 2>&1 &"
-        ], { timeout: 10000, maxBuffer: 65536 }).then(() => {
+            // `disown` makes the backgrounded job fully detached so it survives
+            // bash's exit on every bash version. The 60s timeout covers cold
+            // WSL VM starts when the distro is in `Stopped` state and has to
+            // boot the custom kernel + load modules before our command runs.
+            "pgrep -f macmount-elevated-keepalive >/dev/null 2>&1 || { nohup bash -lc 'exec -a macmount-elevated-keepalive sleep 2147483647' >/dev/null 2>&1 & disown; }"
+        ], { timeout: 60000, maxBuffer: 65536 }).then(() => {
             _wslElevatedKeepAliveStarted = true;
             return true;
         }).catch((err) => {

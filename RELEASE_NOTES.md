@@ -3,12 +3,12 @@
 
 ## Summary
 
-Adds a **Refresh** button on each mounted drive card to clear stale kernel directory state after heavy writes. Workaround for a known Linux `hfsplus.ko` + WSL2 9P issue where deleting a folder via Explorer can leave one file behind because the kernel's catalog B-tree iterator loses an entry while files are unlinked under it.
+Fix for "Could not mount" failures right after a Windows reboot or WSL `--shutdown`. The first mount attempt timed out at 10 seconds because cold-starting the WSL VM with the custom kernel took longer than the keep-alive call's timeout.
 
 ## Notable changes
 
-- **Drive card → Refresh button:** unmounts the drive, waits 800ms for the kernel/9P side to release, then remounts it. The drive letter and contents come back exactly as they were. One click; ~3-5 seconds.
-- **When to use:** if a folder delete on a mounted drive leaves a single file stranded, click Refresh and try the delete again.
+- **Mount keep-alive (`scripts/wslMountClient.js`):** raise the elevated-keep-alive timeout from 10s → 60s to cover cold WSL VM starts. Add explicit `disown` to the bash command so the keep-alive job is fully detached on every bash version.
+- **Workaround if you hit it on an older build:** open a terminal, run `wsl.exe -d Ubuntu -- echo warm`, then click Mount again.
 
 ## Where to download
 
