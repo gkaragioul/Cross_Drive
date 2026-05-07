@@ -4,6 +4,14 @@
   "description": "Mac-formatted drive manager for Windows with local drive-letter mounting.",
   "author": "GKMacOpener contributors",
   "license": "MIT",
+  "homepage": "https://github.com/georgekgr12/GK_Mac_Opener",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/georgekgr12/GK_Mac_Opener.git"
+  },
+  "bugs": {
+    "url": "https://github.com/georgekgr12/GK_Mac_Opener/issues"
+  },
   "main": "main.js",
   "scripts": {
     "dev": "node ./node_modules/vite/bin/vite.js --port 5173 --strictPort",
@@ -131,6 +139,10 @@
       {
         "from": "build/GPL_SOURCE_OFFER.txt",
         "to": "GPL_SOURCE_OFFER.txt"
+      },
+      {
+        "from": "build/LICENSE.GPL-2.0.txt",
+        "to": "LICENSE.GPL-2.0.txt"
       },
       {
         "from": "LICENSE",

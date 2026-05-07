@@ -16,34 +16,53 @@ GPL license.
 How to Obtain Source
 --------------------
 
-The public repository includes a GPL source manifest at:
+1. The official GKMacOpener source repository is:
 
-docs/GPL_SOURCE_MANIFEST.md
+       https://github.com/georgekgr12/GK_Mac_Opener
 
-The official GKMacOpener release notes or repository documentation must also
-record the exact upstream source revisions, configuration, patches, and build
-scripts used for every GPL-covered binary included in that release.
+   It contains a GPL source manifest at:
 
-If the corresponding source is not already published in the GKMacOpener
-repository, request it through the support or issue tracker published with the
-official GKMacOpener repository. The project may fulfill the request by
-providing a durable download link, source archive, or public repository.
+       docs/GPL_SOURCE_MANIFEST.md
 
-Any fee charged for physical distribution will not exceed the reasonable cost
-of providing the source.
+   That manifest records the exact upstream source revisions, configuration,
+   patches, and build scripts used for every GPL-covered binary included in
+   each release.
+
+2. If the corresponding source for a GPL-covered binary you received is not
+   already present in the repository above, request it by opening an issue at:
+
+       https://github.com/georgekgr12/GK_Mac_Opener/issues
+
+   The request will be fulfilled by providing a durable download link, a
+   source archive, or a public repository containing the complete
+   corresponding source.
+
+3. Any fee charged for physical distribution of source on a medium will not
+   exceed the reasonable cost of physically performing source distribution,
+   in line with the applicable GPL license terms.
 
 Duration
 --------
 
-This offer is valid for at least three years from distribution of the
-corresponding binary, and for as long as GKMacOpener offers support for that
-release, whichever is longer.
+This offer is valid for at least three years from the date of distribution
+of the corresponding binary, and for as long as GKMacOpener offers support
+or spare parts for that release, whichever is longer. This offer is valid to
+any third party in receipt of the binary, regardless of how they obtained it.
 
 Reference License Text
 ----------------------
 
-GNU GPL version 2:
-https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
+A copy of the GNU General Public License, version 2 is distributed
+alongside this offer in the file:
 
-GNU GPL version 3:
-https://www.gnu.org/licenses/gpl-3.0.txt
+    LICENSE.GPL-2.0.txt
+
+The same text is also published online at:
+
+    https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
+
+The GNU General Public License, version 3 (relevant to bundled
+WinFsp distributions, which include their own license inside the
+unmodified WinFsp installer) is published online at:
+
+    https://www.gnu.org/licenses/gpl-3.0.txt

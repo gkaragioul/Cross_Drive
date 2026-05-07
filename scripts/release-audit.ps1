@@ -221,6 +221,32 @@ $checks += [pscustomobject]@{
     Detail = $gplManifestPath
 }
 
+$gplLicensePath = Join-Path $root "build\LICENSE.GPL-2.0.txt"
+$gplLicenseText = if (Test-Path $gplLicensePath) { Get-Content $gplLicensePath -Raw } else { "" }
+$checks += [pscustomobject]@{
+    Check = "GPL-2.0 license text bundled"
+    Passed = (Test-Path $gplLicensePath) -and
+             ($gplLicenseText -match "GNU GENERAL PUBLIC LICENSE") -and
+             ($gplLicenseText -match "Version 2")
+    Detail = $gplLicensePath
+}
+
+$gplOfferText = if (Test-Path (Join-Path $root "build\GPL_SOURCE_OFFER.txt")) {
+    Get-Content (Join-Path $root "build\GPL_SOURCE_OFFER.txt") -Raw
+} else { "" }
+$checks += [pscustomobject]@{
+    Check = "GPL written offer names a real source channel"
+    Passed = ($gplOfferText -match "github\.com/georgekgr12/GK_Mac_Opener")
+    Detail = "build\GPL_SOURCE_OFFER.txt"
+}
+
+$ffmpegNoticed = ($noticeText -match "(?ms)FFmpeg.*ffmpeg\.dll.*LGPL")
+$checks += [pscustomobject]@{
+    Check = "FFmpeg LGPL attribution in third-party notices"
+    Passed = $ffmpegNoticed
+    Detail = $noticePath
+}
+
 $kernelPath = Join-Path $root "prereqs\macmount-kernel\wsl_kernel"
 $checks += [pscustomobject]@{
     Check = "Bundled WSL kernel"

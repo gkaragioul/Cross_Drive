@@ -96,6 +96,10 @@ function installAppMenu() {
                 label: 'GPL Source Offer',
                 click: () => openLegalFile('GPL_SOURCE_OFFER.txt', 'GPL Source Offer')
             },
+            {
+                label: 'GNU GPL v2 (kernel + modules)',
+                click: () => openLegalFile('LICENSE.GPL-2.0.txt', 'GNU GPL v2')
+            },
             { type: 'separator' },
             {
                 label: `${APP_NAME} License (MIT)`,

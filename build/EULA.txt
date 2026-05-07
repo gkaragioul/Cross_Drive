@@ -50,5 +50,11 @@ source information is provided in GPL_SOURCE_OFFER.txt.
 Contact
 -------
 
-For licensing inquiries, use the support or issue tracker published with the
-official GKMacOpener repository.
+GKMacOpener is developed at:
+
+    https://github.com/georgekgr12/GK_Mac_Opener
+
+For licensing inquiries, GPL source-code requests, or other legal questions,
+open an issue at:
+
+    https://github.com/georgekgr12/GK_Mac_Opener/issues
