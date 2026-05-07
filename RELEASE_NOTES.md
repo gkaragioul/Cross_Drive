@@ -3,11 +3,12 @@
 
 ## Summary
 
-Hotfix on top of v1.5.3: the Start Menu / Desktop shortcuts now show the GKMacOpener app icon instead of a blank Windows shortcut icon. v1.5.3 introduced the new logo for the installer + taskbar but accidentally shipped the application executable without the icon embedded into its resources.
+Reliability hotfix for the in-app updater. v1.5.3/v1.5.4 could leave the upgrade installer crashing partway through file replacement, because the native broker/service/user-session helpers (spawned by Electron via `child_process.spawn`) survived the parent's quit and held file locks on their own .exe files inside the install folder. v1.5.5 makes the installer self-protective.
 
 ## Notable changes
 
-- **Icon:** `GKMacOpener.exe` now has the new logo embedded as its icon resource. Desktop and Start Menu shortcuts created by the installer pick it up automatically.
+- **Installer:** new NSIS `customInit` and `customUnInit` macros run `taskkill /F /IM` against `GKMacOpener.exe`, `MacMount.NativeBroker.exe`, `MacMount.NativeService.exe`, and `MacMount.UserSessionHelper.exe` before any install or uninstall step. Eliminates "sharing violation" crashes during upgrade.
+- **In-app updater (PowerShell relaunch helper):** also runs `Stop-Process -Force` on the same process names before launching the installer. Belt-and-braces for installs triggered from already-deployed app builds whose helpers predate this fix.
 
 ## Where to download
 
