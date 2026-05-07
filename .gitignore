@@ -16,6 +16,10 @@ native/*/obj/
 native-bridge/bin/
 native-bridge/obj/
 
+# Extracted third-party prerequisite payloads; ship the unmodified MSI instead.
+prereqs/winfsp-extract/
+prereqs/_winfsp_rel.html
+
 # Optional shipped APFS bridge (build locally or in CI; do not commit binaries)
 native-bridge-bin/apfs-fuse.exe
 native-bridge-bin/APFS_FUSE_SOURCE_REV.txt

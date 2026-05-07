@@ -1,260 +1,132 @@
-# MacMount — Mac Drive Manager for Windows
+# GKMacOpener - Mac Drive Manager for Windows
 
-MacMount is a Windows desktop application that lets you **mount, browse, and read** APFS and HFS+ formatted Mac drives directly on Windows — exposed as real local drive letters (e.g. `M:\`, `N:\`), not network shares.
+GKMacOpener is a Windows desktop app for mounting, browsing, and copying files
+from APFS and HFS+ Mac-formatted drives. Supported volumes are exposed as local
+Windows drive letters through an Electron + React UI, a loopback Express API,
+WSL2 kernel filesystem drivers, and native Windows helper services.
 
-Built on Electron + React + .NET, with a high-performance native caching engine and WinFsp for OS-level filesystem integration.
+## Status
 
----
-
-## Table of Contents
-
-- [Features](#features)
-- [Architecture](#architecture)
-- [Prerequisites](#prerequisites)
-- [Development Setup](#development-setup)
-- [Build & Release](#build--release)
-- [Mount Modes](#mount-modes)
-- [Project Structure](#project-structure)
-- [Commercial Readiness](#commercial-readiness)
-- [Known Limitations](#known-limitations)
-- [License](#license)
-
----
-
-## Features
-
-| Feature | Status |
-|---|---|
-| APFS read support | Stable |
-| HFS+ read support | Stable |
-| APFS write support | Experimental |
-| Local drive-letter mounting (e.g. `M:\`) | Stable |
-| WinFsp filesystem integration | Stable |
-| High-performance native caching engine | Stable |
-| Multi-tier block + directory cache | Stable |
-| Read-ahead prefetching | Stable |
-| Native bridge fallback path | In progress |
-| Native .NET raw disk service | Stable |
-| Electron UI + real-time dashboard | Stable |
-| Unsigned dev installer | Stable |
-
-### Performance highlights
-
-- **Block-level caching** — 64 KB–512 KB blocks with LRU eviction
-- **Directory entry caching** — fast repeated directory listings with automatic invalidation
-- **Read-ahead prefetching** — predictive sequential load for large file access
-- **Async I/O** — non-blocking operations keep the UI responsive
-- **Zero-allocation reads** — `ArrayPool` recycling on small files
-
----
-
-## Architecture
-
-```
-┌──────────────────────────────────┐
-│  Electron Shell  (main.js)       │  Admin UAC elevation at launch
-│  React UI  (src/)                │  Vite dev server / bundled dist/
-│  Express API  (server.js :3001)  │  Routes: drive / mount / native / system
-└────────────┬─────────────────────┘
-             │ IPC / HTTP (localhost only)
-    ┌────────▼──────────┐    ┌─────────────────────┐
-    │  MacMount.Native  │    │  MacMount.RawDisk   │
-    │  Service (.NET)   │    │  Engine (.NET)      │
-    │  Named-pipe IPC   │    │  Direct disk I/O    │
-    └────────┬──────────┘    └─────────────────────┘
-             │
-    ┌────────▼──────────┐
-    │  WinFsp / Bridge  │  OS-level filesystem host + native fallback
-    └───────────────────┘
-```
-
-**Mount modes** (selectable at runtime via `MACMOUNT_MOUNT_MODE`):
-
-| Mode | Description |
-|---|---|
-| `wsl_kernel` | Default. Mount through WSL2 kernel drivers, then expose the mount as a Windows drive letter |
-| `native_first` | Debug fallback. Try the raw-disk provider first, then fall back to the native bridge path when available |
-| `native_only` | Raw-disk provider only. Disables the native bridge fallback path |
-
----
-
-## Prerequisites
-
-| Requirement | Notes |
-|---|---|
-| **Windows 10/11 64-bit** | Latest cumulative updates recommended |
-| **Administrator privileges** | Required for raw disk access (`\\.\PHYSICALDRIVE#`) |
-| **[WinFsp](https://github.com/winfsp/winfsp/releases)** | v1.10 or later — provides FUSE kernel driver |
-| **Node.js 20+** | For development only |
-| **[.NET 8 SDK](https://dotnet.microsoft.com/download)** | For building native services |
-
----
-
-## Development Setup
-
-```bash
-# 1. Install JS dependencies
-npm install
-
-# 2. Build native .NET services
-npm run native:build   # MacMount.NativeService
-npm run raw:build      # MacMount.RawDiskEngine
-npm run broker:build   # MacMount.NativeBroker
-
-# 3. Start dev server + Electron
-npm run start
-```
-
-The Vite dev server starts on `http://localhost:5173` and Electron loads it automatically. The Express backend starts on `http://127.0.0.1:3001` (loopback-only).
-
-### Available scripts
-
-| Script | Purpose |
-|---|---|
-| `npm run start` | Dev mode: Vite + Electron in parallel |
-| `npm run start:prod` | Production build then launch |
-| `npm run build` | Vite production bundle |
-| `npm run test` | Self-test suite (Electron hardening, config checks) |
-| `npm run security:audit` | Dependency vulnerability scan |
-| `npm run commercial:gate` | Validate release documentation presence |
-| `npm run native:publish` | Publish all .NET binaries to `native/bin/` |
-| `npm run release:prep` | `native:publish` + `build` |
-| `npm run release:win:full` | Build NSIS installer + portable `.exe` without signing |
-| `npm run release:win:unsigned` | Unsigned Windows build for local/dev distribution |
-| `npm run release:win:dev` | Alias for `release:win:unsigned` |
-| `npm run release:gate` | End-to-end gate: test + audit + signing |
-| `npm run release:candidate` | Full production release pipeline |
-| `npm run signing:setup:real` | Configure real Authenticode certificate |
-| `npm run signing:verify` | Validate signing environment |
-
----
-
-## Build & Release
-
-### Local / unsigned build
-
-```bash
-npm run release:win:unsigned
-```
-
-Outputs unsigned installer and portable artifacts to `dist/`.
-
-### Optional signed production build
-
-```bash
-# 1. Configure certificate
-npm run signing:setup:real -- -PfxPath "C:\secure\MacMount-Prod.pfx" -PfxPassword "YOUR_PASSWORD"
-
-# 2. Build and sign
-npm run release:win:signed
-
-# 3. Full release gate (recommended on the release machine)
-npm run release:candidate
-```
-
-Env vars accepted for CI:
-
-```
-CSC_LINK              Path or base64 blob of the PFX
-CSC_KEY_PASSWORD      PFX passphrase
-WIN_CSC_LINK          (optional) Windows-specific override
-WIN_CSC_KEY_PASSWORD  (optional) Windows-specific passphrase
-```
-
-Place the offline WinFsp installer at `prereqs/winfsp.msi` before building the full installer so it is bundled for end-user machines without internet access.
-
----
-
-## Mount Modes
-
-Configure via environment variable before launching:
-
-```powershell
-# Default: WSL2 kernel-backed drive-letter mount
-$env:MACMOUNT_MOUNT_MODE = "wsl_kernel"
-
-# Debug fallback: raw provider first, then native bridge fallback if present
-$env:MACMOUNT_MOUNT_MODE = "native_first"
-
-# Debug fallback: raw provider only
-$env:MACMOUNT_MOUNT_MODE = "native_only"
-```
-
----
-
-## Project Structure
-
-```
-Mac_Opener/
-├── main.js                  Electron main process, UAC elevation, window lifecycle
-├── server.js                Express API server (port 3001, loopback-only)
-├── preload.js               Electron preload bridge (context-isolated)
-├── vite.config.js           Vite bundler config
-├── package.json             Dependencies, scripts, electron-builder config
-│
-├── src/                     React UI (Vite)
-│   ├── App.jsx              Root component + dashboard
-│   ├── main.jsx             React entry point
-│   └── App.css / index.css  Styling
-│
-├── routes/                  Express route modules
-│   ├── driveRoutes.js       Physical disk enumeration
-│   ├── mountRoutes.js       Mount / unmount operations
-│   ├── nativeRoutes.js      Native service IPC bridge
-│   └── systemRoutes.js      Health, logs, setup status
-│
-├── scripts/                 Build, release, signing, and utility scripts
-│
-├── native/                  .NET projects
-│   ├── MacMount.NativeService/   Named-pipe filesystem service
-│   ├── MacMount.RawDiskEngine/   Low-level APFS/HFS+ parser + disk I/O
-│   └── MacMount.NativeBroker/    Privileged broker for UAC-separated ops
-│
-├── docs/                    Commercial readiness documentation
-│   ├── COMMERCIAL_READINESS.md
-│   ├── GO_NO_GO.md
-│   ├── RISK_REGISTER.md
-│   └── SUPPORT_RUNBOOK.md
-│
-├── prereqs/                 Bundled redistributables (e.g. winfsp.msi)
-├── public/                  Static assets served by Vite
-└── build/                   Electron-builder resources (EULA, icons)
-```
-
----
-
-## Commercial Readiness
-
-Current status: **development-only / unsigned distribution ready, not public GA ready.**
-
-Blocking items before general availability:
-
-1. Configure a real Authenticode code-signing certificate (`CSC_LINK` / `WIN_CSC_LINK`).
-2. Produce and verify a `Valid` signed installer artifact (`npm run release:gate`) if you move to public distribution.
-3. Final smoke test on a clean Windows machine with a standard user workflow.
-
-See [`docs/COMMERCIAL_READINESS.md`](docs/COMMERCIAL_READINESS.md) and [`docs/GO_NO_GO.md`](docs/GO_NO_GO.md) for the full release gate matrix and approval checklist.
-
-### SLO targets (post-GA)
-
-| Metric | Target |
-|---|---|
-| App launch to usable UI | ≤ 5 s on reference hardware |
-| Mount success rate | ≥ 99% on supported hardware |
-| Crash-free sessions | ≥ 99.5% |
-| Support diagnostics bundle | ≤ 2 minutes to collect |
-
----
-
-## Known Limitations
-
-- **APFS write support is experimental.** Always keep backups before writing to an APFS volume.
-- **Administrator rights are mandatory.** Raw `\\.\PHYSICALDRIVE#` access is not available to standard users.
-- **WinFsp must be installed** before the native mount engine will work. The full installer bundles WinFsp automatically; dev setups require manual installation.
-- **The raw APFS provider is still incomplete.** Some APFS volumes may expose only partial metadata or preview trees until parser work is finished.
-
----
+GKMacOpener is pre-GA. APFS write support is experimental and disabled by
+default unless `MACMOUNT_EXPERIMENTAL_APFS_WRITES=1` is set. CoreStorage /
+FileVault 1 is detected but explicitly unsupported.
 
 ## License
 
-MIT — see [LICENSE](LICENSE) for details.
+GKMacOpener is Free/Libre/Open Source Software distributed under the MIT
+License. See [LICENSE](LICENSE).
+
+Copyright (c) 2026 GKMacOpener contributors.
+
+## Third-Party Notices
+
+Binary distributions include third-party components under their own terms. See:
+
+- `build/THIRD_PARTY_NOTICES.txt`
+- `build/GPL_SOURCE_OFFER.txt`
+
+Required WinFsp attribution:
+
+WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos
+
+https://github.com/winfsp/winfsp
+
+GKMacOpener uses the WinFsp FLOSS exception path by distributing the app under
+MIT and shipping the unmodified WinFsp installer. Do not distribute
+GKMacOpener as proprietary software with WinFsp unless you have a separate
+commercial WinFsp license.
+
+## Architecture
+
+```text
+Electron main process -> Express API on 127.0.0.1:3001
+React UI              -> polls local API for drive state
+WSL2 kernel path      -> primary APFS/HFS/HFS+ mount path
+.NET native helpers   -> broker, service, and user-session drive mapping
+WinFsp                -> Windows presentation/fallback support
+```
+
+Mount modes are controlled by `MACMOUNT_MOUNT_MODE`:
+
+- `wsl_kernel` - default production path.
+- `native_first` - debug fallback, native raw provider first.
+- `native_only` - debug fallback, disables WSL/native bridge fallback.
+
+## Requirements
+
+- Windows 10/11 64-bit
+- Administrator privileges
+- WSL2 with Ubuntu for the primary kernel mount path
+- WinFsp runtime, bundled as `prereqs/winfsp.msi` for installers
+- Node.js 20+ for development
+- .NET 9 SDK for native builds
+
+## Development
+
+```bash
+npm install
+npm run start
+```
+
+The Vite dev server runs on `http://localhost:5173`. The backend binds only to
+`127.0.0.1:3001`.
+
+Useful commands:
+
+```bash
+npm run test
+npm run build
+npm run security:audit
+npm run commercial:gate
+npm run native:publish
+npm run hfs:test
+npm run apfs:test
+```
+
+Native project names still use the historical `MacMount.*` namespace. Those
+names are internal implementation details and are not the public product name.
+
+## Release
+
+```bash
+npm run release:win:full
+npm run release:audit
+```
+
+Release artifacts:
+
+- `dist/GKMacOpener Setup <version>.exe`
+- `dist/GKMacOpener <version>.exe`
+
+For unsigned staging audits:
+
+```bash
+npm run release:audit:unsigned
+```
+
+For production Authenticode signing, configure a real certificate with
+`CSC_LINK` / `WIN_CSC_LINK` and matching password environment variables.
+
+## Packaging Policy
+
+The installer should ship:
+
+- unmodified `prereqs/winfsp.msi`
+- `prereqs/macmount-kernel/wsl_kernel`
+- `prereqs/macmount-kernel/modules/apfs.ko`
+- `prereqs/macmount-kernel/modules/hfs.ko`
+- `prereqs/macmount-kernel/modules/hfsplus.ko`
+- published native service, broker, and user-session helper binaries
+- `LICENSE.txt`
+- `THIRD_PARTY_NOTICES.txt`
+- `GPL_SOURCE_OFFER.txt`
+
+The installer should not ship extracted WinFsp SDK/runtime folders such as
+`prereqs/winfsp-extract`.
+
+## Known Limitations
+
+- APFS writes are experimental and hidden by default.
+- Hardware-bound APFS encryption requires the original Mac.
+- CoreStorage / FileVault 1 is unsupported for GA.
+- Final GA still requires real physical-drive validation.

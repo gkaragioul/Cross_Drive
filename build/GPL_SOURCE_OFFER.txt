@@ -1,43 +1,45 @@
-OFFER FOR SOURCE CODE — GPL-2.0-COVERED COMPONENTS
-====================================================
-MacMount may distribute object code (executable) forms of software licensed
-under the GNU General Public License, version 2 (GPL-2.0), such as a Windows
-build of APFS-FUSE commonly known as apfs-fuse.exe.
+OFFER FOR SOURCE CODE - GPL-COVERED COMPONENTS
+==============================================
 
-Under GPL-2.0 section 3, recipients of the binary are entitled to receive the
-complete corresponding source code for the GPL-covered portions.
+GKMacOpener binary distributions may include object-code forms of GPL-covered
+components, including:
 
-HOW TO OBTAIN SOURCE
+- a custom WSL2 Linux kernel binary: wsl_kernel
+- Linux filesystem kernel modules: hfsplus.ko, hfs.ko, apfs.ko
+- optional APFS-FUSE-related binaries, if a particular release explicitly
+  includes them
+
+Recipients of GPL-covered binaries are entitled to the complete corresponding
+source code for those GPL-covered portions under the terms of the applicable
+GPL license.
+
+How to Obtain Source
 --------------------
-1) Upstream reference source (unmodified baseline)
 
-   The APFS-FUSE project is widely published at:
-     https://github.com/sgan81/apfs-fuse
+The official GKMacOpener release notes or repository documentation must record
+the exact upstream source revisions, configuration, patches, and build scripts
+used for every GPL-covered binary included in that release.
 
-   Your MacMount release notes or build documentation should record the exact
-   upstream commit, tag, or archive used to produce the shipped apfs-fuse.exe.
+If the corresponding source is not already published in the GKMacOpener
+repository, request it through the support or issue tracker published with the
+official GKMacOpener repository. The project may fulfill the request by
+providing a durable download link, source archive, or public repository.
 
-2) Corresponding source for the exact binary MacMount distributed
+Any fee charged for physical distribution will not exceed the reasonable cost
+of providing the source.
 
-   That includes the upstream source at the recorded revision plus any patches,
-   build scripts, or configuration MacMount applied to produce the binary you
-   received.
-
-   If this source is not already published in a public repository maintained by
-   the MacMount publisher, you may request it using the support or legal contact
-   published on the official MacMount distribution site. The publisher may
-   fulfill the request by providing a download link or other durable means of
-   obtaining the source.
-
-   Any fee charged will not exceed the reasonable cost of distribution.
-
-DURATION
+Duration
 --------
-This offer is valid for at least three years from the date of distribution of
-the corresponding binary, and for as long as the publisher offers support or
-spare parts for the product that includes that binary, whichever is longer.
 
-FULL LICENSE TEXT
------------------
-The GNU GPL version 2 full text:
-  https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
+This offer is valid for at least three years from distribution of the
+corresponding binary, and for as long as GKMacOpener offers support for that
+release, whichever is longer.
+
+Reference License Text
+----------------------
+
+GNU GPL version 2:
+https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
+
+GNU GPL version 3:
+https://www.gnu.org/licenses/gpl-3.0.txt

@@ -2,7 +2,7 @@ const { exec } = require('child_process');
 const { promisify } = require('util');
 const fs = require('fs');
 const path = require('path');
-const { wslMountDrive, wslUnmountDrive, verifyWslMountStillAlive, findFreeDriveLetter, substMapDriveLetter } = require('../scripts/wslMountClient');
+const { wslMountDrive, wslUnmountDrive, verifyWslMountStillAlive, checkWslKeepAliveAlive, findFreeDriveLetter, substMapDriveLetter } = require('../scripts/wslMountClient');
 
 const execAsync = promisify(exec);
 const ENABLE_WSL_WINFSP_PRESENTATION = process.env.MACMOUNT_DISABLE_WSL_WINFSP !== '1';
@@ -130,6 +130,19 @@ function startWslMountMonitor(ctx) {
                 if (mountInfo?.mountType !== 'wsl_kernel') continue;
                 if (!mountInfo.wslTarget || !mountInfo.device || !mountInfo.fsType) continue;
 
+                // Check WSL keep-alive process is still running before testing individual mounts
+                try {
+                    const kaAlive = await checkWslKeepAliveAlive(mountInfo.mountNamespace || 'user');
+                    if (!kaAlive.ok) {
+                        ctx.addLog?.(
+                            `WSL keep-alive check failed: ${kaAlive.error}. WSL may have shut down — all WSL mounts at risk.`,
+                            'warning'
+                        );
+                    }
+                } catch (kaErr) {
+                    ctx.addLog?.(`WSL keep-alive check exception: ${kaErr.message}`, 'debug');
+                }
+
                 const health = await verifyWslMountStillAlive(mountInfo);
                 if (health.ok) {
                     failureCounts.delete(driveId);
@@ -184,7 +197,9 @@ function startWslMountMonitor(ctx) {
                     } catch (e) {
                         ctx.addLog?.(`WinFsp health cleanup warning for drive ${driveId}: ${e.message}`, 'warning');
                     }
-                    try { ctx.cleanupSingleDriveLetter?.(mountInfo.driveLetter); } catch {}
+                    try { ctx.cleanupSingleDriveLetter?.(mountInfo.driveLetter); } catch (e) {
+                        ctx.addLog?.(`Health cleanup letter removal failed for ${mountInfo.driveLetter}: ${e.message}`, 'debug');
+                    }
                 } else {
                     try {
                         await wslUnmountDrive(driveId, mountInfo, ctx.addLog);
@@ -229,7 +244,7 @@ module.exports = function mountMountRoutes(app, ctx) {
                 if (!hasRawDiskAccess?.()) {
                     return res.status(403).json({
                         error: 'Administrator privileges are required to attach a physical drive to WSL2.',
-                        suggestion: 'Restart MacMount as Administrator.',
+                        suggestion: 'Restart GKMacOpener as Administrator.',
                         requiresAdmin: true,
                         mode: 'wsl_kernel'
                     });
@@ -258,7 +273,7 @@ module.exports = function mountMountRoutes(app, ctx) {
                         }
                         return res.status(502).json({
                             error: presentationError.message || 'WinFsp presentation failed.',
-                            suggestion: 'MacMount could mount the Linux filesystem but could not expose it as a local Windows drive. Direct WSL fallback was intentionally skipped because it would use the wrong namespace.',
+                            suggestion: 'GKMacOpener could mount the Linux filesystem but could not expose it as a local Windows drive. Direct WSL fallback was intentionally skipped because it would use the wrong namespace.',
                             mode: 'wsl_kernel'
                         });
                     }
@@ -323,7 +338,7 @@ module.exports = function mountMountRoutes(app, ctx) {
 
                         return res.status(502).json({
                             error: `WSL mount vanished before Windows presentation completed: ${finalHealth.error}`,
-                            suggestion: 'MacMount refused to expose a stale WSL folder as a writable Windows drive. Retry mount; if this repeats, keep the drive connected and share logs.',
+                            suggestion: 'GKMacOpener refused to expose a stale WSL folder as a writable Windows drive. Retry mount; if this repeats, keep the drive connected and share logs.',
                             mode: 'wsl_kernel'
                         });
                     }
@@ -375,7 +390,7 @@ module.exports = function mountMountRoutes(app, ctx) {
                 if (RUNTIME_MOUNT_MODE === 'wsl_kernel') {
                     return res.status(502).json({
                         error: wslResult.error || 'WSL2 kernel mount failed.',
-                        suggestion: 'MacMount uses the WSL2 kernel path for writable Mac drives. Native HFS+ write fallback is disabled by default because it is not reliable for real-world copies.',
+                        suggestion: 'GKMacOpener uses the WSL2 kernel path for writable Mac drives. Native HFS+ write fallback is disabled by default because it is not reliable for real-world copies.',
                         mode: 'wsl_kernel'
                     });
                 }
@@ -390,7 +405,7 @@ module.exports = function mountMountRoutes(app, ctx) {
                     try { cleanupGhostDriveLetters?.(); } catch {}
                     return res.status(403).json({
                         error: 'Administrator privileges are required for raw disk access.',
-                        suggestion: 'Restart MacMount as Administrator so it can open physical drives and mount them properly.',
+                        suggestion: 'Restart GKMacOpener as Administrator so it can open physical drives and mount them properly.',
                         requiresAdmin: true,
                         mode: RUNTIME_MOUNT_MODE
                     });

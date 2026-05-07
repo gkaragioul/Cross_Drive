@@ -366,7 +366,7 @@ async function attachPhysicalDriveToWsl(driveId) {
             return { ok: true, alreadyAttached: true };
         }
         if (/elevation needed|elevated|administrator/i.test(msg)) {
-            return { ok: false, error: 'wsl --mount requires Administrator. Restart MacMount as Administrator.', needsAdmin: true };
+            return { ok: false, error: 'wsl --mount requires Administrator. Restart GKMacOpener as Administrator.', needsAdmin: true };
         }
         return { ok: false, error: `wsl --mount failed: ${msg.trim().slice(0, 400)}` };
     }
@@ -474,7 +474,7 @@ async function wslMountDrive(driveId, password = null, logFn = () => {}, options
     const validated = await validateWslMountTarget(wslTarget, parsed.device, parsed.fsType, mountNamespace);
     if (!validated.ok) {
         return {
-            error: `WSL mount validation failed after mount: ${validated.error}. MacMount refused to expose a stale folder as a Windows drive.`
+            error: `WSL mount validation failed after mount: ${validated.error}. GKMacOpener refused to expose a stale folder as a Windows drive.`
         };
     }
 
@@ -620,6 +620,28 @@ function stopWslKeepAlive() {
 }
 
 /**
+ * Check whether the WSL keep-alive process is still running inside the VM.
+ * If WSL shuts down, the `sleep` process dies and all kernel mounts are lost,
+ * but the app may still think drives are mounted. This probe catches that.
+ */
+async function checkWslKeepAliveAlive(mountNamespace = 'user') {
+    const procName = mountNamespace === 'elevated' ? 'macmount-elevated-keepalive' : 'macmount-keepalive';
+    try {
+        const { stdout } = await runWsl([
+            '-d', WSL_DISTRO, '-u', 'root', '--', 'sh', '-lc',
+            `pgrep -f ${procName} >/dev/null 2>&1 && echo alive || echo dead`
+        ], { timeout: 8000, maxBuffer: 65536 });
+        const result = String(stdout || '').trim();
+        if (result === 'alive') return { ok: true };
+        // Keep-alive process missing — attempt restart
+        const restarted = await ensureWslKeepAlive(() => {}, mountNamespace);
+        return { ok: restarted, error: restarted ? 'keep-alive restarted' : 'keep-alive restart failed' };
+    } catch (err) {
+        return { ok: false, error: `WSL unreachable: ${String(err.message || err).slice(0, 200)}` };
+    }
+}
+
+/**
  * Quick health check — verify WSL2 is up, Ubuntu present, custom kernel loaded.
  */
 async function checkWslHealth() {
@@ -644,6 +666,7 @@ module.exports = {
     detachPhysicalDriveFromWsl,
     checkWslHealth,
     ensureWslKeepAlive,
+    checkWslKeepAliveAlive,
     verifyWslMountStillAlive,
     stopWslKeepAlive,
     findFreeDriveLetter,

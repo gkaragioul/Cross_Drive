@@ -50,7 +50,7 @@ verify_mount() {
 
     if ! mountpoint -q "$target" 2>/dev/null; then
         rmdir "$target" 2>/dev/null || true
-        fail "Mounted path verification failed: $target is not a mountpoint. MacMount refused to expose a stale WSL folder as a Windows drive."
+        fail "Mounted path verification failed: $target is not a mountpoint. GKMacOpener refused to expose a stale WSL folder as a Windows drive."
     fi
 
     actual_device=$(findmnt -rn -T "$target" -o SOURCE 2>/dev/null | head -n 1)

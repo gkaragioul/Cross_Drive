@@ -1,8 +1,8 @@
-# AGENTS.md — MacMount
+# AGENTS.md - GKMacOpener
 
 ## Project Overview
 
-MacMount is a Windows desktop app for mounting, browsing, and reading/writing APFS/HFS+ Mac drives on Windows as real local drive letters. Built on Electron + React + WSL2 kernel filesystem drivers, with the legacy .NET/WinFsp path kept as a fallback.
+GKMacOpener is a Windows desktop app for mounting, browsing, and reading/writing APFS/HFS+ Mac drives on Windows as real local drive letters. Built on Electron + React + WSL2 kernel filesystem drivers, with the legacy .NET/WinFsp path kept as a fallback.
 
 **Status:** Pre-GA. APFS write is experimental. Code-signing certificate not yet configured.
 
@@ -64,7 +64,7 @@ native/
   MacMount.HfsWriteTest/    .NET HFS+ write test harness (file-backed, no real disk)
 native-bridge/       WinFsp port roadmap (future)
 docs/                Commercial readiness docs (GO_NO_GO, RISK_REGISTER, etc.)
-.github/workflows/   CI (macmount-ci.yml) + release (macmount-release.yml)
+.github/workflows/   CI (gkmacopener-ci) + release (gkmacopener-release)
 ```
 
 ## Development Commands
@@ -100,8 +100,8 @@ npm run release:candidate    # Full production release pipeline
 
 ## CI/CD
 
-- **CI workflow** (`macmount-ci.yml`): Runs on all pushes/PRs. Node 20, .NET 9. Steps: npm ci, self-test, security audit, commercial gate, unsigned build, release audit.
-- **Release workflow** (`macmount-release.yml`): Triggered by `v*` tags or manual dispatch. Requires `MACMOUNT_PFX_BASE64` and `MACMOUNT_PFX_PASSWORD` secrets for code signing.
+- **CI workflow** (`gkmacopener-ci`): Runs on all pushes/PRs. Node 20, .NET 9. Steps: npm ci, self-test, security audit, commercial gate, unsigned build, release audit.
+- **Release workflow** (`gkmacopener-release`): Triggered by `v*` tags or manual dispatch. Requires signing certificate secrets for code signing.
 
 ## Key Conventions
 

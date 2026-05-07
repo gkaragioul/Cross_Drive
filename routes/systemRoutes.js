@@ -29,8 +29,15 @@ module.exports = function mountSystemRoutes(app, ctx) {
     app.get('/api/status', (req, res) => {
         res.json({
             ...setupState,
+            wslSetup: setupState.wslSetup || null,
             elevated: !!isAdmin?.(),
-            rawDiskAccess: !!hasRawDiskAccess?.()
+            rawDiskAccess: !!hasRawDiskAccess?.(),
+            runtime: {
+                mountMode: RUNTIME_MOUNT_MODE,
+                nativeMountEnabled: RUNTIME_NATIVE_MOUNT_ENABLED,
+                canaryPercent: RUNTIME_CANARY_PERCENT,
+                allowNativeBridgeFallback: RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK
+            }
         });
     });
 
@@ -106,7 +113,7 @@ module.exports = function mountSystemRoutes(app, ctx) {
         }
 
         const psEscaped = safePath.replace(/'/g, "''");
-        const taskName = `MacMountOpen_${Date.now()}`;
+        const taskName = `GKMacOpenerOpen_${Date.now()}`;
         const openCmd =
             `$p='${psEscaped}'; ` +
             `$a=New-ScheduledTaskAction -Execute 'explorer.exe' -Argument $p; ` +
@@ -132,7 +139,7 @@ module.exports = function mountSystemRoutes(app, ctx) {
 
     app.get('/api/support/bundle', async (req, res) => {
         try {
-            const outDir = path.join(process.env.ProgramData || 'C:\\ProgramData', 'MacMount', 'Support');
+            const outDir = path.join(process.env.ProgramData || 'C:\\ProgramData', 'GKMacOpener', 'Support');
             fs.mkdirSync(outDir, { recursive: true });
             const filePath = path.join(outDir, `support-${Date.now()}.json`);
             const payload = {

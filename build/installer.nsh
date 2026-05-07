@@ -1,10 +1,10 @@
 !macro preInit
   SetRegView 64
-  WriteRegExpandStr HKLM "${INSTALL_REGISTRY_KEY}" InstallLocation "$LocalAppData\Programs\MacMount"
-  WriteRegExpandStr HKLM "${INSTALL_REGISTRY_KEY}" StartMenuLink "MacMount"
+  WriteRegExpandStr HKLM "${INSTALL_REGISTRY_KEY}" InstallLocation "$LocalAppData\Programs\GKMacOpener"
+  WriteRegExpandStr HKLM "${INSTALL_REGISTRY_KEY}" StartMenuLink "GKMacOpener"
   SetRegView 32
-  WriteRegExpandStr HKLM "${INSTALL_REGISTRY_KEY}" InstallLocation "$LocalAppData\Programs\MacMount"
-  WriteRegExpandStr HKLM "${INSTALL_REGISTRY_KEY}" StartMenuLink "MacMount"
+  WriteRegExpandStr HKLM "${INSTALL_REGISTRY_KEY}" InstallLocation "$LocalAppData\Programs\GKMacOpener"
+  WriteRegExpandStr HKLM "${INSTALL_REGISTRY_KEY}" StartMenuLink "GKMacOpener"
 !macroend
 
 !macro customInstall

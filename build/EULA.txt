@@ -1,24 +1,54 @@
-MacMount End User License Agreement (EULA)
+GKMacOpener License and Notices
+===============================
 
-By installing or using MacMount, you agree to use the software at your own risk.
+Copyright (c) 2026 GKMacOpener contributors
 
-Important terms:
-1. MacMount mounts physical disks and may perform privileged operations.
-2. You are responsible for selecting the correct physical disk and maintaining backups.
-3. The software is provided "as is" without warranties of any kind.
-4. The authors are not liable for data loss, corruption, or business interruption.
+GKMacOpener is distributed under the MIT License.
 
-5. Third-party and open-source components. MacMount may include or depend on
-   software not written solely by the MacMount publisher (for example WinFsp,
-   optional APFS-FUSE-related tools, runtimes such as .NET or Electron, and
-   Chromium). Those components are licensed on their own terms. A summary and
-   pointers to licenses are in the file THIRD_PARTY_NOTICES.txt installed with
-   the application (typically under the app resources folder). If a separate
-   GPL_SOURCE_OFFER.txt is present, it describes how to obtain source for certain
-   GPL-covered binaries that may ship with MacMount.
+By installing or using GKMacOpener, you acknowledge that the software mounts
+physical disks and performs privileged local operations. You are responsible
+for selecting the correct physical disk and maintaining backups. The software
+is provided "as is" without warranties of any kind.
 
-6. No warranty for third-party components. The MacMount publisher does not
-   warrant third-party components; use them subject to their respective
-   licenses and publishers.
+MIT License
+-----------
 
-If you do not agree with these terms, do not install or use MacMount.
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Third-Party Components
+----------------------
+
+GKMacOpener includes third-party components under their own license terms.
+See THIRD_PARTY_NOTICES.txt installed with the application.
+
+WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos:
+https://github.com/winfsp/winfsp
+
+GKMacOpener distributes the unmodified WinFsp installer under WinFsp's
+GPLv3/FLOSS exception path. Commercial proprietary redistribution requires a
+separate WinFsp commercial license.
+
+GKMacOpener also bundles a custom WSL2 kernel and filesystem modules. GPL
+source information is provided in GPL_SOURCE_OFFER.txt.
+
+Contact
+-------
+
+For licensing inquiries, use the support or issue tracker published with the
+official GKMacOpener repository.

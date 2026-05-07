@@ -303,7 +303,7 @@ function Initialize-WSL {
     return @{
         success = $true
         ready = $true
-        note = "WSL setup flow has been retired. MacMount now uses native Windows mount paths only."
+        note = "WSL setup flow has been retired. GKMacOpener now uses native Windows mount paths only."
     } | ConvertTo-Json
 }
 
@@ -315,7 +315,7 @@ function Mount-Drive($id, $Password = "") {
     if (-not $isAdmin) {
         return @{
             error = "Mount requires Administrator privileges."
-            suggestion = "Restart MacMount as Administrator."
+            suggestion = "Restart GKMacOpener as Administrator."
             needsPassword = $false
         } | ConvertTo-Json
     }
@@ -693,7 +693,7 @@ function Get-PreflightCheck {
         success = $true
         ready   = $ready
         items   = $items
-        note    = "WSL-based checks have been removed. MacMount now validates only native Windows components."
+        note    = "WSL-based checks have been removed. GKMacOpener now validates only native Windows components."
     } | ConvertTo-Json -Depth 5
 }
 

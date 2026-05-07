@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 
 function fail(msg) {
   console.error(`FAIL: ${msg}`);
@@ -14,19 +15,57 @@ const root = path.resolve(__dirname, '..');
 const pkgPath = path.join(root, 'package.json');
 const mainPath = path.join(root, 'main.js');
 const preloadPath = path.join(root, 'preload.js');
+const serverPath = path.join(root, 'server.js');
 const auditPath = path.join(root, 'scripts', 'release-audit.ps1');
+const validateReleasePath = path.join(root, 'scripts', 'validate-release.ps1');
 const secAuditPath = path.join(root, 'scripts', 'security-audit.js');
 const gatePath = path.join(root, 'scripts', 'commercial-gate.js');
 const noticesPath = path.join(root, 'build', 'THIRD_PARTY_NOTICES.txt');
 const gplOfferPath = path.join(root, 'build', 'GPL_SOURCE_OFFER.txt');
 const licensePath = path.join(root, 'LICENSE');
+const routesDir = path.join(root, 'routes');
 
-for (const p of [pkgPath, mainPath, preloadPath, auditPath, secAuditPath, gatePath, noticesPath, gplOfferPath, licensePath]) {
+for (const p of [pkgPath, mainPath, preloadPath, serverPath, auditPath, secAuditPath, gatePath, noticesPath, gplOfferPath, licensePath]) {
   if (!fs.existsSync(p)) fail(`missing file: ${p}`);
   else pass(`exists: ${path.basename(p)}`);
 }
 
 const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+const auditScript = fs.readFileSync(auditPath, 'utf8');
+const validateReleaseScript = fs.existsSync(validateReleasePath) ? fs.readFileSync(validateReleasePath, 'utf8') : '';
+const licenseText = fs.readFileSync(licensePath, 'utf8');
+const noticesText = fs.readFileSync(noticesPath, 'utf8');
+const eulaText = fs.readFileSync(path.join(root, 'build', 'EULA.txt'), 'utf8');
+
+function parseMajor(range) {
+  const match = String(range || '').match(/(\d+)(?:\.\d+)?(?:\.\d+)?/);
+  return match ? Number(match[1]) : NaN;
+}
+
+function assertDependencyMajor(group, name, expectedMajor) {
+  const actual = pkg[group] && pkg[group][name];
+  if (!actual) {
+    fail(`package.json missing ${group}.${name}`);
+    return;
+  }
+  const major = parseMajor(actual);
+  if (major !== expectedMajor) {
+    fail(`${group}.${name} must target major ${expectedMajor}; found ${actual}`);
+  } else {
+    pass(`${group}.${name} targets major ${expectedMajor}`);
+  }
+}
+
+function assertNodeSyntax(filePath) {
+  try {
+    execFileSync(process.execPath, ['--check', filePath], { stdio: 'pipe' });
+    pass(`${path.basename(filePath)} syntax is valid`);
+  } catch (e) {
+    const stderr = e.stderr ? String(e.stderr).trim() : e.message;
+    fail(`${path.basename(filePath)} syntax is invalid: ${stderr}`);
+  }
+}
+
 if (!pkg.scripts || !pkg.scripts.test) fail('package.json missing scripts.test');
 else pass('package.json has scripts.test');
 
@@ -68,6 +107,136 @@ if (!mainJs.includes('installAppMenu') || !mainJs.includes('THIRD_PARTY_NOTICES.
   fail('main.js missing Help / third-party legal menu wiring');
 } else {
   pass('third-party legal menu wired');
+}
+
+if (!mainJs.includes('About ${APP_NAME}') || !mainJs.includes('WinFsp - Windows File System Proxy')) {
+  fail('main.js missing About dialog legal attribution');
+} else {
+  pass('About dialog legal attribution wired');
+}
+
+assertDependencyMajor('dependencies', 'express', 5);
+assertDependencyMajor('devDependencies', 'electron', 42);
+assertDependencyMajor('devDependencies', 'electron-builder', 26);
+assertDependencyMajor('devDependencies', 'vite', 8);
+assertDependencyMajor('devDependencies', '@vitejs/plugin-react', 6);
+
+for (const entryPath of [mainPath, preloadPath, serverPath]) {
+  assertNodeSyntax(entryPath);
+}
+
+for (const needle of [
+  'Bundled WSL kernel',
+  'Bundled WSL module: apfs.ko',
+  'Bundled WSL module: hfs.ko',
+  'Bundled WSL module: hfsplus.ko',
+  'Native service published',
+  'Native broker published',
+  'User-session helper published'
+]) {
+  if (!auditScript.includes(needle)) fail(`release audit missing check: ${needle}`);
+  else pass(`release audit checks ${needle}`);
+}
+
+if (!auditScript.includes('Extracted WinFsp payload not packaged')) fail('release audit does not block extracted WinFsp payloads');
+else pass('release audit blocks extracted WinFsp payloads');
+
+if (!licenseText.includes('Copyright (c) 2026 GKMacOpener contributors')) fail('LICENSE copyright is not GKMacOpener 2026');
+else pass('LICENSE copyright is GKMacOpener 2026');
+
+if (!eulaText.includes('GKMacOpener is distributed under the MIT License') || !eulaText.includes('WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos')) {
+  fail('EULA missing MIT/WinFsp FLOSS notice');
+} else {
+  pass('EULA includes MIT/WinFsp FLOSS notice');
+}
+
+if (!noticesText.includes('WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos') || !noticesText.includes('Custom WSL2 kernel and filesystem modules')) {
+  fail('third-party notices missing WinFsp or WSL GPL notices');
+} else {
+  pass('third-party notices include WinFsp and WSL GPL notices');
+}
+
+if (validateReleaseScript.includes('Encrypted APFS volumes will not be unlockable')) {
+  fail('validate-release still treats legacy apfs-fuse as required for encrypted APFS');
+} else {
+  pass('validate-release does not require legacy apfs-fuse for encrypted APFS');
+}
+
+const readinessDocs = [
+  path.join(root, 'docs', 'CURRENT_STATUS.md'),
+  path.join(root, 'docs', 'COMMERCIAL_READINESS.md'),
+  path.join(root, 'docs', 'GO_NO_GO.md')
+];
+for (const docPath of readinessDocs) {
+  const doc = fs.readFileSync(docPath, 'utf8');
+  if (!/WSL2 kernel|WSL kernel/i.test(doc)) fail(`${path.basename(docPath)} missing WSL kernel architecture`);
+  else pass(`${path.basename(docPath)} documents WSL kernel architecture`);
+  if (!/APFS writes?.*experimental|experimental APFS writes?/i.test(doc)) fail(`${path.basename(docPath)} missing experimental APFS write policy`);
+  else pass(`${path.basename(docPath)} documents experimental APFS write policy`);
+  if (!/CoreStorage.*unsupported|unsupported.*CoreStorage/i.test(doc)) fail(`${path.basename(docPath)} missing CoreStorage unsupported policy`);
+  else pass(`${path.basename(docPath)} documents CoreStorage unsupported policy`);
+}
+
+const systemRoutes = fs.readFileSync(path.join(routesDir, 'systemRoutes.js'), 'utf8');
+if (!systemRoutes.includes('wslSetup')) {
+  fail('/api/status does not expose WSL setup details');
+} else {
+  pass('/api/status exposes WSL setup details');
+}
+
+const routeModules = ['systemRoutes.js', 'driveRoutes.js', 'mountRoutes.js', 'nativeRoutes.js'];
+for (const routeFile of routeModules) {
+  const fullPath = path.join(routesDir, routeFile);
+  try {
+    const mountRoutes = require(fullPath);
+    if (typeof mountRoutes !== 'function') fail(`${routeFile} does not export a mount function`);
+    else pass(`${routeFile} exports a mount function`);
+  } catch (e) {
+    fail(`${routeFile} cannot be required: ${e.message}`);
+  }
+}
+
+try {
+  const express = require('express');
+  const app = express();
+  app.use(express.json());
+  const noop = () => {};
+  const routeCtx = {
+    addLog: noop,
+    logs: [],
+    setupState: { status: 'ready', message: 'test', ready: true, wslSetup: {} },
+    getNativeStatus: async () => ({ available: false }),
+    RUNTIME_MOUNT_MODE: 'wsl_kernel',
+    RUNTIME_NATIVE_MOUNT_ENABLED: true,
+    RUNTIME_CANARY_PERCENT: 100,
+    RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK: true,
+    PREFER_SUBST_LOCAL_FAST_PATH: true,
+    isAdmin: () => true,
+    hasRawDiskAccess: () => true,
+    PS_PATH: path.join(root, 'scripts', 'MacMount.ps1'),
+    MAP_USER_SESSION_PS_PATH: path.join(root, 'scripts', 'map-drive-user-session.ps1'),
+    nativeMountState: new Map(),
+    inFlightOps: new Set(),
+    getBrokerMountedMap: async () => new Map(),
+    sendNativeWithBoot: async () => ({ ok: false }),
+    cleanupGhostDriveLetters: noop,
+    cleanupSingleDriveLetter: noop,
+    awaitStartupCleanup: async () => {},
+    shouldAttemptNativeMountForDrive: () => false,
+    tryMountRawWithFallbackLetters: async () => ({ ok: false }),
+    execPsMount: async () => ({ error: 'not available in self-test' }),
+    sendBrokerRequest: async () => ({ ok: false }),
+    ensureBrokerReady: async () => false,
+    getUsedDriveLetters: () => new Set(),
+    resolveUserFacingSourcePath: (p) => p,
+    runPsJson: async () => ({ success: false })
+  };
+  for (const routeFile of routeModules) {
+    require(path.join(routesDir, routeFile))(app, routeCtx);
+  }
+  pass('Express route modules register successfully');
+} catch (e) {
+  fail(`Express route registration failed: ${e.message}`);
 }
 
 if (process.exitCode && process.exitCode !== 0) {

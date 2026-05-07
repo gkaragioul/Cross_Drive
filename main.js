@@ -3,6 +3,27 @@ const path = require('path');
 const fs = require('fs');
 const { execSync, execFile } = require('child_process');
 
+const APP_NAME = 'GKMacOpener';
+const APP_ID = 'com.gkmacopener.app';
+const COPYRIGHT_NOTICE = 'Copyright (c) 2026 GKMacOpener contributors';
+const WINFSP_NOTICE = 'WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos';
+
+app.setName(APP_NAME);
+if (process.platform === 'win32') {
+    app.setAppUserModelId(APP_ID);
+}
+
+function resolveAppIconPath() {
+    const candidates = [];
+    if (app.isPackaged && process.resourcesPath) {
+        candidates.push(path.join(process.resourcesPath, 'icon.ico'));
+        candidates.push(path.join(process.resourcesPath, 'icon.png'));
+    }
+    candidates.push(path.join(__dirname, 'build', 'icon.ico'));
+    candidates.push(path.join(__dirname, 'build', 'icon.png'));
+    return candidates.find((candidate) => fs.existsSync(candidate));
+}
+
 function resolveBundledLegalPath(fileName) {
     if (app.isPackaged && process.resourcesPath) {
         const res = path.join(process.resourcesPath, fileName);
@@ -28,6 +49,25 @@ function openLegalFile(fileName, title) {
     });
 }
 
+function showAboutDialog() {
+    dialog.showMessageBox({
+        type: 'info',
+        title: `About ${APP_NAME}`,
+        message: APP_NAME,
+        detail: [
+            `Version ${app.getVersion()}`,
+            COPYRIGHT_NOTICE,
+            'License: MIT',
+            '',
+            WINFSP_NOTICE,
+            'https://github.com/winfsp/winfsp',
+            '',
+            'See Help > License, Third-Party Notices, and GPL Source Offer for full legal notices.'
+        ].join('\n'),
+        buttons: ['OK']
+    });
+}
+
 function installAppMenu() {
     const template = [];
     if (process.platform === 'darwin') {
@@ -44,6 +84,11 @@ function installAppMenu() {
         label: 'Help',
         submenu: [
             {
+                label: `About ${APP_NAME}`,
+                click: showAboutDialog
+            },
+            { type: 'separator' },
+            {
                 label: 'Third-Party Notices',
                 click: () => openLegalFile('THIRD_PARTY_NOTICES.txt', 'Third-Party Notices')
             },
@@ -53,7 +98,7 @@ function installAppMenu() {
             },
             { type: 'separator' },
             {
-                label: 'MacMount License (MIT)',
+                label: `${APP_NAME} License (MIT)`,
                 click: () => openLegalFile('LICENSE.txt', 'License')
             }
         ]
@@ -82,31 +127,30 @@ function relaunchAsAdmin() {
     const exePath = process.execPath;
     const argv = process.argv.slice(1);
 
-    // Pass --prod through UAC elevation since env vars are not inherited by Start-Process -Verb RunAs.
     if (process.env.NODE_ENV === 'production' && !argv.includes('--prod')) {
         argv.push('--prod');
     }
 
-    // Preserve app arguments so elevated relaunch starts MacMount, not the Electron default app.
-    const escapedArgv = argv.map((arg) => `'${String(arg).replace(/'/g, "''")}'`).join(', ');
-    const psCommand = escapedArgv.length > 0
-        ? `Start-Process -Verb RunAs -FilePath '${exePath.replace(/'/g, "''")}' -ArgumentList @(${escapedArgv})`
+    const argList = argv.map((a) => `'${String(a).replace(/'/g, "''")}'`).join(',');
+    const psCommand = argList.length > 0
+        ? `Start-Process -Verb RunAs -FilePath '${exePath.replace(/'/g, "''")}' -ArgumentList @(${argList})`
         : `Start-Process -Verb RunAs -FilePath '${exePath.replace(/'/g, "''")}'`;
 
-    // Silently elevate — no info dialog needed (UAC prompt appears if enabled, or elevation is automatic)
-    console.log('[MacMount] Requesting elevation via PowerShell RunAs...');
+    const encoded = Buffer.from(psCommand, 'utf16le').toString('base64');
+
+    console.log(`[${APP_NAME}] Requesting elevation via PowerShell RunAs...`);
 
     execFile(
         'powershell.exe',
-        ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-Command', psCommand],
+        ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded],
         { env: process.env, windowsHide: true },
         (error) => {
             if (error) {
                 console.error('Failed to relaunch as admin:', error);
                 dialog.showErrorBox(
                     'Administrator Rights Required',
-                    'MacMount could not restart as Administrator automatically.\n\n' +
-                    'Right-click MacMount (or your terminal) and choose "Run as administrator", then start the app again.'
+                    `${APP_NAME} could not restart as Administrator automatically.\n\n` +
+                    `Right-click ${APP_NAME} (or your terminal) and choose "Run as administrator", then start the app again.`
                 );
             }
             app.quit();
@@ -115,10 +159,11 @@ function relaunchAsAdmin() {
 }
 
 function createWindow() {
+    const iconPath = resolveAppIconPath();
     mainWindow = new BrowserWindow({
         width: 1200,
         height: 800,
-        title: "MacMount - Mac Drive Manager",
+        title: `${APP_NAME} - Mac Drive Manager`,
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
             nodeIntegration: false,
@@ -126,7 +171,8 @@ function createWindow() {
             sandbox: true,
         },
         backgroundColor: '#000000',
-        show: true
+        show: true,
+        ...(iconPath ? { icon: iconPath } : {})
     });
 
     const isProd = process.env.NODE_ENV === 'production' || process.argv.includes('--prod');
@@ -166,7 +212,7 @@ app.on('ready', () => {
         return;
     }
     
-    console.log('Starting MacMount as administrator...');
+    console.log(`Starting ${APP_NAME} as administrator...`);
     installAppMenu();
     startBackend();
     createWindow();

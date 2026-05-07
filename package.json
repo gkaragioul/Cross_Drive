@@ -1,8 +1,8 @@
 {
-  "name": "my-mac-drive",
+  "name": "gkmacopener",
   "version": "1.5.2",
   "description": "Mac-formatted drive manager for Windows with local drive-letter mounting.",
-  "author": "MacMount",
+  "author": "GKMacOpener contributors",
   "license": "MIT",
   "main": "main.js",
   "scripts": {
@@ -39,22 +39,22 @@
   },
   "dependencies": {
     "cors": "^2.8.5",
-    "express": "^4.21.0"
+    "express": "^5.2.1"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.3.1",
+    "@vitejs/plugin-react": "^6.0.1",
     "concurrently": "^8.2.2",
     "cross-env": "^7.0.3",
-    "electron": "^32.0.0",
-    "electron-builder": "^24.13.3",
+    "electron": "^42.0.0",
+    "electron-builder": "^26.8.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "vite": "^5.4.0",
+    "vite": "^8.0.10",
     "wait-on": "^7.2.0"
   },
   "build": {
-    "appId": "com.macmount.app",
-    "productName": "MacMount",
+    "appId": "com.gkmacopener.app",
+    "productName": "GKMacOpener",
     "files": [
       "dist/**/*",
       "main.js",
@@ -65,16 +65,22 @@
       "scripts/**/*.ps1",
       "scripts/**/*.sh",
       "native/bin/**/*",
-      "prereqs/**/*",
       "package.json"
     ],
     "asarUnpack": [
       "scripts/**/*.ps1",
       "scripts/**/*.sh",
-      "native/bin/**/*",
-      "prereqs/**/*"
+      "native/bin/**/*"
     ],
     "extraResources": [
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
+      },
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      },
       {
         "from": "scripts/MacMount.ps1",
         "to": "scripts/MacMount.ps1"
@@ -100,8 +106,8 @@
         "to": "scripts/wsl_format_and_mount.sh"
       },
       {
-        "from": "prereqs",
-        "to": "prereqs"
+        "from": "prereqs/winfsp.msi",
+        "to": "prereqs/winfsp.msi"
       },
       {
         "from": "prereqs/macmount-kernel",
@@ -129,11 +135,11 @@
       }
     ],
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         "nsis",
         "portable"
       ],
-      "publisherName": "MacMount",
       "signAndEditExecutable": false,
       "requestedExecutionLevel": "requireAdministrator"
     },

@@ -1,76 +1,164 @@
-MacMount — Third-Party Notices
-==============================
-Last updated: 2026-04-03
+GKMacOpener - Third-Party Notices
+=================================
+Last updated: 2026-05-07
 
-This document lists major third-party components that may ship with or be used
-by MacMount. It is provided for attribution and license awareness. It is not
-legal advice.
+GKMacOpener is distributed under the MIT License. This file summarizes the
+major third-party components that ship with, are bundled into, or are required
+by GKMacOpener binary distributions. The original components remain governed
+by their own license terms.
 
 ----------------------------------------------------------------------
-MacMount application (source in this product’s repository)
+GKMacOpener application
 ----------------------------------------------------------------------
 License: MIT License
-Copyright: MacMount contributors.
+Copyright: Copyright (c) 2026 GKMacOpener contributors
 
-The MIT license text is included in the LICENSE file at the root of the
-MacMount source repository (when obtained as source). A copy may also ship
-beside this file as LICENSE.txt depending on the build.
+The full MIT license text is included in LICENSE.txt.
 
 ----------------------------------------------------------------------
-Optional bundled binary — APFS-FUSE (apfs-fuse.exe)
+WinFsp - Windows File System Proxy
 ----------------------------------------------------------------------
-Some MacMount builds include a Windows executable derived from APFS-FUSE, used
-to mount APFS volumes via WinFsp.
+Component: Unmodified WinFsp installer (winfsp.msi)
+Copyright: Copyright (C) Bill Zissimopoulos
+License: GPLv3 with WinFsp FLOSS exception, or commercial license
+Repository: https://github.com/winfsp/winfsp
+License information: https://winfsp.dev/ and https://winfsp.dev/com/
 
-Reference upstream project (verify the exact fork you build from):
-  https://github.com/sgan81/apfs-fuse
+GKMacOpener is intended to be distributed as Free/Libre/Open Source Software
+under the MIT License and uses WinFsp through the WinFsp FLOSS exception path.
+The required user-facing attribution is:
 
-That upstream project is typically licensed under the GNU General Public
-License, version 2 only (GPL-2.0-only). If you received apfs-fuse.exe with
-MacMount, the GPL applies to that executable and you have rights and
-obligations under that license.
+WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos
+https://github.com/winfsp/winfsp
 
-A written offer for corresponding source code, as required for distribution of
-GPL-covered binaries in object form, is in the file:
-  GPL_SOURCE_OFFER.txt
-(shipped next to this file when present in the install layout).
-
-----------------------------------------------------------------------
-Prerequisite / bundled installer — WinFsp
-----------------------------------------------------------------------
-MacMount may install or require WinFsp (for example via prereqs/winfsp.msi).
-WinFsp is a separate product; its license applies only to WinFsp.
-
-License information:
-  https://github.com/winfsp/winfsp/blob/master/License.txt
-
-Review the license text in the WinFsp installer or distribution you use.
+The packaged application should distribute only the unmodified WinFsp MSI.
+Do not ship extracted WinFsp SDK/runtime folders unless their redistribution
+terms have been reviewed separately.
 
 ----------------------------------------------------------------------
-Desktop runtime — Electron and Chromium
+Custom WSL2 kernel and filesystem modules
 ----------------------------------------------------------------------
-MacMount’s user interface is built with Electron, which bundles Chromium.
+Components:
+- wsl_kernel
+- hfsplus.ko
+- hfs.ko
+- apfs.ko
 
-Electron:
-  https://github.com/electron/electron/blob/main/LICENSE
-
-Chromium / third-party credits (high level):
-  https://www.chromium.org/
-
-----------------------------------------------------------------------
-Native runtime — .NET
-----------------------------------------------------------------------
-MacMount ships native components (MacMount.NativeService, MacMount.NativeBroker)
-that may be published self-contained with the .NET runtime. Those Microsoft
-components are licensed under Microsoft’s terms for the .NET version bundled
-in the build you installed. See Microsoft’s published “.NET” and “Microsoft
-.NET Library” license terms for that version.
+These components are Linux kernel or kernel-module binaries and are provided
+under their respective upstream open-source licenses, including GPL-covered
+terms. Corresponding source information and the written source offer are in
+GPL_SOURCE_OFFER.txt.
 
 ----------------------------------------------------------------------
-Contact
+Electron and Chromium
 ----------------------------------------------------------------------
-For source requests related to GPL-2.0-covered binaries shipped with a
-MacMount build, see GPL_SOURCE_OFFER.txt.
+Component: Electron runtime
+License: MIT License
+Notice file shipped by Electron Builder: LICENSE.electron.txt
 
-For all other support, use the contact or support channel published with your
-copy of MacMount.
+Component: Chromium and Chromium third-party components
+Licenses: BSD-style and multiple third-party licenses
+Notice file shipped by Electron Builder: LICENSES.chromium.html
+
+----------------------------------------------------------------------
+.NET runtime and libraries
+----------------------------------------------------------------------
+Components: Microsoft .NET runtime files shipped with the self-contained
+native service, broker, and user-session helper.
+License: Microsoft .NET terms
+License information: https://github.com/dotnet/runtime and Microsoft .NET
+license files distributed by Microsoft for the bundled runtime version.
+
+----------------------------------------------------------------------
+DiscUtils
+----------------------------------------------------------------------
+Components:
+- DiscUtils.FileSystems 0.16.13
+- DiscUtils.Core 0.16.13
+- DiscUtils.Ext 0.16.13
+- DiscUtils.Fat 0.16.13
+- DiscUtils.HfsPlus 0.16.13
+- DiscUtils.Iso9660 0.16.13
+- DiscUtils.Ntfs 0.16.13
+- DiscUtils.OpticalDisk 0.16.13
+- DiscUtils.SquashFs 0.16.13
+- DiscUtils.Streams 0.16.13
+- DiscUtils.Udf 0.16.13
+- DiscUtils.Xfs 0.16.13
+License: MIT License
+Repository: https://github.com/DiscUtils/DiscUtils
+
+----------------------------------------------------------------------
+winfsp.net
+----------------------------------------------------------------------
+Component: winfsp.net 2.1.25156
+Author: 2015-2025 Bill Zissimopoulos
+Description: Windows File System Proxy .NET bindings
+Related project: https://github.com/winfsp/winfsp
+
+----------------------------------------------------------------------
+React UI runtime
+----------------------------------------------------------------------
+Components:
+- react 18.3.1
+- react-dom 18.3.1
+License: MIT License
+Repository: https://github.com/facebook/react
+
+----------------------------------------------------------------------
+Node.js production dependencies
+----------------------------------------------------------------------
+The packaged backend includes Express and its production dependency tree.
+
+MIT-licensed packages:
+accepts 2.0.0; body-parser 2.2.2; bytes 3.1.2;
+call-bind-apply-helpers 1.0.2; call-bound 1.0.4;
+content-disposition 1.1.0; content-type 1.0.5; cookie 0.7.2;
+cookie-signature 1.2.2; cors 2.8.6; debug 4.4.3; depd 2.0.0;
+dunder-proto 1.0.1; ee-first 1.1.1; encodeurl 2.0.0;
+es-define-property 1.0.1; es-errors 1.3.0; es-object-atoms 1.1.1;
+escape-html 1.0.3; etag 1.8.1; express 5.2.1;
+finalhandler 2.1.1; forwarded 0.2.0; fresh 2.0.0;
+function-bind 1.1.2; get-intrinsic 1.3.0; get-proto 1.0.1;
+gopd 1.2.0; has-symbols 1.1.0; hasown 2.0.2;
+http-errors 2.0.1; iconv-lite 0.7.2; ipaddr.js 1.9.1;
+is-promise 4.0.0; math-intrinsics 1.1.0; media-typer 1.1.0;
+merge-descriptors 2.0.0; mime-db 1.54.0; mime-types 3.0.2;
+ms 2.1.3; negotiator 1.0.0; object-assign 4.1.1;
+object-inspect 1.13.4; on-finished 2.4.1; parseurl 1.3.3;
+path-to-regexp 8.4.2; proxy-addr 2.0.7; range-parser 1.2.1;
+raw-body 3.0.2; router 2.2.0; safer-buffer 2.1.2;
+send 1.2.1; serve-static 2.2.1; side-channel 1.1.0;
+side-channel-list 1.0.1; side-channel-map 1.0.1;
+side-channel-weakmap 1.0.2; statuses 2.0.2; toidentifier 1.0.1;
+type-is 2.0.1; unpipe 1.0.0; vary 1.1.2.
+
+ISC-licensed packages:
+inherits 2.0.4; once 1.4.0; setprototypeof 1.2.0; wrappy 1.0.2.
+
+BSD-3-Clause package:
+qs 6.15.1.
+
+0BSD package:
+tslib 2.8.1.
+
+----------------------------------------------------------------------
+MIT License Text
+----------------------------------------------------------------------
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of software and associated documentation files under the MIT License, to deal
+in the software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the software, and to permit persons to whom the software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

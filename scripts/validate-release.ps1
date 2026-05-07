@@ -1,4 +1,4 @@
-# MacMount End-to-End Validation Script
+# GKMacOpener End-to-End Validation Script
 # Run as Administrator on a clean Windows machine with a Mac drive attached.
 # Usage: powershell -ExecutionPolicy Bypass -File scripts\validate-release.ps1
 
@@ -114,7 +114,7 @@ if (Test-Path $nativeBinDir) {
     Fail "native/bin/ directory not found. Run: npm run native:publish"
 }
 
-# apfs-fuse.exe (optional but recommended)
+# Legacy apfs-fuse.exe (optional compatibility artifact only)
 $apfsFuseCandidates = @(
     (Join-Path $scriptDir "native-bridge-bin\apfs-fuse.exe"),
     (Join-Path $scriptDir "native-bridge\apfs-fuse\build\apfs-fuse.exe")
@@ -128,7 +128,7 @@ foreach ($c in $apfsFuseCandidates) {
     }
 }
 if (-not $apfsFuseFound) {
-    Warn "apfs-fuse.exe not found. Encrypted APFS volumes will not be unlockable. Run: scripts\build-apfs-fuse.ps1"
+    Warn "Legacy apfs-fuse.exe not found. This is acceptable for the WSL2/native GA path; APFS unlock validation must use WSL kernel/native raw-provider flows."
 }
 
 # PowerShell scripts
@@ -211,7 +211,7 @@ Write-Host ", " -NoNewline -ForegroundColor White
 Write-Host "$failCount failed" -ForegroundColor Red
 
 if ($failCount -eq 0) {
-    Write-Host "`nMacMount is ready for release testing." -ForegroundColor Green
+    Write-Host "`nGKMacOpener is ready for release testing." -ForegroundColor Green
     exit 0
 } else {
     Write-Host "`n$failCount issue(s) must be resolved before release." -ForegroundColor Red

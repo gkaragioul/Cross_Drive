@@ -1,5 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import './index.css';
+import appLogo from './assets/gkmacopener-logo.png';
+import {
+  fetchDrives as apiFetchDrives,
+  fetchStatus,
+  fetchRuntimeConfig,
+  fetchPreflight,
+  fixPreflight,
+  fetchNativeStatus,
+  fetchLogs,
+  postLog,
+  mountDrive as apiMountDrive,
+  unmountDrive as apiUnmountDrive,
+  openInExplorer as apiOpenInExplorer,
+  generateSupportBundle,
+} from './api';
+import { POLL_INTERVALS } from './config';
 
 const DriveIcon = () => (
   <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -20,7 +36,6 @@ const SettingsIcon = () => (
   </svg>
 );
 
-// Animated dots for loading text
 const Dots = () => {
   const [count, setCount] = useState(0);
   useEffect(() => {
@@ -28,6 +43,70 @@ const Dots = () => {
     return () => clearInterval(t);
   }, []);
   return <span>{'.'.repeat(count)}</span>;
+};
+
+const SetupBanner = ({ setup }) => {
+  if (setup.status === 'ready') return null;
+  const isInstalling = setup.status === 'installing' || setup.status === 'checking';
+  const isFailed = setup.status === 'failed';
+  return (
+    <div style={{
+      backgroundColor: isFailed ? 'rgba(192,57,43,0.1)' : 'rgba(229,83,0,0.08)',
+      border: `1px solid ${isFailed ? 'var(--danger)' : 'rgba(229,83,0,0.3)'}`,
+      color: isFailed ? 'var(--danger)' : 'var(--primary)',
+      padding: '14px 18px', marginBottom: '20px', display: 'flex',
+      alignItems: 'center', gap: '12px', fontSize: '12px',
+      fontFamily: 'var(--font-mono)', letterSpacing: '0.5px'
+    }}>
+      {isInstalling && (
+        <div style={{
+          width: 14, height: 14,
+          border: '2px solid var(--primary)', borderTopColor: 'transparent',
+          animation: 'spin 0.8s linear infinite', flexShrink: 0
+        }} />
+      )}
+      {isFailed && <span style={{ fontSize: 18 }}>&#9888;&#65039;</span>}
+      <div>
+        <strong>{isInstalling ? 'Setting up Mac drivers' : 'Setup failed'}</strong>
+        {isInstalling && <Dots />}
+        {' \u2014 '}
+        <span style={{ opacity: 0.85 }}>{isInstalling ? 'Preparing runtime components. This can take a moment on first launch.' : setup.message}</span>
+      </div>
+    </div>
+  );
+};
+
+const SettingsRow = ({ label, value }) => (
+  <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
+    <span style={{ color: 'var(--text-dim)', fontSize: '12px', letterSpacing: '1px', textTransform: 'uppercase' }}>{label}</span>
+    <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'var(--text-main)' }}>{value}</span>
+  </div>
+);
+
+const APP_VERSION = '1.5.2';
+const COPYRIGHT_NOTICE = 'Copyright (c) 2026 GKMacOpener contributors';
+const WINFSP_NOTICE = 'WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos';
+
+const formatMountError = (result) => {
+  if (!result || typeof result !== 'object') return 'Unknown mount error.';
+  const parts = [];
+  const push = (value) => {
+    const text = String(value || '').trim();
+    if (!text) return;
+    if (!parts.includes(text)) parts.push(text);
+  };
+  push(result.error);
+  push(result.details);
+  push(result.nativeAttemptError);
+  push(result.suggestion);
+  push(result.nativeAttemptSuggestion);
+  const analysisNotes = result.analysis?.plan?.Notes
+    || result.nativeAttemptAnalysis?.plan?.Notes
+    || result.plan?.Notes;
+  if (analysisNotes && !/signature detected/i.test(String(analysisNotes))) {
+    push(`Analysis: ${analysisNotes}`);
+  }
+  return parts.join(' ');
 };
 
 const App = () => {
@@ -39,48 +118,39 @@ const App = () => {
   const [logs, setLogs] = useState([]);
   const [setup, setSetup] = useState({ status: 'ready', message: 'Core runtime ready.', ready: true });
   const [nativeStatus, setNativeStatus] = useState({ available: false });
-  const [passwordPrompt, setPasswordPrompt] = useState(null); // { id, name }
+  const [passwordPrompt, setPasswordPrompt] = useState(null);
   const [passwordValue, setPasswordValue] = useState('');
   const [runtimeConfig, setRuntimeConfig] = useState(null);
-  const [bundleStatus, setBundleStatus] = useState(null); // null | 'generating' | { path } | { error }
-  const [preflight, setPreflight] = useState(null); // { ready, items }
+  const [bundleStatus, setBundleStatus] = useState(null);
+  const [preflight, setPreflight] = useState(null);
   const [fixingPreflight, setFixingPreflight] = useState(false);
 
   useEffect(() => {
     let unmounted = false;
-    const safeSetDrives = (v) => { if (!unmounted) setDrives(v); };
-    const safeSetIsLoading = (v) => { if (!unmounted) setIsLoading(v); };
-    const safeSetErrorMessage = (v) => { if (!unmounted) setErrorMessage(v); };
+    const safe = (fn) => (...args) => { if (!unmounted) fn(...args); };
 
-    // Override the module-level fetch so the initial call is also guarded
-    const guardedFetchDrives = async () => {
+    const loadDrives = async () => {
       try {
-        const response = await fetch('http://localhost:3001/api/drives');
-        const data = await response.json();
-        if (data.error) {
-          safeSetDrives(data.mockData || []);
-          safeSetErrorMessage(data.error);
-        } else {
-          safeSetDrives(Array.isArray(data) ? data : []);
-          safeSetErrorMessage(null);
-        }
+        const { drives: d, error } = await apiFetchDrives();
+        safe(setDrives)(d);
+        safe(setErrorMessage)(error);
       } catch {
-        safeSetErrorMessage("Could not connect to backend server.");
+        safe(setErrorMessage)('Could not connect to backend server.');
       } finally {
-        safeSetIsLoading(false);
+        safe(setIsLoading)(false);
       }
     };
 
-    guardedFetchDrives();
-    const logInterval = setInterval(fetchLogs, 2000);
-    const statusInterval = setInterval(fetchStatus, 3000);
-    const nativeInterval = setInterval(fetchNativeStatus, 3000);
-    const driveInterval = setInterval(fetchDrives, 5000);
-    const preflightInterval = setInterval(fetchPreflight, 5000);
-    fetchStatus();
-    fetchNativeStatus();
-    fetchRuntimeConfig();
-    fetchPreflight();
+    loadDrives();
+    const logInterval = setInterval(() => fetchLogs().then(safe(setLogs)).catch(() => {}), POLL_INTERVALS.logs);
+    const statusInterval = setInterval(() => fetchStatus().then(safe(setSetup)).catch(() => {}), POLL_INTERVALS.status);
+    const nativeInterval = setInterval(() => fetchNativeStatus().then(safe(setNativeStatus)).catch(() => {}), POLL_INTERVALS.nativeStatus);
+    const driveInterval = setInterval(loadDrives, POLL_INTERVALS.drives);
+    const preflightInterval = setInterval(() => fetchPreflight().then(safe(setPreflight)).catch(() => {}), POLL_INTERVALS.preflight);
+    fetchStatus().then(safe(setSetup)).catch(() => {});
+    fetchNativeStatus().then(safe(setNativeStatus)).catch(() => {});
+    fetchRuntimeConfig().then(safe(setRuntimeConfig)).catch(() => {});
+    fetchPreflight().then(safe(setPreflight)).catch(() => {});
     return () => {
       unmounted = true;
       clearInterval(logInterval);
@@ -91,116 +161,21 @@ const App = () => {
     };
   }, []);
 
-  const fetchStatus = async () => {
-    try {
-      const res = await fetch('http://localhost:3001/api/status');
-      const data = await res.json();
-      setSetup(data);
-    } catch (e) { /* silent */ }
+  const logRemote = async (message, type) => {
+    try { await postLog(message, type); await fetchLogs().then(setLogs).catch(() => {}); } catch {}
   };
 
-  const fetchRuntimeConfig = async () => {
-    try {
-      const res = await fetch('http://localhost:3001/api/runtime/config');
-      const data = await res.json();
-      setRuntimeConfig(data);
-    } catch (e) { /* silent */ }
-  };
-
-  const fetchPreflight = async () => {
-    try {
-      const res = await fetch('http://localhost:3001/api/preflight/check');
-      const data = await res.json();
-      setPreflight(data);
-    } catch (e) { /* silent */ }
-  };
-
-  const fixPreflight = async () => {
+  const doFixPreflight = async () => {
     setFixingPreflight(true);
     try {
-      const res = await fetch('http://localhost:3001/api/preflight/fix', { method: 'POST' });
-      const data = await res.json();
+      const data = await fixPreflight();
       setPreflight(data);
       if (data.success) {
-        fetchDrives();
+        const { drives: d } = await apiFetchDrives();
+        setDrives(d);
       }
-    } catch (e) { /* silent */ }
+    } catch { /* silent */ }
     finally { setFixingPreflight(false); }
-  };
-
-  const fetchNativeStatus = async () => {
-    try {
-      const res = await fetch('http://localhost:3001/api/native/status');
-      const data = await res.json();
-      setNativeStatus(data);
-    } catch (e) {
-      setNativeStatus({ available: false });
-    }
-  };
-
-  const fetchLogs = async () => {
-    try {
-      const response = await fetch('http://localhost:3001/api/logs');
-      const data = await response.json();
-      setLogs(data);
-    } catch (e) { /* silent */ }
-  };
-
-  const logRemote = async (message, type = 'info') => {
-    try {
-      await fetch('http://localhost:3001/api/logs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message, type })
-      });
-      fetchLogs();
-    } catch (e) { }
-  };
-
-  const fetchDrives = async () => {
-    try {
-      const response = await fetch('http://localhost:3001/api/drives');
-      const data = await response.json();
-      if (data.error) {
-        setDrives(data.mockData || []);
-        setErrorMessage(data.error);
-      } else {
-        setDrives(Array.isArray(data) ? data : []);
-        setErrorMessage(null);
-      }
-    } catch (error) {
-      setErrorMessage("Could not connect to backend server.");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const formatMountError = (result) => {
-    if (!result || typeof result !== 'object') {
-      return 'Unknown mount error.';
-    }
-
-    const parts = [];
-    const push = (value) => {
-      const text = String(value || '').trim();
-      if (!text) return;
-      if (!parts.includes(text)) parts.push(text);
-    };
-
-    push(result.error);
-    push(result.details);
-    push(result.nativeAttemptError);
-    push(result.suggestion);
-    push(result.nativeAttemptSuggestion);
-
-    const analysisNotes = result.analysis?.plan?.Notes
-      || result.nativeAttemptAnalysis?.plan?.Notes
-      || result.plan?.Notes;
-    if (analysisNotes && !/signature detected/i.test(String(analysisNotes))) {
-      push(`Analysis: ${analysisNotes}`);
-    }
-
-    return parts.join(' ');
   };
 
   const mountDrive = async (id, password = '') => {
@@ -208,34 +183,22 @@ const App = () => {
     setErrorMessage(null);
     logRemote(`Frontend: User requested mount for ${id} ${password ? '(with password)' : ''}`);
     try {
-      const response = await fetch('http://localhost:3001/api/mount', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, password })
-      });
-      const text = await response.text();
-      let result;
-      try { result = JSON.parse(text); }
-      catch (e) { setErrorMessage("Backend returned an invalid response."); return; }
-
-      if (response.ok) {
-        logRemote(`SUCCESS: Drive ${id} mounted at ${result.path}`, 'success');
-        setErrorMessage(null);
-        setPasswordPrompt(null);
-        setPasswordValue('');
-        fetchDrives();
-      } else {
-        if (result.needsPassword) {
-          const drive = drives.find(d => d.id === id);
-          setPasswordPrompt({ id, name: drive?.name || `Physical Drive ${id}` });
-          return;
-        }
-        const formattedError = formatMountError(result);
-        setErrorMessage(formattedError);
-        logRemote(`Mount Failure: ${formattedError}`, 'error');
+      const result = await apiMountDrive(id, password);
+      logRemote(`SUCCESS: Drive ${id} mounted at ${result.path}`, 'success');
+      setErrorMessage(null);
+      setPasswordPrompt(null);
+      setPasswordValue('');
+      const { drives: d } = await apiFetchDrives();
+      setDrives(d);
+    } catch (err) {
+      if (err.result?.needsPassword) {
+        const drive = drives.find(d => d.id === id);
+        setPasswordPrompt({ id, name: drive?.name || `Physical Drive ${id}` });
+        return;
       }
-    } catch (error) {
-      setErrorMessage("System error during mount.");
+      const formattedError = formatMountError(err.result || { error: err.message });
+      setErrorMessage(formattedError);
+      logRemote(`Mount Failure: ${formattedError}`, 'error');
     } finally {
       setIsMounting(null);
     }
@@ -246,187 +209,117 @@ const App = () => {
     setErrorMessage(null);
     logRemote(`Frontend: User requested unmount for ${id}`);
     try {
-      const response = await fetch('http://localhost:3001/api/unmount', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id })
-      });
-      if (response.ok) {
-        logRemote(`Drive ${id} unmounted.`, 'success');
-        setErrorMessage(null);
-        fetchDrives();
-      } else {
-        const result = await response.json();
-        setErrorMessage(`Unmount failed: ${result.error || 'unknown error'}`);
-      }
-    } catch (error) {
-      setErrorMessage("System error during unmount.");
+      await apiUnmountDrive(id);
+      logRemote(`Drive ${id} unmounted.`, 'success');
+      setErrorMessage(null);
+      const { drives: d } = await apiFetchDrives();
+      setDrives(d);
+    } catch (err) {
+      setErrorMessage(`Unmount failed: ${err.result?.error || err.message || 'unknown error'}`);
     } finally {
       setIsMounting(null);
     }
   };
 
   const openInExplorer = async (p) => {
-    try {
-      await fetch('http://localhost:3001/api/open', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: p })
-      });
-    } catch { /* best-effort — Explorer open is fire-and-forget */ }
+    try { await apiOpenInExplorer(p); } catch { /* fire-and-forget */ }
   };
 
   const getExplorerTarget = (drive) => {
-    // Prefer mountPath which includes the root/ subfolder for APFS containers
     if (drive?.mountPath) return drive.mountPath;
-    if (drive?.driveLetter) {
-      return `${String(drive.driveLetter).replace(':', '')}:\\`;
-    }
+    if (drive?.driveLetter) return `${String(drive.driveLetter).replace(':', '')}:\\`;
     return '';
   };
 
-  // Setup status banner
-  const SetupBanner = () => {
-    if (setup.status === 'ready') return null;
-
-    const isInstalling = setup.status === 'installing' || setup.status === 'checking';
-    const isFailed = setup.status === 'failed';
-
-    return (
-      <div style={{
-        backgroundColor: isFailed ? 'rgba(192,57,43,0.1)' : 'rgba(229,83,0,0.08)',
-        border: `1px solid ${isFailed ? 'var(--danger)' : 'rgba(229,83,0,0.3)'}`,
-        color: isFailed ? 'var(--danger)' : 'var(--primary)',
-        padding: '14px 18px',
-        marginBottom: '20px',
-        display: 'flex',
-        alignItems: 'center',
-        gap: '12px',
-        fontSize: '12px',
-        fontFamily: 'var(--font-mono)',
-        letterSpacing: '0.5px'
-      }}>
-        {isInstalling && (
-          <div style={{
-            width: 14, height: 14,
-            border: '2px solid var(--primary)', borderTopColor: 'transparent',
-            animation: 'spin 0.8s linear infinite', flexShrink: 0
-          }} />
-        )}
-        {isFailed && <span style={{ fontSize: 18 }}>⚠️</span>}
-        <div>
-          <strong>{isInstalling ? 'Setting up Mac drivers' : 'Setup failed'}</strong>
-          {isInstalling && <Dots />}
-          {' — '}
-          <span style={{ opacity: 0.85 }}>{isInstalling ? 'Preparing runtime components. This can take a moment on first launch.' : setup.message}</span>
-        </div>
-      </div>
-    );
+  const copyLogs = () => {
+    const text = logs.map(l => `[${l.timestamp}] [${l.type.toUpperCase()}] ${l.message}`).join('\n');
+    navigator.clipboard.writeText(text);
+    logRemote('Logs copied to clipboard', 'success');
   };
 
-  const renderContent = () => {
+  const doGenerateBundle = async () => {
+    setBundleStatus('generating');
+    try {
+      const data = await generateSupportBundle();
+      setBundleStatus(data.success ? { path: data.path } : { error: data.error || 'Unknown error' });
+    } catch (e) {
+      setBundleStatus({ error: e.message });
+    }
+  };
+
+  const renderDrives = () => {
     const environmentReady = setup.ready;
+    return (
+      <>
+        <section className="header-section fade-in">
+          <h1>Physical Drives</h1>
+          <p>Select a Mac-formatted drive to mount it as a Windows volume.</p>
+        </section>
 
-    if (activeTab === 'drives') {
-      return (
-        <>
-          <section className="header-section fade-in">
-            <h1>Physical Drives</h1>
-            <p>Select a Mac-formatted drive to mount it as a Windows volume.</p>
-          </section>
+        <SetupBanner setup={setup} />
 
-          <SetupBanner />
-
-          {preflight && !preflight.ready && (
-            <div style={{
-              backgroundColor: 'rgba(229,83,0,0.08)',
-              border: '1px solid rgba(229,83,0,0.3)',
-              color: 'var(--primary)',
-              padding: '16px 18px',
-              marginBottom: '20px',
-              fontSize: '12px',
-              fontFamily: 'var(--font-mono)',
-              letterSpacing: '0.5px'
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
-                <strong>Prerequisites Missing</strong>
-                <button
-                  className="btn btn-primary"
-                  style={{ width: 'auto', padding: '6px 14px', fontSize: '11px' }}
-                  onClick={fixPreflight}
-                  disabled={fixingPreflight}
-                >
-                  {fixingPreflight ? 'Installing...' : 'Auto-Install'}
-                </button>
+        {preflight && !preflight.ready && (
+          <div style={{
+            backgroundColor: 'rgba(229,83,0,0.08)', border: '1px solid rgba(229,83,0,0.3)',
+            color: 'var(--primary)', padding: '16px 18px', marginBottom: '20px',
+            fontSize: '12px', fontFamily: 'var(--font-mono)', letterSpacing: '0.5px'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+              <strong>Prerequisites Missing</strong>
+              <button className="btn btn-primary" style={{ width: 'auto', padding: '6px 14px', fontSize: '11px' }}
+                onClick={doFixPreflight} disabled={fixingPreflight}>
+                {fixingPreflight ? 'Installing...' : 'Auto-Install'}
+              </button>
+            </div>
+            {preflight.items && preflight.items.map(item => (
+              <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', color: item.ok ? 'var(--success)' : 'var(--danger)' }}>
+                <span>{item.ok ? '\u2713' : '\u2717'}</span>
+                <span>{item.title}: {item.detail}</span>
               </div>
-              {preflight.items && preflight.items.map(item => (
-                <div key={item.id} style={{
-                  display: 'flex', alignItems: 'center', gap: '8px',
-                  marginBottom: '6px',
-                  color: item.ok ? 'var(--success)' : 'var(--danger)'
-                }}>
-                  <span>{item.ok ? '✓' : '✗'}</span>
-                  <span>{item.title}: {item.detail}</span>
-                </div>
-              ))}
-              {preflight.note && (
-                <div style={{ marginTop: '8px', opacity: 0.7, fontSize: '11px' }}>{preflight.note}</div>
-              )}
-            </div>
-          )}
+            ))}
+            {preflight.note && <div style={{ marginTop: '8px', opacity: 0.7, fontSize: '11px' }}>{preflight.note}</div>}
+          </div>
+        )}
 
-          {errorMessage && (
-            <div style={{ backgroundColor: 'rgba(192,57,43,0.08)', border: '1px solid var(--danger)', color: 'var(--danger)', padding: '14px 18px', marginBottom: '24px', fontFamily: 'var(--font-mono)', fontSize: '12px', letterSpacing: '0.5px' }}>
-              <strong style={{ letterSpacing: '1.5px', textTransform: 'uppercase' }}>SYS_ERROR:</strong> {errorMessage}
-            </div>
-          )}
+        {errorMessage && (
+          <div style={{ backgroundColor: 'rgba(192,57,43,0.08)', border: '1px solid var(--danger)', color: 'var(--danger)', padding: '14px 18px', marginBottom: '24px', fontFamily: 'var(--font-mono)', fontSize: '12px', letterSpacing: '0.5px' }}>
+            <strong style={{ letterSpacing: '1.5px', textTransform: 'uppercase' }}>SYS_ERROR:</strong> {errorMessage}
+          </div>
+        )}
 
-          {isLoading ? (
-            <div style={{ display: 'flex', justifyContent: 'center', padding: '100px' }}>
-              <div className="spinner">Scanning Disks...</div>
-            </div>
-          ) : (
-            <div className="drive-grid">
-              {drives.map((drive, index) => (
+        {isLoading ? (
+          <div style={{ display: 'flex', justifyContent: 'center', padding: '100px' }}>
+            <div className="spinner">Scanning Disks...</div>
+          </div>
+        ) : (
+          <div className="drive-grid">
+            {drives.map((drive, index) => {
+              const mountBlocked = !drive.mounted && drive.supported === false;
+              const mountTitle = !drive.mounted && !environmentReady
+                ? 'Finish setup first.'
+                : mountBlocked
+                  ? (drive.mountHint || 'This drive type is not supported yet.')
+                  : '';
+              const mountLabel = isMounting === drive.id
+                ? (drive.mounted ? 'Unmounting...' : 'Mounting...')
+                : !environmentReady && !drive.mounted
+                  ? '\u23F3 Preparing...'
+                  : mountBlocked
+                    ? 'Unsupported'
+                    : drive.mounted
+                      ? 'Unmount'
+                      : drive.needsPassword
+                        ? 'Unlock Drive'
+                        : 'Mount Drive';
+              return (
                 <div key={drive.id} className="drive-card fade-in" style={{ animationDelay: `${index * 0.1}s`, opacity: drive.isMac ? 1 : 0.6 }}>
-                  {(() => {
-                    const mountBlocked = !drive.mounted && drive.supported === false;
-                    const mountTitle = !drive.mounted && !environmentReady
-                      ? 'Finish setup first.'
-                      : mountBlocked
-                        ? (drive.mountHint || 'This drive type is not supported yet.')
-                        : '';
-                    const mountLabel = isMounting === drive.id
-                      ? (drive.mounted ? 'Unmounting...' : 'Mounting...')
-                      : !environmentReady && !drive.mounted
-                        ? '⏳ Preparing...'
-                        : mountBlocked
-                          ? 'Unsupported'
-                          : drive.mounted
-                            ? 'Unmount'
-                            : drive.needsPassword
-                              ? 'Unlock Drive'
-                              : 'Mount Drive';
-
-                    return (
-                      <>
                   <div className="drive-info">
                     <div className="drive-icon"><DriveIcon /></div>
                     <div className="drive-details">
                       <h3>{drive.name}</h3>
-                      <span>{drive.size} • {drive.type} • <b style={{ color: drive.isMac ? 'var(--success)' : 'inherit' }}>{drive.format}</b></span>
+                      <span>{drive.size} &bull; {drive.type} &bull; <b style={{ color: drive.isMac ? 'var(--success)' : 'inherit' }}>{drive.format}</b></span>
                       {(drive.needsPassword || drive.mountHint) && (
-                        <div style={{
-                          marginTop: '8px',
-                          fontSize: '11px',
-                          letterSpacing: '0.5px',
-                          color: drive.supported === false
-                            ? 'var(--danger)'
-                            : drive.needsPassword
-                              ? 'var(--warning)'
-                              : 'var(--text-dim)',
-                          fontFamily: 'var(--font-mono)'
-                        }}>
+                        <div style={{ marginTop: '8px', fontSize: '11px', letterSpacing: '0.5px', color: drive.supported === false ? 'var(--danger)' : drive.needsPassword ? 'var(--warning)' : 'var(--text-dim)', fontFamily: 'var(--font-mono)' }}>
                           {drive.needsPassword ? 'ENCRYPTED' : 'NOTICE'}: {drive.mountHint}
                         </div>
                       )}
@@ -438,7 +331,7 @@ const App = () => {
                       ? (drive.driveLetter
                           ? `Mounted as ${drive.driveLetter}:`
                           : drive.mountPath && drive.mountPath.startsWith('\\\\')
-                            ? 'Mounted (R/W via WSL2 — click Open Explorer)'
+                            ? 'Mounted (R/W via WSL2 \u2014 click Open Explorer)'
                             : 'Mounted')
                       : 'Unmounted'}
                   </div>
@@ -459,153 +352,121 @@ const App = () => {
                       Open Explorer
                     </button>
                   </div>
-                      </>
-                    );
-                  })()}
                 </div>
-              ))}
-            </div>
-          )}
-        </>
-      );
-    }
-
-    if (activeTab === 'logs') {
-      const copyLogs = () => {
-        const text = logs.map(l => `[${l.timestamp}] [${l.type.toUpperCase()}] ${l.message}`).join('\n');
-        navigator.clipboard.writeText(text);
-        logRemote("Logs copied to clipboard", 'success');
-      };
-
-      return (
-        <section className="fade-in">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
-            <h1>System Logs</h1>
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <button className="btn btn-outline" style={{ width: 'auto', padding: '8px 16px' }} onClick={copyLogs}>Copy Logs</button>
-              <button className="btn btn-outline" style={{ width: 'auto', padding: '8px 16px' }} onClick={() => setLogs([])}>Clear</button>
-            </div>
+              );
+            })}
           </div>
-          <div style={{ backgroundColor: '#080808', border: '1px solid var(--border)', padding: '20px', height: '500px', overflowY: 'auto', fontFamily: 'var(--font-mono)', fontSize: '12px' }}>
-            {logs.map((log, i) => (
-              <div key={i} style={{ marginBottom: '6px', color: log.type === 'error' ? 'var(--danger)' : log.type === 'success' ? 'var(--success)' : log.type === 'warning' ? 'var(--warning)' : 'var(--text-dim)', lineHeight: '1.6' }}>
-                <span style={{ color: '#333', marginRight: '10px' }}>[{log.timestamp}]</span>
-                <span>{log.message}</span>
+        )}
+      </>
+    );
+  };
+
+  const renderLogs = () => (
+    <section className="fade-in">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+        <h1>System Logs</h1>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <button className="btn btn-outline" style={{ width: 'auto', padding: '8px 16px' }} onClick={copyLogs}>Copy Logs</button>
+          <button className="btn btn-outline" style={{ width: 'auto', padding: '8px 16px' }} onClick={() => setLogs([])}>Clear</button>
+        </div>
+      </div>
+      <div style={{ backgroundColor: '#080808', border: '1px solid var(--border)', padding: '20px', height: '500px', overflowY: 'auto', fontFamily: 'var(--font-mono)', fontSize: '12px' }}>
+        {logs.map((log, i) => (
+          <div key={i} style={{ marginBottom: '6px', color: log.type === 'error' ? 'var(--danger)' : log.type === 'success' ? 'var(--success)' : log.type === 'warning' ? 'var(--warning)' : 'var(--text-dim)', lineHeight: '1.6' }}>
+            <span style={{ color: '#333', marginRight: '10px' }}>[{log.timestamp}]</span>
+            <span>{log.message}</span>
+          </div>
+        ))}
+        {logs.length === 0 && <div style={{ color: '#333', textAlign: 'center', marginTop: '200px', letterSpacing: '2px', textTransform: 'uppercase', fontSize: '11px' }}>-- NO ACTIVITY LOGGED --</div>}
+      </div>
+    </section>
+  );
+
+  const renderSettings = () => (
+    <section className="fade-in">
+      <h1>Settings</h1>
+
+      <h3 style={{ marginTop: '24px', marginBottom: '12px', opacity: 0.5, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '2.5px', fontFamily: 'var(--font-heading)', color: 'var(--primary)' }}>Runtime Prerequisites</h3>
+      <div style={{ background: '#0e0e0e', border: '1px solid var(--border)', padding: '16px' }}>
+        {preflight ? (
+          <>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <span style={{ color: preflight.ready ? 'var(--success)' : 'var(--danger)', fontSize: '13px', fontWeight: 'bold' }}>
+                {preflight.ready ? 'All prerequisites installed' : 'Prerequisites missing'}
+              </span>
+              {!preflight.ready && (
+                <button className="btn btn-primary" style={{ width: 'auto', padding: '6px 14px', fontSize: '11px' }} onClick={doFixPreflight} disabled={fixingPreflight}>
+                  {fixingPreflight ? 'Installing...' : 'Auto-Install'}
+                </button>
+              )}
+            </div>
+            {preflight.items && preflight.items.map(item => (
+              <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)', color: item.ok ? 'var(--success)' : 'var(--danger)' }}>
+                <span style={{ fontSize: '12px', letterSpacing: '1px', textTransform: 'uppercase' }}>{item.title}</span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>{item.detail}</span>
               </div>
             ))}
-            {logs.length === 0 && <div style={{ color: '#333', textAlign: 'center', marginTop: '200px', letterSpacing: '2px', textTransform: 'uppercase', fontSize: '11px' }}>-- NO ACTIVITY LOGGED --</div>}
+          </>
+        ) : (
+          <div style={{ color: 'var(--text-dim)', fontSize: '13px' }}>Checking...</div>
+        )}
+      </div>
+
+      <h3 style={{ marginTop: '24px', marginBottom: '12px', opacity: 0.5, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '2.5px', fontFamily: 'var(--font-heading)', color: 'var(--primary)' }}>Native Engine</h3>
+      <div style={{ background: '#0e0e0e', border: '1px solid var(--border)', padding: '16px' }}>
+        <SettingsRow label="Status" value={nativeStatus.available ? 'Connected' : 'Not connected'} />
+        {nativeStatus.available && <SettingsRow label="Engine" value={nativeStatus.engine || 'unknown'} />}
+        {nativeStatus.available && <SettingsRow label="Local Fixed Support" value={nativeStatus.supportsLocalFixed ? 'Yes' : 'No'} />}
+      </div>
+
+      <h3 style={{ marginTop: '24px', marginBottom: '12px', opacity: 0.5, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '2.5px', fontFamily: 'var(--font-heading)', color: 'var(--primary)' }}>Runtime Configuration</h3>
+      <div style={{ background: '#0e0e0e', border: '1px solid var(--border)', padding: '16px' }}>
+        {runtimeConfig ? (
+          <>
+            <SettingsRow label="Mount Mode" value={runtimeConfig.mode} />
+            <SettingsRow label="Native Mount Enabled" value={runtimeConfig.nativeEnabled ? 'Yes' : 'No'} />
+            <SettingsRow label="Raw Engine Rollout %" value={`${runtimeConfig.canaryPercent}%`} />
+            <SettingsRow label="Native Bridge Fallback" value={runtimeConfig.allowBridgeFallback ? 'Allowed' : 'Disabled'} />
+          </>
+        ) : (
+          <div style={{ color: 'var(--text-dim)', fontSize: '13px' }}>Loading...</div>
+        )}
+      </div>
+
+      <h3 style={{ marginTop: '24px', marginBottom: '12px', opacity: 0.5, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '2.5px', fontFamily: 'var(--font-heading)', color: 'var(--primary)' }}>Support</h3>
+      <div style={{ background: '#0e0e0e', border: '1px solid var(--border)', padding: '16px' }}>
+        <p style={{ fontSize: '13px', color: 'var(--text-dim)', margin: '0 0 12px' }}>
+          Generate a diagnostic bundle saved to <code>%ProgramData%\GKMacOpener\Support\</code>.
+        </p>
+        <button className="btn btn-outline" style={{ width: 'auto', padding: '8px 16px' }} onClick={doGenerateBundle} disabled={bundleStatus === 'generating'}>
+          {bundleStatus === 'generating' ? 'Generating...' : 'Generate Support Bundle'}
+        </button>
+        {bundleStatus && bundleStatus !== 'generating' && (
+          <div style={{ marginTop: '12px', fontSize: '13px', color: bundleStatus.error ? 'var(--danger)' : 'var(--success)' }}>
+            {bundleStatus.error ? `Error: ${bundleStatus.error}` : `Saved to: ${bundleStatus.path}`}
           </div>
-        </section>
-      );
-    }
+        )}
+      </div>
 
-    if (activeTab === 'settings') {
-      const generateBundle = async () => {
-        setBundleStatus('generating');
-        try {
-          const res = await fetch('http://localhost:3001/api/support/bundle');
-          const data = await res.json();
-          setBundleStatus(data.success ? { path: data.path } : { error: data.error || 'Unknown error' });
-        } catch (e) {
-          setBundleStatus({ error: e.message });
-        }
-      };
-
-      const row = (label, value) => (
-        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
-          <span style={{ color: 'var(--text-dim)', fontSize: '12px', letterSpacing: '1px', textTransform: 'uppercase' }}>{label}</span>
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'var(--text-main)' }}>{value}</span>
+      <h3 style={{ marginTop: '24px', marginBottom: '12px', opacity: 0.5, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '2.5px', fontFamily: 'var(--font-heading)', color: 'var(--primary)' }}>About</h3>
+      <div style={{ background: '#0e0e0e', border: '1px solid var(--border)', padding: '16px' }}>
+        <SettingsRow label="App" value="GKMacOpener" />
+        <SettingsRow label="Version" value={APP_VERSION} />
+        <SettingsRow label="License" value="MIT" />
+        <SettingsRow label="Copyright" value={COPYRIGHT_NOTICE} />
+        <div style={{ padding: '12px 0 0', color: 'var(--text-dim)', fontSize: '12px', lineHeight: 1.6 }}>
+          <div>{WINFSP_NOTICE}</div>
+          <div>https://github.com/winfsp/winfsp</div>
+          <div style={{ marginTop: '8px' }}>Full notices are available from the Help menu.</div>
         </div>
-      );
+      </div>
+    </section>
+  );
 
-      return (
-        <section className="fade-in">
-          <h1>Settings</h1>
-
-          <h3 style={{ marginTop: '24px', marginBottom: '12px', opacity: 0.5, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '2.5px', fontFamily: 'var(--font-heading)', color: 'var(--primary)' }}>Runtime Prerequisites</h3>
-          <div style={{ background: '#0e0e0e', border: '1px solid var(--border)', padding: '16px' }}>
-            {preflight ? (
-              <>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                  <span style={{ color: preflight.ready ? 'var(--success)' : 'var(--danger)', fontSize: '13px', fontWeight: 'bold' }}>
-                    {preflight.ready ? 'All prerequisites installed' : 'Prerequisites missing'}
-                  </span>
-                  {!preflight.ready && (
-                    <button
-                      className="btn btn-primary"
-                      style={{ width: 'auto', padding: '6px 14px', fontSize: '11px' }}
-                      onClick={fixPreflight}
-                      disabled={fixingPreflight}
-                    >
-                      {fixingPreflight ? 'Installing...' : 'Auto-Install'}
-                    </button>
-                  )}
-                </div>
-                {preflight.items && preflight.items.map(item => (
-                  <div key={item.id} style={{
-                    display: 'flex', justifyContent: 'space-between', padding: '8px 0',
-                    borderBottom: '1px solid var(--border)',
-                    color: item.ok ? 'var(--success)' : 'var(--danger)'
-                  }}>
-                    <span style={{ fontSize: '12px', letterSpacing: '1px', textTransform: 'uppercase' }}>{item.title}</span>
-                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>{item.detail}</span>
-                  </div>
-                ))}
-              </>
-            ) : (
-              <div style={{ color: 'var(--text-dim)', fontSize: '13px' }}>Checking...</div>
-            )}
-          </div>
-
-          <h3 style={{ marginTop: '24px', marginBottom: '12px', opacity: 0.5, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '2.5px', fontFamily: 'var(--font-heading)', color: 'var(--primary)' }}>Native Engine</h3>
-          <div style={{ background: '#0e0e0e', border: '1px solid var(--border)', padding: '16px' }}>
-            {row('Status', nativeStatus.available ? 'Connected' : 'Not connected')}
-            {nativeStatus.available && row('Engine', nativeStatus.engine || 'unknown')}
-            {nativeStatus.available && row('Local Fixed Support', nativeStatus.supportsLocalFixed ? 'Yes' : 'No')}
-          </div>
-
-          <h3 style={{ marginTop: '24px', marginBottom: '12px', opacity: 0.5, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '2.5px', fontFamily: 'var(--font-heading)', color: 'var(--primary)' }}>Runtime Configuration</h3>
-          <div style={{ background: '#0e0e0e', border: '1px solid var(--border)', padding: '16px' }}>
-            {runtimeConfig ? (
-              <>
-                {row('Mount Mode', runtimeConfig.mode)}
-                {row('Native Mount Enabled', runtimeConfig.nativeEnabled ? 'Yes' : 'No')}
-                {row('Raw Engine Rollout %', `${runtimeConfig.canaryPercent}%`)}
-                {row('Native Bridge Fallback', runtimeConfig.allowBridgeFallback ? 'Allowed' : 'Disabled')}
-              </>
-            ) : (
-              <div style={{ color: 'var(--text-dim)', fontSize: '13px' }}>Loading...</div>
-            )}
-          </div>
-
-          <h3 style={{ marginTop: '24px', marginBottom: '12px', opacity: 0.5, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '2.5px', fontFamily: 'var(--font-heading)', color: 'var(--primary)' }}>Support</h3>
-          <div style={{ background: '#0e0e0e', border: '1px solid var(--border)', padding: '16px' }}>
-            <p style={{ fontSize: '13px', color: 'var(--text-dim)', margin: '0 0 12px' }}>
-              Generate a diagnostic bundle saved to <code>%ProgramData%\MacMount\Support\</code>.
-            </p>
-            <button
-              className="btn btn-outline"
-              style={{ width: 'auto', padding: '8px 16px' }}
-              onClick={generateBundle}
-              disabled={bundleStatus === 'generating'}
-            >
-              {bundleStatus === 'generating' ? 'Generating...' : 'Generate Support Bundle'}
-            </button>
-            {bundleStatus && bundleStatus !== 'generating' && (
-              <div style={{
-                marginTop: '12px', fontSize: '13px',
-                color: bundleStatus.error ? 'var(--danger)' : 'var(--success)'
-              }}>
-                {bundleStatus.error
-                  ? `Error: ${bundleStatus.error}`
-                  : `Saved to: ${bundleStatus.path}`}
-              </div>
-            )}
-          </div>
-        </section>
-      );
-    }
-
+  const renderContent = () => {
+    if (activeTab === 'drives') return renderDrives();
+    if (activeTab === 'logs') return renderLogs();
+    if (activeTab === 'settings') return renderSettings();
     return null;
   };
 
@@ -614,13 +475,9 @@ const App = () => {
       <aside className="sidebar">
         <div className="sidebar-header">
           <div className="logo">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="square" strokeLinejoin="miter">
-              <rect x="2" y="4" width="20" height="16" rx="0" />
-              <line x1="2" y1="10" x2="22" y2="10" />
-              <line x1="12" y1="10" x2="12" y2="20" />
-            </svg>
+            <img src={appLogo} alt="" aria-hidden="true" />
           </div>
-          <h2>MacMount</h2>
+          <h2>GKMacOpener</h2>
         </div>
         <nav className="nav-list">
           <li className={`nav-item ${activeTab === 'drives' ? 'active' : ''}`} onClick={() => setActiveTab('drives')}>
@@ -652,11 +509,9 @@ const App = () => {
                 <span style={{ fontSize: '11px', opacity: 0.5, fontFamily: 'var(--font-mono)', letterSpacing: '1px', textTransform: 'uppercase' }}>FileVault Active</span>
               </div>
             </div>
-
             <p style={{ fontSize: '14px', marginBottom: '20px' }}>
               Enter the password to unlock <strong>{passwordPrompt.name}</strong>.
             </p>
-
             <input
               type="password"
               className="form-input"
@@ -667,21 +522,11 @@ const App = () => {
               onChange={(e) => setPasswordValue(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && mountDrive(passwordPrompt.id, passwordValue)}
             />
-
             <div style={{ display: 'flex', gap: '12px' }}>
-              <button
-                className="btn btn-primary"
-                style={{ flex: 1 }}
-                onClick={() => mountDrive(passwordPrompt.id, passwordValue)}
-                disabled={isMounting !== null}
-              >
+              <button className="btn btn-primary" style={{ flex: 1 }} onClick={() => mountDrive(passwordPrompt.id, passwordValue)} disabled={isMounting !== null}>
                 {isMounting ? 'Unlocking...' : 'Unlock Drive'}
               </button>
-              <button
-                className="btn btn-outline"
-                style={{ width: 'auto' }}
-                onClick={() => { setPasswordPrompt(null); setPasswordValue(''); }}
-              >
+              <button className="btn btn-outline" style={{ width: 'auto' }} onClick={() => { setPasswordPrompt(null); setPasswordValue(''); }}>
                 Cancel
               </button>
             </div>

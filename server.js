@@ -43,9 +43,18 @@ const ALLOWED_CORS_ORIGINS = new Set([
 
 // Driver installation state
 let setupState = {
-    status: 'ready',
-    message: 'Core runtime ready.',
-    ready: true
+    status: 'checking',
+    message: 'Checking WSL2 kernel runtime.',
+    ready: false,
+    wslSetup: {
+        wslAvailable: false,
+        ubuntu: false,
+        kernelStaged: false,
+        configWritten: false,
+        modulesLoaded: [],
+        error: null,
+        requiresAction: false
+    }
 };
 
 function isAdmin() {
@@ -217,8 +226,8 @@ async function getBrokerMountedMap() {
                 }
             }
         }
-    } catch {
-        // best-effort only
+    } catch (e) {
+        addLog(`getBrokerMountedMap failed: ${e.message}`, 'debug');
     }
     return map;
 }
@@ -243,12 +252,13 @@ function getUsedDriveLetters() {
         const matches = out.match(/[A-Z]:\\/g) || [];
         return new Set(matches.map((m) => m[0].toUpperCase()));
     } catch {
+        addLog('getUsedDriveLetters: fsutil unavailable, falling back to fs.existsSync', 'debug');
         const used = new Set();
         for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') {
             try {
                 if (fs.existsSync(`${letter}:\\`)) used.add(letter);
             } catch {
-                // ignore
+                /* letter check skipped */
             }
         }
         return used;
@@ -259,11 +269,9 @@ function removeUserSessionDriveMapping(letter) {
     const L = String(letter || '').trim().toUpperCase().replace(':', '');
     if (!/^[A-Z]$/.test(L)) return;
 
-    // Write the inner unmap script to a temp file so we don't have to embed
-    // multi-line PowerShell here-strings or unescaped double-quotes inside
-    // a -Command "..." argument (both caused silent failures before).
     const tmpDir = process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp';
-    const tmpScript = path.join(tmpDir, `MacMountUnmap_${L}_${Date.now()}.ps1`);
+    // Use a stable name so stale scripts from prior crashes are overwritten, not leaked.
+    const tmpScript = path.join(tmpDir, `MacMount_Unmap_${L}.ps1`);
 
     // The inner script runs non-elevated (RunLevel Limited) via scheduled task.
     // It calls QueryDosDevice / DefineDosDevice to remove the drive mapping from
@@ -292,8 +300,9 @@ function removeUserSessionDriveMapping(letter) {
 
     try {
         fs.writeFileSync(tmpScript, innerScript, 'utf8');
-    } catch {
-        return; // Can't write temp file; skip cleanup silently
+    } catch (e) {
+        addLog(`removeUserSessionDriveMapping: cannot write temp script for ${L}: ${e.message}`, 'warning');
+        return;
     }
 
     const taskName = `MacMountUnmap${L}_${Date.now()}`;
@@ -316,14 +325,18 @@ function removeUserSessionDriveMapping(letter) {
         timeout: 15000,
         windowsHide: true
     }, () => {
-        try { fs.unlinkSync(tmpScript); } catch {}
+        try { fs.unlinkSync(tmpScript); } catch (e) {
+            addLog(`Failed to remove temp unmap script ${tmpScript}: ${e.message}`, 'debug');
+        }
     });
 }
 
 function cleanupSingleDriveLetter(letter) {
     const L = String(letter || '').trim().toUpperCase().replace(':', '');
     if (!/^[A-Z]$/.test(L)) return;
-    try { removeUserSessionDriveMapping(L); } catch {}
+    try { removeUserSessionDriveMapping(L); } catch (e) {
+        addLog(`cleanupSingleDriveLetter failed for ${L}: ${e.message}`, 'debug');
+    }
 }
 
 function getTrackedManagedLetters() {
@@ -360,6 +373,7 @@ function getTrackedManagedLetters() {
                 .filter((v) => /^[A-Z]$/.test(v))
         );
     } catch {
+        addLog('getTrackedManagedLetters: registry read failed', 'debug');
         return new Set();
     }
 }
@@ -378,7 +392,9 @@ function cleanupGhostDriveLetters(activeLetters = []) {
     for (const letter of tracked) {
         if (keep.has(letter)) continue;
         if (fs.existsSync(`${letter}:\\`)) continue;
-        try { removeUserSessionDriveMapping(letter); } catch {}
+        try { removeUserSessionDriveMapping(letter); } catch (e) {
+            addLog(`Ghost cleanup failed for ${letter}: ${e.message}`, 'debug');
+        }
     }
 }
 
@@ -393,8 +409,8 @@ function resolveUserFacingSourcePath(sourcePath) {
         if (hasRootDir && hasPrivateDir) {
             return rootCandidate;
         }
-    } catch {
-        // keep original path
+    } catch (e) {
+        addLog(`resolveUserFacingSourcePath error: ${e.message}`, 'debug');
     }
     return p;
 }
@@ -438,7 +454,7 @@ async function tryMountRawWithFallbackLetters(driveId, preferred = '', sourcePat
                     error: 'Native broker is unavailable or not elevated.',
                     analysis: lastAnalysis,
                     needsPassword: false,
-                    suggestion: 'Restart MacMount as Administrator so the elevated broker can mount raw disks.'
+                    suggestion: 'Restart GKMacOpener as Administrator so the elevated broker can mount raw disks.'
                 };
             }
 
@@ -488,8 +504,8 @@ async function tryMountRawWithFallbackLetters(driveId, preferred = '', sourcePat
                             totalBytes = Number(analysis.plan.TotalBytes) || 0;
                         }
                     }
-                } catch {
-                    // best-effort only
+                } catch (e) {
+                    addLog(`Raw capacity analysis fallback failed: ${e.message}`, 'debug');
                 }
                 result = await sendBrokerRequest({
                     action: 'mount_passthrough',
@@ -592,13 +608,37 @@ addLog("Native service started for raw-disk analysis endpoints.");
 (async () => {
     try {
         const summary = await ensureWslMountPathReady(addLog);
+        setupState.wslSetup = {
+            ...summary,
+            requiresAction: Boolean(summary.error)
+        };
         if (summary.error) {
-            addLog(`WSL mount path setup incomplete: ${summary.error}. Native fallback will be used for mounts.`, 'warning');
+            setupState.status = 'failed';
+            setupState.ready = false;
+            setupState.message = summary.error;
+            addLog(`WSL mount path setup incomplete: ${summary.error}. Mounting is blocked until setup is repaired.`, 'warning');
         } else if (summary.modulesLoaded?.length) {
+            setupState.status = 'ready';
+            setupState.ready = true;
+            setupState.message = 'WSL2 kernel runtime ready.';
             addLog(`WSL mount path ready: kernel modules loaded [${summary.modulesLoaded.join(', ')}].`, 'success');
+        } else {
+            setupState.status = 'failed';
+            setupState.ready = false;
+            setupState.message = 'WSL2 kernel runtime did not report loaded Mac filesystem modules.';
+            setupState.wslSetup.requiresAction = true;
+            addLog(setupState.message, 'warning');
         }
     } catch (e) {
-        addLog(`WSL setup failed: ${e.message}`, 'warning');
+        setupState.status = 'failed';
+        setupState.ready = false;
+        setupState.message = `WSL setup failed: ${e.message}`;
+        setupState.wslSetup = {
+            ...setupState.wslSetup,
+            error: e.message,
+            requiresAction: true
+        };
+        addLog(setupState.message, 'warning');
     }
 })();
 
@@ -660,8 +700,8 @@ async function runRuntimeIntegrationChecks() {
                 nativeServiceReachable = true;
                 break;
             }
-        } catch {
-            // retry
+        } catch (e) {
+            addLog(`Runtime check: native status probe error: ${e.message}`, 'debug');
         }
         await new Promise((r) => setTimeout(r, 500));
     }
@@ -700,21 +740,42 @@ async function clearStartupMountState() {
                                     requestId: String(Date.now()),
                                     driveId
                                 }, 10000);
-                            } catch {}
+                            } catch (e) {
+                                addLog(`Startup unmount failed for ${driveId}: ${e.message}`, 'debug');
+                            }
                         }
                         if (/^[A-Z]$/.test(letter)) {
-                            try { cleanupSingleDriveLetter(letter); } catch {}
+                            try { cleanupSingleDriveLetter(letter); } catch (e) {
+                                addLog(`Startup letter cleanup failed for ${letter}: ${e.message}`, 'debug');
+                            }
                         }
                     }
                 }
-            } catch {}
+            } catch (e) {
+                addLog(`Startup broker status check failed: ${e.message}`, 'debug');
+            }
         }
-    } catch {}
+    } catch (e) {
+        addLog(`Startup broker unavailable: ${e.message}`, 'debug');
+    }
 
     nativeMountState.clear();
     for (const letter of getTrackedManagedLetters()) {
-        try { cleanupSingleDriveLetter(letter); } catch {}
+        try { cleanupSingleDriveLetter(letter); } catch (e) {
+            addLog(`Startup ghost letter cleanup failed for ${letter}: ${e.message}`, 'debug');
+        }
     }
+
+    try {
+        const tmpDir = process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp';
+        const stalePattern = path.join(tmpDir, 'MacMount_Unmap_*.ps1');
+        // Clean stale unmap scripts — fs.glob isn't available in Node core,
+        // so invoke PowerShell briefly. Best-effort only.
+        execSync(
+            `powershell -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command "Remove-Item '${stalePattern}' -Force -ErrorAction SilentlyContinue"`,
+            { timeout: 5000, windowsHide: true, stdio: 'ignore' }
+        );
+    } catch {}
 }
 
 const startupCleanupPromise = clearStartupMountState().then(() => {

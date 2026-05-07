@@ -7,9 +7,15 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $pkgPath = Join-Path $root "package.json"
 $distDir = Join-Path $root "dist"
+
+if (-not (Test-Path $pkgPath)) { throw "package.json not found." }
+$pkg = Get-Content $pkgPath | ConvertFrom-Json
+$productName = if (-not [string]::IsNullOrWhiteSpace($pkg.build.productName)) { $pkg.build.productName } else { $pkg.productName }
+if ([string]::IsNullOrWhiteSpace($productName)) { $productName = "GKMacOpener" }
+
 $setupPatterns = @(
-    "MacMount-Setup-*.exe",
-    "MacMount Setup *.exe"
+    "$productName-Setup-*.exe",
+    "$productName Setup *.exe"
 )
 $setupExe = $null
 foreach ($pattern in $setupPatterns) {
@@ -19,17 +25,14 @@ foreach ($pattern in $setupPatterns) {
         break
     }
 }
-$portableExe = Get-ChildItem -Path $distDir -Filter "MacMount *.exe" -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -notlike "MacMount Setup *" -and $_.Name -notlike "MacMount-Setup-*" } |
+$portableExe = Get-ChildItem -Path $distDir -Filter "$productName *.exe" -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -notlike "$productName Setup *" -and $_.Name -notlike "$productName-Setup-*" } |
     Sort-Object LastWriteTime -Descending |
     Select-Object -First 1
 $releaseExe = if ($setupExe) { $setupExe } else { $portableExe }
 
-Write-Host "MacMount Release Audit"
-Write-Host "====================="
-
-if (-not (Test-Path $pkgPath)) { throw "package.json not found." }
-$pkg = Get-Content $pkgPath | ConvertFrom-Json
+Write-Host "$productName Release Audit"
+Write-Host ("=" * ("$productName Release Audit").Length)
 
 $checks = @()
 
@@ -97,19 +100,19 @@ $checks += [pscustomobject]@{
 $checks += [pscustomobject]@{
     Check = "Release artifact produced"
     Passed = $null -ne $releaseExe
-    Detail = $(if ($releaseExe) { $releaseExe.FullName } else { "No MacMount executable in dist" })
+    Detail = $(if ($releaseExe) { $releaseExe.FullName } else { "No $productName executable in dist" })
 }
 
 $checks += [pscustomobject]@{
     Check = "Installer artifact produced (NSIS)"
     Passed = $null -ne $setupExe
-    Detail = $(if ($setupExe) { $setupExe.FullName } else { "No MacMount setup executable in dist" })
+    Detail = $(if ($setupExe) { $setupExe.FullName } else { "No $productName setup executable in dist" })
 }
 
 $checks += [pscustomobject]@{
     Check = "Portable artifact produced"
     Passed = $null -ne $portableExe
-    Detail = $(if ($portableExe) { $portableExe.FullName } else { "No MacMount portable executable in dist" })
+    Detail = $(if ($portableExe) { $portableExe.FullName } else { "No $productName portable executable in dist" })
 }
 
 $checks += [pscustomobject]@{
@@ -122,6 +125,75 @@ $checks += [pscustomobject]@{
     Check = "Offline WinFsp prereq bundled"
     Passed = (Test-Path (Join-Path $root "prereqs\winfsp.msi")) -or (Test-Path (Join-Path $root "prereqs\WinFsp.msi"))
     Detail = (Join-Path $root "prereqs")
+}
+
+$packedWinFspExtract = Join-Path $root "dist\win-unpacked\resources\prereqs\winfsp-extract"
+$checks += [pscustomobject]@{
+    Check = "Extracted WinFsp payload not packaged"
+    Passed = -not (Test-Path $packedWinFspExtract)
+    Detail = $packedWinFspExtract
+}
+
+$fullPrereqsPacked = $false
+try {
+    $fullPrereqsPacked = @($pkg.build.extraResources | Where-Object { $_.from -eq "prereqs" }).Count -gt 0 -or
+                         @($pkg.build.files | Where-Object { $_ -eq "prereqs/**/*" }).Count -gt 0 -or
+                         @($pkg.build.asarUnpack | Where-Object { $_ -eq "prereqs/**/*" }).Count -gt 0
+} catch {
+    $fullPrereqsPacked = $true
+}
+$checks += [pscustomobject]@{
+    Check = "Packaging avoids whole prereqs directory"
+    Passed = -not $fullPrereqsPacked
+    Detail = "package.json build.files/asarUnpack/extraResources"
+}
+
+$noticePath = Join-Path $root "build\THIRD_PARTY_NOTICES.txt"
+$noticeText = if (Test-Path $noticePath) { Get-Content $noticePath -Raw } else { "" }
+$checks += [pscustomobject]@{
+    Check = "WinFsp FLOSS attribution documented"
+    Passed = ($noticeText -match "WinFsp - Windows File System Proxy, Copyright \(C\) Bill Zissimopoulos") -and ($noticeText -match "github\.com/winfsp/winfsp")
+    Detail = $noticePath
+}
+
+$checks += [pscustomobject]@{
+    Check = "GKMacOpener MIT copyright documented"
+    Passed = ($noticeText -match "Copyright \(c\) 2026 GKMacOpener contributors") -and ((Get-Content (Join-Path $root "LICENSE") -Raw) -match "Copyright \(c\) 2026 GKMacOpener contributors")
+    Detail = "LICENSE + THIRD_PARTY_NOTICES.txt"
+}
+
+$kernelPath = Join-Path $root "prereqs\macmount-kernel\wsl_kernel"
+$checks += [pscustomobject]@{
+    Check = "Bundled WSL kernel"
+    Passed = (Test-Path $kernelPath)
+    Detail = $kernelPath
+}
+
+$wslModules = @(
+    @{ Label = "Bundled WSL module: apfs.ko"; Name = "apfs.ko" },
+    @{ Label = "Bundled WSL module: hfs.ko"; Name = "hfs.ko" },
+    @{ Label = "Bundled WSL module: hfsplus.ko"; Name = "hfsplus.ko" }
+)
+foreach ($module in $wslModules) {
+    $modulePath = Join-Path $root "prereqs\macmount-kernel\modules\$($module.Name)"
+    $checks += [pscustomobject]@{
+        Check = $module.Label
+        Passed = (Test-Path $modulePath)
+        Detail = $modulePath
+    }
+}
+
+$nativeRequired = @(
+    @{ Label = "Native service published"; Path = (Join-Path $root "native\bin\service\MacMount.NativeService.exe") },
+    @{ Label = "Native broker published"; Path = (Join-Path $root "native\bin\broker\MacMount.NativeBroker.exe") },
+    @{ Label = "User-session helper published"; Path = (Join-Path $root "native\bin\user-session\MacMount.UserSessionHelper.exe") }
+)
+foreach ($item in $nativeRequired) {
+    $checks += [pscustomobject]@{
+        Check = $item.Label
+        Passed = (Test-Path $item.Path)
+        Detail = $item.Path
+    }
 }
 
 $checks += [pscustomobject]@{
@@ -144,14 +216,14 @@ if ($signEnv -and $effectiveCscLink -match "macmount-signing-placeholder\.pfx") 
 }
 $checks += [pscustomobject]@{
     Check = "Code signing env wired (CSC_LINK)"
-    Passed = $signEnv
-    Detail = $(if ($signEnv) { "Configured" } else { "Missing CSC_LINK env var" })
+    Passed = ($signEnv -or $AllowUnsigned)
+    Detail = $(if ($signEnv) { "Configured" } elseif ($AllowUnsigned) { "Unsigned allowed by -AllowUnsigned; CSC_LINK not required for staging audit" } else { "Missing CSC_LINK env var" })
 }
 
 $checks += [pscustomobject]@{
     Check = "Real signing certificate configured"
-    Passed = ($signEnv -and -not $usesPlaceholderPfx)
-    Detail = $(if (-not $signEnv) { "No certificate configured" } elseif ($usesPlaceholderPfx) { "Placeholder PFX detected" } else { "Real PFX configured" })
+    Passed = (($signEnv -and -not $usesPlaceholderPfx) -or $AllowUnsigned)
+    Detail = $(if (-not $signEnv) { $(if ($AllowUnsigned) { "Unsigned allowed by -AllowUnsigned; no certificate required for staging audit" } else { "No certificate configured" }) } elseif ($usesPlaceholderPfx) { $(if ($AllowUnsigned) { "Unsigned allowed by -AllowUnsigned; placeholder PFX ignored for staging audit" } else { "Placeholder PFX detected" }) } else { "Real PFX configured" })
 }
 
 $isInstallerSigned = $false

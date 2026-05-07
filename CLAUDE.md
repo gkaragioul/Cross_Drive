@@ -1,8 +1,8 @@
-# CLAUDE.md — MacMount
+# CLAUDE.md - GKMacOpener
 
 ## Project Overview
 
-MacMount is a Windows desktop app for mounting, browsing, and reading **and writing** APFS/HFS+ Mac drives on Windows as real local drive letters. Built on Electron + React + WSL2 (Linux kernel hfsplus driver + linux-apfs-rw module). The legacy native .NET writer is kept as a fallback only.
+GKMacOpener is a Windows desktop app for mounting, browsing, and reading **and writing** APFS/HFS+ Mac drives on Windows as real local drive letters. Built on Electron + React + WSL2 (Linux kernel hfsplus driver + linux-apfs-rw module). The legacy native .NET writer is kept as a fallback only.
 
 **Status:** v1.4.0 ships WSL2-backed R/W for HFS+. APFS R/W via apfs.ko v0.3.20 module is built but not yet wired through the UI. Code-signing certificate not yet configured.
 
@@ -87,7 +87,7 @@ native/
   MacMount.HfsFormatTool/   One-off HFS+ format tool (dev diagnostic; not shipped to users)
 native-bridge/       WinFsp port roadmap (future)
 docs/                Commercial readiness docs (GO_NO_GO, RISK_REGISTER, etc.)
-.github/workflows/   CI (macmount-ci.yml) + release (macmount-release.yml)
+.github/workflows/   CI (gkmacopener-ci) + release (gkmacopener-release)
 ```
 
 ## Development Commands
@@ -123,8 +123,8 @@ npm run release:candidate    # Full production release pipeline
 
 ## CI/CD
 
-- **CI workflow** (`macmount-ci.yml`): Runs on all pushes/PRs. Node 20, .NET 9. Steps: npm ci, self-test, security audit, commercial gate, unsigned build, release audit.
-- **Release workflow** (`macmount-release.yml`): Triggered by `v*` tags or manual dispatch. Requires `MACMOUNT_PFX_BASE64` and `MACMOUNT_PFX_PASSWORD` secrets for code signing.
+- **CI workflow** (`gkmacopener-ci`): Runs on all pushes/PRs. Node 20, .NET 9. Steps: npm ci, self-test, security audit, commercial gate, unsigned build, release audit.
+- **Release workflow** (`gkmacopener-release`): Triggered by `v*` tags or manual dispatch. Requires signing certificate secrets for code signing.
 
 ## Key Conventions
 
@@ -173,7 +173,7 @@ The native engine supports password-based APFS encrypted volume unlock:
 
 ## Known Gotchas
 
-- **WSL2 required for R/W.** Without WSL2 + the bundled custom kernel, MacMount falls back to the broken native engine. Installer must `wsl --install` and drop `wsl_kernel` + module bundles.
+- **WSL2 required for R/W.** Without WSL2 + the bundled custom kernel, GKMacOpener falls back to the legacy native engine. Installer must `wsl --install` and drop `wsl_kernel` + module bundles.
 - **Custom WSL2 kernel.** `vmIdleTimeout=2147483647` is set in `.wslconfig` to prevent VM idle-shutdown which otherwise tears down the kernel mount. The Node backend also holds an in-VM keep-alive process for belt-and-braces.
 - **fsck.hfsplus is mandatory.** The Linux kernel refuses R/W on HFS+ volumes with the dirty flag set; the mount script always runs fsck first.
 - **Drive letters need user-session subst.** `subst` writes per-token DOS device namespaces — running it from the elevated Electron process won't show up in non-elevated Explorer. We schedule a Task with `LogonType Interactive` to run subst as the user.
