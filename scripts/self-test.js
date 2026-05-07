@@ -230,6 +230,25 @@ for (const routeFile of routeModules) {
   }
 }
 
+const updateRoutes = require(path.join(routesDir, 'updateRoutes.js'));
+if (typeof updateRoutes !== 'function') fail('updateRoutes.js does not export a register function');
+else pass('updateRoutes.js exports a register function');
+
+for (const key of ['STATE_DIR', 'ETAG_FILE', 'DISMISSED_FILE', 'PENDING_FILE', 'PREVIOUS_FILE']) {
+  const value = updateRoutes[key];
+  if (typeof value !== 'string' || !path.isAbsolute(value) || !value.includes('GKMacOpener')) {
+    fail(`updateRoutes.${key} must be an absolute path under GKMacOpener (got: ${value})`);
+  } else {
+    pass(`updateRoutes.${key} is absolute and namespaced`);
+  }
+}
+
+if (updateRoutes.RELEASES_API !== 'https://api.github.com/repos/georgekgr12/GK_Mac_Opener_Releases/releases/latest') {
+  fail(`updateRoutes.RELEASES_API does not point to GK_Mac_Opener_Releases`);
+} else {
+  pass('updateRoutes.RELEASES_API points to GK_Mac_Opener_Releases');
+}
+
 try {
   const express = require('express');
   const app = express();
