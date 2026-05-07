@@ -3,11 +3,13 @@
 
 ## Summary
 
-Smoke-test release. v1.5.6 is identical to v1.5.5 in behaviour and exists to verify that the in-app updater can take an installed v1.5.5 to a newer version end-to-end (banner appears → download → SHA256 verify → installer runs → app relaunches with the new version).
+UI tweaks. Adds developer attribution to the About surfaces and a permanent "Check for updates" entry point in the sidebar so the auto-update flow doesn't depend solely on the launch-time check or the Settings page.
 
 ## Notable changes
 
-- Version bump only.
+- **About dialog (Help → About GKMacOpener):** new line "Developed by George Karagioules".
+- **Settings → About card:** new "Developed by" row showing the same.
+- **Sidebar:** new footer pinned to the bottom of the left nav. Shows the current version. Button says "Check for updates" by default; flips to a primary "Update to vX.Y.Z" button when an update is available, opening the update modal directly.
 
 ## Where to download
 
