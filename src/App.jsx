@@ -14,8 +14,12 @@ import {
   unmountDrive as apiUnmountDrive,
   openInExplorer as apiOpenInExplorer,
   generateSupportBundle,
+  checkForUpdate,
+  dismissUpdate,
 } from './api';
 import { POLL_INTERVALS } from './config';
+import UpdateBanner from './UpdateBanner';
+import UpdateModal from './UpdateModal';
 
 const DriveIcon = () => (
   <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -83,7 +87,7 @@ const SettingsRow = ({ label, value }) => (
   </div>
 );
 
-const APP_VERSION = '1.5.2';
+const APP_VERSION_FALLBACK = '1.5.2';
 const COPYRIGHT_NOTICE = 'Copyright (c) 2026 GKMacOpener contributors';
 const WINFSP_NOTICE = 'WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos';
 
@@ -124,6 +128,10 @@ const App = () => {
   const [bundleStatus, setBundleStatus] = useState(null);
   const [preflight, setPreflight] = useState(null);
   const [fixingPreflight, setFixingPreflight] = useState(false);
+  const [update, setUpdate] = useState(null);
+  const [updateModalOpen, setUpdateModalOpen] = useState(false);
+  const [lastCheckedAt, setLastCheckedAt] = useState(null);
+  const [manualCheckBusy, setManualCheckBusy] = useState(false);
 
   useEffect(() => {
     let unmounted = false;
@@ -142,6 +150,7 @@ const App = () => {
     };
 
     loadDrives();
+    checkForUpdate(true).then(safe(setUpdate)).then(() => safe(setLastCheckedAt)(new Date())).catch(() => {});
     const logInterval = setInterval(() => fetchLogs().then(safe(setLogs)).catch(() => {}), POLL_INTERVALS.logs);
     const statusInterval = setInterval(() => fetchStatus().then(safe(setSetup)).catch(() => {}), POLL_INTERVALS.status);
     const nativeInterval = setInterval(() => fetchNativeStatus().then(safe(setNativeStatus)).catch(() => {}), POLL_INTERVALS.nativeStatus);
@@ -221,6 +230,23 @@ const App = () => {
     }
   };
 
+  const onUpdateLater = () => setUpdate(null);
+  const onUpdateSkip = async () => {
+    if (!update?.version) return;
+    try { await dismissUpdate(update.version); } catch {}
+    setUpdate(null);
+  };
+  const onUpdateNow = () => setUpdateModalOpen(true);
+  const runManualUpdateCheck = async () => {
+    setManualCheckBusy(true);
+    try {
+      const u = await checkForUpdate(false);
+      setUpdate(u);
+      setLastCheckedAt(new Date());
+    } catch { /* ignore */ }
+    finally { setManualCheckBusy(false); }
+  };
+
   const openInExplorer = async (p) => {
     try { await apiOpenInExplorer(p); } catch { /* fire-and-forget */ }
   };
@@ -256,6 +282,7 @@ const App = () => {
           <p>Select a Mac-formatted drive to mount it as a Windows volume.</p>
         </section>
 
+        <UpdateBanner update={update} onUpdateNow={onUpdateNow} onLater={onUpdateLater} onSkip={onUpdateSkip} />
         <SetupBanner setup={setup} />
 
         {preflight && !preflight.ready && (
@@ -419,6 +446,23 @@ const App = () => {
         {nativeStatus.available && <SettingsRow label="Local Fixed Support" value={nativeStatus.supportsLocalFixed ? 'Yes' : 'No'} />}
       </div>
 
+      <h3 style={{ marginTop: '24px', marginBottom: '12px', opacity: 0.5, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '2.5px', fontFamily: 'var(--font-heading)', color: 'var(--primary)' }}>Updates</h3>
+      <div style={{ background: '#0e0e0e', border: '1px solid var(--border)', padding: '16px' }}>
+        <SettingsRow label="Installed Version" value={setup?.version || APP_VERSION_FALLBACK} />
+        <SettingsRow label="Latest Available" value={update?.available ? update.version : (update ? 'Up to date' : 'Unknown')} />
+        <SettingsRow label="Last Check" value={lastCheckedAt ? lastCheckedAt.toLocaleString() : '—'} />
+        <div style={{ marginTop: '12px', display: 'flex', gap: '8px' }}>
+          <button className="btn btn-outline" style={{ width: 'auto', padding: '8px 16px' }} onClick={runManualUpdateCheck} disabled={manualCheckBusy}>
+            {manualCheckBusy ? 'Checking...' : 'Check for updates'}
+          </button>
+          {update?.available && (
+            <button className="btn btn-primary" style={{ width: 'auto', padding: '8px 16px' }} onClick={onUpdateNow}>
+              Update now ({update.version})
+            </button>
+          )}
+        </div>
+      </div>
+
       <h3 style={{ marginTop: '24px', marginBottom: '12px', opacity: 0.5, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '2.5px', fontFamily: 'var(--font-heading)', color: 'var(--primary)' }}>Runtime Configuration</h3>
       <div style={{ background: '#0e0e0e', border: '1px solid var(--border)', padding: '16px' }}>
         {runtimeConfig ? (
@@ -451,7 +495,7 @@ const App = () => {
       <h3 style={{ marginTop: '24px', marginBottom: '12px', opacity: 0.5, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '2.5px', fontFamily: 'var(--font-heading)', color: 'var(--primary)' }}>About</h3>
       <div style={{ background: '#0e0e0e', border: '1px solid var(--border)', padding: '16px' }}>
         <SettingsRow label="App" value="GKMacOpener" />
-        <SettingsRow label="Version" value={APP_VERSION} />
+        <SettingsRow label="Version" value={setup?.version || APP_VERSION_FALLBACK} />
         <SettingsRow label="License" value="MIT" />
         <SettingsRow label="Copyright" value={COPYRIGHT_NOTICE} />
         <div style={{ padding: '12px 0 0', color: 'var(--text-dim)', fontSize: '12px', lineHeight: 1.6 }}>
@@ -496,6 +540,10 @@ const App = () => {
       <main className="main-content">
         {renderContent()}
       </main>
+
+      {updateModalOpen && update && (
+        <UpdateModal update={update} onClose={() => setUpdateModalOpen(false)} />
+      )}
 
       {passwordPrompt && (
         <div className="modal-overlay fade-in">

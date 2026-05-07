@@ -247,6 +247,40 @@ $checks += [pscustomobject]@{
     Detail = $noticePath
 }
 
+$nsisCfg = $pkg.build.nsis
+$checks += [pscustomobject]@{
+    Check = "NSIS oneClick is false"
+    Passed = ($nsisCfg.oneClick -eq $false)
+    Detail = "package.json build.nsis.oneClick"
+}
+
+$checks += [pscustomobject]@{
+    Check = "NSIS install path is locked"
+    Passed = ($nsisCfg.allowToChangeInstallationDirectory -eq $false)
+    Detail = "package.json build.nsis.allowToChangeInstallationDirectory"
+}
+
+$checks += [pscustomobject]@{
+    Check = "NSIS artifactName is GKMacOpenerSetup.exe"
+    Passed = ($nsisCfg.artifactName -eq "GKMacOpenerSetup.exe")
+    Detail = "package.json build.nsis.artifactName = $($nsisCfg.artifactName)"
+}
+
+$updateRoutesPath = Join-Path $root "routes\updateRoutes.js"
+$updateRoutesText = if (Test-Path $updateRoutesPath) { Get-Content $updateRoutesPath -Raw } else { "" }
+$checks += [pscustomobject]@{
+    Check = "updateRoutes targets GK_Mac_Opener_Releases"
+    Passed = (Test-Path $updateRoutesPath) -and ($updateRoutesText -match "GK_Mac_Opener_Releases")
+    Detail = $updateRoutesPath
+}
+
+$setupExePath = Join-Path $root "dist\GKMacOpenerSetup.exe"
+$checks += [pscustomobject]@{
+    Check = "Stable installer artifact present"
+    Passed = (Test-Path $setupExePath)
+    Detail = $setupExePath
+}
+
 $kernelPath = Join-Path $root "prereqs\macmount-kernel\wsl_kernel"
 $checks += [pscustomobject]@{
     Check = "Bundled WSL kernel"

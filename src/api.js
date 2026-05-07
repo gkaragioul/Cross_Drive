@@ -102,3 +102,23 @@ export async function openInExplorer(pathStr) {
 export async function generateSupportBundle() {
   return fetchJson(`${BACKEND_URL}/api/support/bundle`);
 }
+
+export async function checkForUpdate(auto = false) {
+  return fetchJson(`${BACKEND_URL}/api/update/check?auto=${auto ? 1 : 0}`);
+}
+
+export async function startUpdateDownload(downloadUrl, sha256, version) {
+  return postJson(`${BACKEND_URL}/api/update/download`, { downloadUrl, sha256, version });
+}
+
+export async function fetchUpdateProgress() {
+  return fetchJson(`${BACKEND_URL}/api/update/progress`);
+}
+
+export async function launchUpdateInstaller(installerPath, version) {
+  return postJson(`${BACKEND_URL}/api/update/launch`, { installerPath, version });
+}
+
+export async function dismissUpdate(version) {
+  return postJson(`${BACKEND_URL}/api/update/dismiss`, { version });
+}

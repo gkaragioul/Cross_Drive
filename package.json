@@ -16,6 +16,7 @@
   "scripts": {
     "dev": "node ./node_modules/vite/bin/vite.js --port 5173 --strictPort",
     "build": "node ./node_modules/vite/bin/vite.js build",
+    "build:icons": "node scripts/build-icons.js",
     "electron": "wait-on http://localhost:5173 && node scripts/start-electron.js",
     "electron:prod": "cross-env NODE_ENV=production electron .",
     "start": "concurrently \"npm run dev\" \"npm run electron\"",
@@ -39,6 +40,7 @@
     "release:gate": "npm run test && npm run security:audit && npm run commercial:gate && npm run release:audit",
     "signing:verify": "powershell -ExecutionPolicy Bypass -File scripts/verify-signing-config.ps1",
     "release:candidate": "powershell -ExecutionPolicy Bypass -File scripts/release-candidate.ps1",
+    "publish:release": "powershell -ExecutionPolicy Bypass -File scripts/publish-release.ps1",
     "signing:setup:test": "powershell -ExecutionPolicy Bypass -File scripts/setup-signing-env.ps1",
     "signing:setup:real": "powershell -ExecutionPolicy Bypass -File scripts/configure-real-signing.ps1",
     "release:win:signed": "npm run release:win:full && npm run release:audit",
@@ -55,8 +57,10 @@
     "cross-env": "^7.0.3",
     "electron": "^42.0.0",
     "electron-builder": "^26.8.1",
+    "png-to-ico": "^2.1.8",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "sharp": "^0.33.5",
     "vite": "^8.0.10",
     "wait-on": "^7.2.0"
   },
@@ -159,14 +163,23 @@
       "requestedExecutionLevel": "requireAdministrator"
     },
     "nsis": {
-      "oneClick": true,
+      "oneClick": false,
       "perMachine": true,
       "allowElevation": true,
       "allowToChangeInstallationDirectory": false,
       "license": "build/EULA.txt",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "include": "build/installer.nsh"
+      "include": "build/installer.nsh",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "artifactName": "GKMacOpenerSetup.exe",
+      "uninstallDisplayName": "GKMacOpener",
+      "runAfterFinish": true
+    },
+    "portable": {
+      "artifactName": "GKMacOpener-${version}.exe"
     }
   }
 }

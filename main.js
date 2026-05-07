@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, Menu, shell } = require('electron');
+const { app, BrowserWindow, dialog, Menu, shell, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { execSync, execFile } = require('child_process');
@@ -207,6 +207,12 @@ function startBackend() {
     backendModule = require('./server');
     backendModule.startServer();
 }
+
+ipcMain.handle('quit-for-update', () => {
+    console.log(`[${APP_NAME}] Quit-for-update requested by renderer.`);
+    setTimeout(() => app.quit(), 250); // give the renderer time to settle the response
+    return true;
+});
 
 app.on('ready', () => {
     // Check admin and relaunch if needed

@@ -7,7 +7,7 @@ contextBridge.exposeInMainWorld('macmount', {
   backendUrl: BACKEND_URL,
 
   invoke: (channel, ...args) => {
-    const allowed = ['open-explorer', 'get-app-paths'];
+    const allowed = ['open-explorer', 'get-app-paths', 'quit-for-update'];
     if (allowed.includes(channel)) {
       return ipcRenderer.invoke(channel, ...args);
     }
