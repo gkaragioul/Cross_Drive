@@ -9,7 +9,7 @@ https://github.com/user-attachments/assets/c7755cff-ae9e-4af9-bac5-8dbea1d96bd5
 </p>
 
 <p>
-  <a href="#release">Download</a> -
+  <a href="https://github.com/karagioules/Cross_Drive/releases">Download</a> -
   <a href="#features">Features</a> -
   <a href="#requirements">Requirements</a> -
   <a href="#development">Building</a> -
