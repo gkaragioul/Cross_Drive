@@ -3,7 +3,7 @@
 set -e
 
 DEV_BLOCK="${1:-sde}"   # default: sde (the device WSL sees for our drive)
-TARGET="/mnt/macmount_test"
+TARGET="/mnt/crossdrive_test"
 
 sudo mkdir -p "$TARGET"
 sudo chown $(id -u):$(id -g) "$TARGET"
@@ -29,7 +29,7 @@ echo "--- contents ---"
 ls -la "$TARGET" 2>&1 | head -10
 
 echo "--- attempt write ---"
-echo "Hello from MacMount via WSL2 + hfsfuse @ $(date)" > "$TARGET/test_write.txt"
+echo "Hello from CrossDrive via WSL2 + hfsfuse @ $(date)" > "$TARGET/test_write.txt"
 echo "wrote test_write.txt"
 ls -la "$TARGET"
 
@@ -37,3 +37,4 @@ echo "--- attempt read back ---"
 cat "$TARGET/test_write.txt"
 
 echo "DONE"
+

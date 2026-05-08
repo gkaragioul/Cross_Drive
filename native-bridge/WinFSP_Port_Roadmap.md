@@ -1,4 +1,4 @@
-# Native WinFSP Port for MacMount: APFS Reader
+# Native WinFSP Port for CrossDrive: APFS Reader
 
 ## Objective
 To eliminate the WSL network bottleneck, we are porting the Linux `apfs-fuse` component to a native Windows executable using the WinFSP (Windows File System Proxy) architecture. This allows APFS volumes to be mapped strictly within the Windows kernel as true local block devices, yielding an order-of-magnitude increase in browsing and read speeds.
@@ -15,3 +15,4 @@ To eliminate the WSL network bottleneck, we are porting the Linux `apfs-fuse` co
 - Created `native-bridge` directory.
 - Cloned `apfs-fuse` into `native-bridge/apfs-fuse`.
 - Preparing CMake mapping to the WinFSP FUSE layer.
+

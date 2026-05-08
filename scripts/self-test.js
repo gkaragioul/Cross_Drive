@@ -121,20 +121,23 @@ if (!winTargets.includes('portable')) fail('package.json build.win.target missin
 else pass('win target includes portable');
 
 const nsisCfg = (pkg.build && pkg.build.nsis) || {};
+if (nsisCfg.guid !== 'com.gkmacopener.app') fail('nsis.guid must preserve the pre-rename installer identity for in-place upgrades');
+else pass('nsis.guid preserves pre-rename installer identity');
+
 if (nsisCfg.oneClick !== false) fail('nsis.oneClick must be false (assisted wizard with EULA gate)');
 else pass('nsis.oneClick is false');
 
 if (nsisCfg.allowToChangeInstallationDirectory !== false) fail('nsis.allowToChangeInstallationDirectory must be false (locked install path for updates)');
 else pass('nsis.allowToChangeInstallationDirectory is false');
 
-if (nsisCfg.artifactName !== 'GKMacOpenerSetup.exe') fail(`nsis.artifactName must be 'GKMacOpenerSetup.exe', found '${nsisCfg.artifactName}'`);
-else pass('nsis.artifactName is GKMacOpenerSetup.exe');
+if (nsisCfg.artifactName !== 'CrossDriveSetup.exe') fail(`nsis.artifactName must be 'CrossDriveSetup.exe', found '${nsisCfg.artifactName}'`);
+else pass('nsis.artifactName is CrossDriveSetup.exe');
 
 if (nsisCfg.license !== 'build/EULA.txt') fail(`nsis.license must be 'build/EULA.txt', found '${nsisCfg.license}'`);
 else pass('nsis.license points to build/EULA.txt');
 
 const portableCfg = (pkg.build && pkg.build.portable) || {};
-if (portableCfg.artifactName !== 'GKMacOpener-${version}.exe') fail(`portable.artifactName must be 'GKMacOpener-\${version}.exe', found '${portableCfg.artifactName}'`);
+if (portableCfg.artifactName !== 'CrossDrive-${version}.exe') fail(`portable.artifactName must be 'CrossDrive-\${version}.exe', found '${portableCfg.artifactName}'`);
 else pass('portable.artifactName is versioned');
 
 const mainJs = fs.readFileSync(mainPath, 'utf8');
@@ -149,6 +152,15 @@ else pass('nodeIntegration disabled');
 
 if (!mainJs.includes('sandbox: true')) fail('main.js missing sandbox: true');
 else pass('sandbox enabled');
+
+if (!mainJs.includes("const APP_NAME = 'CrossDrive'")) fail('main.js APP_NAME must be CrossDrive');
+else pass('main.js APP_NAME is CrossDrive');
+
+if (!appSource.includes('<h2>CrossDrive</h2>') || !appSource.includes('value="CrossDrive"')) {
+  fail('App.jsx must show CrossDrive in sidebar and About settings');
+} else {
+  pass('App.jsx shows CrossDrive in the UI');
+}
 
 if (!appSource.includes("You're running the latest version.") || !appSource.includes('update-check-notice')) {
   fail('App.jsx must notify manual update checks when the installed version is current');
@@ -174,7 +186,7 @@ if (!mainJs.includes('About ${APP_NAME}') || !mainJs.includes('WinFsp - Windows 
   pass('About dialog legal attribution wired');
 }
 
-if (!nativeBrokerProgram.includes('Global\\\\GKMacOpener.NativeBroker') || !nativeBrokerProgram.includes('exiting duplicate process')) {
+if (!nativeBrokerProgram.includes('Global\\\\CrossDrive.NativeBroker') || !nativeBrokerProgram.includes('exiting duplicate process')) {
   fail('NativeBroker missing single-instance guard');
 } else {
   pass('NativeBroker has single-instance guard');
@@ -192,7 +204,7 @@ if (!nativeBrokerProgram.includes('DeletePathWithRetry') || !nativeBrokerProgram
   pass('NativeBroker logs and retries passthrough delete cleanup');
 }
 
-if (!nativeBrokerProgram.includes('MACMOUNT_ENABLE_UNC_METADATA_CACHE') || !nativeBrokerProgram.includes('_enableMetadataCache && _dirCache')) {
+if (!nativeBrokerProgram.includes('CROSSDRIVE_ENABLE_UNC_METADATA_CACHE') || !nativeBrokerProgram.includes('_enableMetadataCache && _dirCache')) {
   fail('NativeBroker can serve stale WSL passthrough metadata cache');
 } else {
   pass('NativeBroker disables WSL passthrough metadata cache by default');
@@ -233,10 +245,10 @@ if (!auditScript.includes('Packaging avoids dev script globs') || !auditScript.i
 if (!auditScript.includes('GPL source manifest present')) fail('release audit missing GPL source manifest check');
 else pass('release audit checks GPL source manifest');
 
-if (!licenseText.includes('Copyright (c) 2026 GKMacOpener contributors')) fail('LICENSE copyright is not GKMacOpener 2026');
-else pass('LICENSE copyright is GKMacOpener 2026');
+if (!licenseText.includes('Copyright (c) 2026 CrossDrive contributors')) fail('LICENSE copyright is not CrossDrive 2026');
+else pass('LICENSE copyright is CrossDrive 2026');
 
-if (!eulaText.includes('GKMacOpener is distributed under the MIT License') || !eulaText.includes('WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos')) {
+if (!eulaText.includes('CrossDrive is distributed under the MIT License') || !eulaText.includes('WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos')) {
   fail('EULA missing MIT/WinFsp FLOSS notice');
 } else {
   pass('EULA includes MIT/WinFsp FLOSS notice');
@@ -300,21 +312,21 @@ else pass('updateRoutes.js exports a register function');
 
 for (const key of ['STATE_DIR', 'ETAG_FILE', 'DISMISSED_FILE', 'PENDING_FILE', 'PREVIOUS_FILE']) {
   const value = updateRoutes[key];
-  if (typeof value !== 'string' || !path.isAbsolute(value) || !value.includes('GKMacOpener')) {
-    fail(`updateRoutes.${key} must be an absolute path under GKMacOpener (got: ${value})`);
+  if (typeof value !== 'string' || !path.isAbsolute(value) || !value.includes('CrossDrive')) {
+    fail(`updateRoutes.${key} must be an absolute path under CrossDrive (got: ${value})`);
   } else {
     pass(`updateRoutes.${key} is absolute and namespaced`);
   }
 }
 
-if (updateRoutes.RELEASES_API !== 'https://api.github.com/repos/georgekgr12/GK_Mac_Opener/releases/latest') {
-  fail(`updateRoutes.RELEASES_API does not point to GK_Mac_Opener`);
+if (updateRoutes.RELEASES_API !== 'https://api.github.com/repos/georgekgr12/CrossDrive/releases/latest') {
+  fail(`updateRoutes.RELEASES_API does not point to CrossDrive`);
 } else {
-  pass('updateRoutes.RELEASES_API points to GK_Mac_Opener');
+  pass('updateRoutes.RELEASES_API points to CrossDrive');
 }
 
-if (!updateRoutes.ETAG_FILE.endsWith('github_etag_GK_Mac_Opener.txt')) {
-  fail(`updateRoutes.ETAG_FILE must be feed-specific for GK_Mac_Opener (got: ${updateRoutes.ETAG_FILE})`);
+if (!updateRoutes.ETAG_FILE.endsWith('github_etag_CrossDrive.txt')) {
+  fail(`updateRoutes.ETAG_FILE must be feed-specific for CrossDrive (got: ${updateRoutes.ETAG_FILE})`);
 } else {
   pass('updateRoutes.ETAG_FILE is feed-specific');
 }
@@ -336,7 +348,7 @@ try {
     PREFER_SUBST_LOCAL_FAST_PATH: true,
     isAdmin: () => true,
     hasRawDiskAccess: () => true,
-    PS_PATH: path.join(root, 'scripts', 'MacMount.ps1'),
+    PS_PATH: path.join(root, 'scripts', 'CrossDrive.ps1'),
     MAP_USER_SESSION_PS_PATH: path.join(root, 'scripts', 'map-drive-user-session.ps1'),
     nativeMountState: new Map(),
     inFlightOps: new Set(),

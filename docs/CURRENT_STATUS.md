@@ -1,4 +1,4 @@
-# GKMacOpener Current Status
+# CrossDrive Current Status
 
 ## Current Date
 - May 7, 2026
@@ -7,7 +7,7 @@
 - `PRE-GA`
 - The app is buildable and uses a WSL2 kernel path as the primary mount architecture for Mac-formatted drives on Windows.
 - GA is still blocked on signed release artifacts and clean-machine physical-drive validation.
-- APFS writes are implemented only as experimental test coverage and remain disabled unless `MACMOUNT_EXPERIMENTAL_APFS_WRITES=1`.
+- APFS writes are implemented only as experimental test coverage and remain disabled unless `CROSSDRIVE_EXPERIMENTAL_APFS_WRITES=1`.
 - CoreStorage/FileVault 1 is detected but unsupported for GA.
 
 ## Current Working Areas
@@ -16,7 +16,7 @@
 - Electron/React/Vite app builds in production mode.
 - Express backend binds to loopback only.
 - Electron hardening is checked by `npm run test`.
-- WSL kernel artifacts are bundled under `prereqs/macmount-kernel`.
+- WSL kernel artifacts are bundled under `prereqs/crossdrive-kernel`.
 - Native service, native broker, and user-session helper are published under `native/bin`.
 
 ### Mount Architecture
@@ -47,7 +47,7 @@
 
 ## Definition Of GA Candidate
 
-GKMacOpener is a GA candidate only when:
+CrossDrive is a GA candidate only when:
 
 1. `npm run release:gate` passes without unsigned bypass.
 2. `npm run release:audit` verifies real signed artifacts.

@@ -4,15 +4,15 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $distDir = Join-Path $root "dist"
 
 $candidates = @(
-    Get-ChildItem -LiteralPath $distDir -Filter "MacMount *.exe" -File -ErrorAction SilentlyContinue |
+    Get-ChildItem -LiteralPath $distDir -Filter "CrossDrive-*.exe" -File -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -notlike "*Setup*" } |
         Sort-Object LastWriteTime -Descending
-    Get-ChildItem -LiteralPath $distDir -Filter "MacMount Setup *.exe" -File -ErrorAction SilentlyContinue |
+    Get-ChildItem -LiteralPath $distDir -Filter "CrossDriveSetup.exe" -File -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending
 ) | Select-Object -First 1
 
 if (-not $candidates) {
-    throw "No MacMount executable found under $distDir. Build a release first with 'npm run release:win:unsigned'."
+    throw "No CrossDrive executable found under $distDir. Build a release first with 'npm run release:win:unsigned'."
 }
 
 $exePath = $candidates.FullName

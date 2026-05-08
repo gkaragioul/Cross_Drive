@@ -690,7 +690,7 @@ internal sealed class ProbeRawFileSystemProvider : IRawFileSystemProvider
         FreeBytes = 0;
 
         var infoText =
-            $"MacMount Native Raw FS Provider{Environment.NewLine}" +
+            $"CrossDrive Native Raw FS Provider{Environment.NewLine}" +
             $"PhysicalDrivePath: {plan.PhysicalDrivePath}{Environment.NewLine}" +
             $"FileSystemType: {plan.FileSystemType}{Environment.NewLine}" +
             $"TotalBytes: {plan.TotalBytes}{Environment.NewLine}" +

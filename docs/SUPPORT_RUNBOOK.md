@@ -1,12 +1,12 @@
 # Support Runbook
 
 ## Scope
-- Commercial support workflow for GKMacOpener installer, mount operations, and browse performance issues.
+- Commercial support workflow for CrossDrive installer, mount operations, and browse performance issues.
 
 ## First Response Checklist
 
 1. Confirm Windows version and whether app runs elevated.
-2. Confirm GKMacOpener version (`Help/About` or installer version).
+2. Confirm CrossDrive version (`Help/About` or installer version).
 3. Collect logs:
 - app logs from UI logs panel
 - backend logs from runtime output

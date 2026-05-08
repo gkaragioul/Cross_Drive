@@ -2,7 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 const BACKEND_URL = 'http://localhost:3001';
 
-contextBridge.exposeInMainWorld('macmount', {
+contextBridge.exposeInMainWorld('crossdrive', {
   platform: process.platform,
   backendUrl: BACKEND_URL,
 

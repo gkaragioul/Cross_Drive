@@ -1,13 +1,11 @@
 #!/usr/bin/env pwsh
-# Publish a GKMacOpener release to GK_Mac_Opener on GitHub.
-# Usage: .\scripts\publish-release.ps1 -Version 1.5.3 [-Manual] [-LegacyFeedBridge]
+# Publish a CrossDrive release to CrossDrive on GitHub.
+# Usage: .\scripts\publish-release.ps1 -Version 1.5.3 [-Manual]
 #   -Manual: skip the gh release create step; print the SHA256 line for manual upload.
-#   -LegacyFeedBridge: publish this one bridge release to the old updater feed.
 
 param(
   [Parameter(Mandatory=$true)][string]$Version,
-  [switch]$Manual,
-  [switch]$LegacyFeedBridge
+  [switch]$Manual
 )
 
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {
@@ -19,9 +17,8 @@ $root = Split-Path -Parent $PSScriptRoot
 Push-Location $root
 
 try {
-  Write-Host "=== GKMacOpener Release v$Version ===" -ForegroundColor Cyan
-  $targetRepo = if ($LegacyFeedBridge) { "GK_Mac_Opener_Releases" } else { "GK_Mac_Opener" }
-  $targetFullName = "georgekgr12/$targetRepo"
+  Write-Host "=== CrossDrive Release v$Version ===" -ForegroundColor Cyan
+  $targetFullName = "georgekgr12/CrossDrive"
 
   # 1. Verify clean tree on main
   $branch = (& git rev-parse --abbrev-ref HEAD).Trim()
@@ -56,8 +53,8 @@ try {
   if ($LASTEXITCODE -ne 0) { throw "release:audit:unsigned failed" }
 
   # 4. Locate artifacts and compute hash
-  $setupExe = Join-Path $root "dist\GKMacOpenerSetup.exe"
-  $portableExe = Join-Path $root ("dist\GKMacOpener-{0}.exe" -f $Version)
+  $setupExe = Join-Path $root "dist\CrossDriveSetup.exe"
+  $portableExe = Join-Path $root ("dist\CrossDrive-{0}.exe" -f $Version)
   if (-not (Test-Path $setupExe)) { throw "Missing $setupExe" }
   if (-not (Test-Path $portableExe)) { throw "Missing $portableExe" }
 
@@ -70,7 +67,7 @@ try {
   if (-not (Test-Path $notesSource)) { throw "RELEASE_NOTES.md missing. Edit it before running this script." }
   $notes = Get-Content $notesSource -Raw
   $notesFinal = "$notes`n`nSHA256: $hash`n"
-  $tmpNotes = Join-Path $env:TEMP "gkmo_release_notes_$Version.md"
+  $tmpNotes = Join-Path $env:TEMP "crossdrive_release_notes_$Version.md"
   Set-Content $tmpNotes -Value $notesFinal -Encoding UTF8
 
   # 6. Tag and push
@@ -94,8 +91,8 @@ try {
     return
   }
 
-  # 7. gh release create on the selected release feed
-  Write-Host "[6/6] Creating GitHub release on $targetRepo..." -ForegroundColor Yellow
+  # 7. gh release create on the CrossDrive release feed
+  Write-Host "[6/6] Creating GitHub release on CrossDrive..." -ForegroundColor Yellow
   & gh release create "v$Version" `
       --repo $targetFullName `
       --title "v$Version" `

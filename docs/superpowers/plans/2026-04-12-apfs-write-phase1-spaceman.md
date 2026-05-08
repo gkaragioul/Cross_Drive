@@ -268,7 +268,7 @@ The field at offset 152 (0x98) is `nx_spaceman_oid` per Apple spec. The field at
 - [ ] **Step 6: Build to verify no compile errors**
 
   ```bash
-  cd "H:/DevWork/Win_Apps/GK_Mac_Opener"
+  cd "H:/DevWork/Win_Apps/CrossDrive"
   npm run raw:build 2>&1 | tail -5
   ```
 
@@ -277,7 +277,7 @@ The field at offset 152 (0x98) is `nx_spaceman_oid` per Apple spec. The field at
 - [ ] **Step 7: Commit**
 
   ```bash
-  cd "H:/DevWork/Win_Apps/GK_Mac_Opener"
+  cd "H:/DevWork/Win_Apps/CrossDrive"
   git add native/MacMount.RawDiskEngine/ApfsRawFileSystemProvider.cs
   git commit -m "fix: rename ObjectMapOid to SpacemanOid, add OmapOid, add SpacemanPhysicalBlock to APFS container summary"
   ```
@@ -509,7 +509,7 @@ The field at offset 152 (0x98) is `nx_spaceman_oid` per Apple spec. The field at
 - [ ] **Step 2: Build to verify no compile errors**
 
   ```bash
-  cd "H:/DevWork/Win_Apps/GK_Mac_Opener"
+  cd "H:/DevWork/Win_Apps/CrossDrive"
   npm run raw:build 2>&1 | tail -5
   ```
 
@@ -518,7 +518,7 @@ The field at offset 152 (0x98) is `nx_spaceman_oid` per Apple spec. The field at
 - [ ] **Step 3: Commit**
 
   ```bash
-  cd "H:/DevWork/Win_Apps/GK_Mac_Opener"
+  cd "H:/DevWork/Win_Apps/CrossDrive"
   git add native/MacMount.RawDiskEngine/ApfsSpacemanReader.cs
   git commit -m "feat: add ApfsSpacemanReader — parses APFS spaceman bitmap from disk"
   ```
@@ -707,7 +707,7 @@ Add a constructor overload that wraps an `ApfsSpacemanReader`. When the spaceman
 - [ ] **Step 8: Build to verify no compile errors**
 
   ```bash
-  cd "H:/DevWork/Win_Apps/GK_Mac_Opener"
+  cd "H:/DevWork/Win_Apps/CrossDrive"
   npm run raw:build 2>&1 | tail -5
   ```
 
@@ -716,7 +716,7 @@ Add a constructor overload that wraps an `ApfsSpacemanReader`. When the spaceman
 - [ ] **Step 9: Commit**
 
   ```bash
-  cd "H:/DevWork/Win_Apps/GK_Mac_Opener"
+  cd "H:/DevWork/Win_Apps/CrossDrive"
   git add native/MacMount.RawDiskEngine/ApfsWriter.cs
   git commit -m "feat: ApfsBlockAllocator gains spaceman-backed constructor — delegates bitmap ops to ApfsSpacemanReader"
   ```
@@ -820,7 +820,7 @@ Add a constructor overload that wraps an `ApfsSpacemanReader`. When the spaceman
 - [ ] **Step 3: Build to verify no compile errors**
 
   ```bash
-  cd "H:/DevWork/Win_Apps/GK_Mac_Opener"
+  cd "H:/DevWork/Win_Apps/CrossDrive"
   npm run raw:build 2>&1 | tail -5
   ```
 
@@ -829,7 +829,7 @@ Add a constructor overload that wraps an `ApfsSpacemanReader`. When the spaceman
 - [ ] **Step 4: Commit**
 
   ```bash
-  cd "H:/DevWork/Win_Apps/GK_Mac_Opener"
+  cd "H:/DevWork/Win_Apps/CrossDrive"
   git add native/MacMount.RawDiskEngine/ApfsRawFileSystemProvider.cs
   git commit -m "feat: load APFS spaceman on writable mount — real free-space count and bitmap-backed allocation"
   ```
@@ -1189,7 +1189,7 @@ The test creates a synthetic in-memory APFS spaceman structure (no real disk req
 - [ ] **Step 6: Build the test project**
 
   ```bash
-  cd "H:/DevWork/Win_Apps/GK_Mac_Opener"
+  cd "H:/DevWork/Win_Apps/CrossDrive"
   dotnet build native/MacMount.ApfsWriteTest/MacMount.ApfsWriteTest.csproj -c Release 2>&1 | tail -10
   ```
 
@@ -1211,7 +1211,7 @@ The test creates a synthetic in-memory APFS spaceman structure (no real disk req
 - [ ] **Step 8: Run the tests**
 
   ```bash
-  cd "H:/DevWork/Win_Apps/GK_Mac_Opener"
+  cd "H:/DevWork/Win_Apps/CrossDrive"
   npm run apfs:test
   ```
 
@@ -1238,7 +1238,7 @@ The test creates a synthetic in-memory APFS spaceman structure (no real disk req
 - [ ] **Step 9: Commit**
 
   ```bash
-  cd "H:/DevWork/Win_Apps/GK_Mac_Opener"
+  cd "H:/DevWork/Win_Apps/CrossDrive"
   git add native/MacMount.ApfsWriteTest/ native/MacMount.RawDiskEngine/AssemblyInfo.cs package.json
   git commit -m "feat: add MacMount.ApfsWriteTest — 8 synthetic spaceman tests, all passing"
   ```
@@ -1250,7 +1250,7 @@ The test creates a synthetic in-memory APFS spaceman structure (no real disk req
 - [ ] **Step 1: Run the full self-test suite**
 
   ```bash
-  cd "H:/DevWork/Win_Apps/GK_Mac_Opener"
+  cd "H:/DevWork/Win_Apps/CrossDrive"
   npm run test
   ```
 
@@ -1259,7 +1259,7 @@ The test creates a synthetic in-memory APFS spaceman structure (no real disk req
 - [ ] **Step 2: Run the HFS+ write tests to confirm no regressions**
 
   ```bash
-  cd "H:/DevWork/Win_Apps/GK_Mac_Opener"
+  cd "H:/DevWork/Win_Apps/CrossDrive"
   npm run hfs:test 2>&1 | tail -5
   ```
 
@@ -1268,7 +1268,7 @@ The test creates a synthetic in-memory APFS spaceman structure (no real disk req
 - [ ] **Step 3: Full raw engine rebuild**
 
   ```bash
-  cd "H:/DevWork/Win_Apps/GK_Mac_Opener"
+  cd "H:/DevWork/Win_Apps/CrossDrive"
   npm run raw:build 2>&1 | tail -3
   ```
 

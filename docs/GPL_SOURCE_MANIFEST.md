@@ -1,16 +1,16 @@
 # GPL Source Manifest
 
 This manifest records the source references for GPL-covered binary artifacts
-bundled with GKMacOpener releases.
+bundled with CrossDrive releases.
 
 ## Bundled Artifacts
 
 | Artifact | Version / ABI | Source | License |
 | --- | --- | --- | --- |
-| `prereqs/macmount-kernel/wsl_kernel` | `6.6.87.2-microsoft-standard-WSL2+` | `microsoft/WSL2-Linux-Kernel`, tag `linux-msft-wsl-6.6.87.2` | GPL-2.0 |
-| `prereqs/macmount-kernel/modules/hfs.ko` | `vermagic=6.6.87.2-microsoft-standard-WSL2+ SMP preempt mod_unload modversions` | Linux kernel HFS driver from the same WSL2 Linux kernel source tree | GPL-2.0 |
-| `prereqs/macmount-kernel/modules/hfsplus.ko` | `vermagic=6.6.87.2-microsoft-standard-WSL2+ SMP preempt mod_unload modversions` | Linux kernel HFS+ driver from the same WSL2 Linux kernel source tree | GPL-2.0 |
-| `prereqs/macmount-kernel/modules/apfs.ko` | `linux-apfs-rw 0.3.20`, `vermagic=6.6.87.2-microsoft-standard-WSL2+ SMP preempt mod_unload modversions` | `linux-apfs/linux-apfs-rw`, release/tag `v0.3.20` or the corresponding `0.3.20` source revision | GPL |
+| `prereqs/crossdrive-kernel/wsl_kernel` | `6.6.87.2-microsoft-standard-WSL2+` | `microsoft/WSL2-Linux-Kernel`, tag `linux-msft-wsl-6.6.87.2` | GPL-2.0 |
+| `prereqs/crossdrive-kernel/modules/hfs.ko` | `vermagic=6.6.87.2-microsoft-standard-WSL2+ SMP preempt mod_unload modversions` | Linux kernel HFS driver from the same WSL2 Linux kernel source tree | GPL-2.0 |
+| `prereqs/crossdrive-kernel/modules/hfsplus.ko` | `vermagic=6.6.87.2-microsoft-standard-WSL2+ SMP preempt mod_unload modversions` | Linux kernel HFS+ driver from the same WSL2 Linux kernel source tree | GPL-2.0 |
+| `prereqs/crossdrive-kernel/modules/apfs.ko` | `linux-apfs-rw 0.3.20`, `vermagic=6.6.87.2-microsoft-standard-WSL2+ SMP preempt mod_unload modversions` | `linux-apfs/linux-apfs-rw`, release/tag `v0.3.20` or the corresponding `0.3.20` source revision | GPL |
 
 ## Known Build Configuration
 

@@ -1,16 +1,16 @@
 {
-  "name": "gkmacopener",
-  "version": "1.5.20",
+  "name": "crossdrive",
+  "version": "1.5.21",
   "description": "Mac-formatted drive manager for Windows with local drive-letter mounting.",
-  "author": "GKMacOpener contributors",
+  "author": "CrossDrive contributors",
   "license": "MIT",
-  "homepage": "https://github.com/georgekgr12/GK_Mac_Opener",
+  "homepage": "https://github.com/georgekgr12/CrossDrive",
   "repository": {
     "type": "git",
-    "url": "https://github.com/georgekgr12/GK_Mac_Opener.git"
+    "url": "https://github.com/georgekgr12/CrossDrive.git"
   },
   "bugs": {
-    "url": "https://github.com/georgekgr12/GK_Mac_Opener/issues"
+    "url": "https://github.com/georgekgr12/CrossDrive/issues"
   },
   "main": "main.js",
   "scripts": {
@@ -65,8 +65,8 @@
     "wait-on": "^7.2.0"
   },
   "build": {
-    "appId": "com.gkmacopener.app",
-    "productName": "GKMacOpener",
+    "appId": "com.crossdrive.app",
+    "productName": "CrossDrive",
     "files": [
       "dist/renderer/**/*",
       "main.js",
@@ -90,8 +90,8 @@
         "to": "icon.png"
       },
       {
-        "from": "scripts/MacMount.ps1",
-        "to": "scripts/MacMount.ps1"
+        "from": "scripts/CrossDrive.ps1",
+        "to": "scripts/CrossDrive.ps1"
       },
       {
         "from": "scripts/map-drive-user-session.ps1",
@@ -122,8 +122,8 @@
         "to": "prereqs/winfsp.msi"
       },
       {
-        "from": "prereqs/macmount-kernel",
-        "to": "macmount-kernel"
+        "from": "prereqs/crossdrive-kernel",
+        "to": "crossdrive-kernel"
       },
       {
         "from": "native/bin",
@@ -160,6 +160,7 @@
       "requestedExecutionLevel": "requireAdministrator"
     },
     "nsis": {
+      "guid": "com.gkmacopener.app",
       "oneClick": false,
       "perMachine": true,
       "allowElevation": true,
@@ -171,12 +172,12 @@
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico",
       "installerHeaderIcon": "build/icon.ico",
-      "artifactName": "GKMacOpenerSetup.exe",
-      "uninstallDisplayName": "GKMacOpener",
+      "artifactName": "CrossDriveSetup.exe",
+      "uninstallDisplayName": "CrossDrive",
       "runAfterFinish": true
     },
     "portable": {
-      "artifactName": "GKMacOpener-${version}.exe"
+      "artifactName": "CrossDrive-${version}.exe"
     }
   }
 }

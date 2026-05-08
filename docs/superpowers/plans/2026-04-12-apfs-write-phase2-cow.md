@@ -119,7 +119,7 @@ internal static class ApfsCowTests
 - [ ] **Step 2: Run test to verify it fails**
 
 ```
-cd H:\DevWork\Win_Apps\GK_Mac_Opener
+cd H:\DevWork\Win_Apps\CrossDrive
 dotnet build native/MacMount.ApfsWriteTest/MacMount.ApfsWriteTest.csproj -c Release
 ```
 Expected: build error — `ApfsChecksum` does not exist.

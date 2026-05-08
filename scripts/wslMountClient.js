@@ -15,7 +15,7 @@
 // Required runtime state (set up by the installer):
 //   - WSL2 + Ubuntu distro installed
 //   - Custom WSL2 kernel with CONFIG_HFSPLUS_FS=m at
-//     %LOCALAPPDATA%\MacMount-Kernel\wsl_kernel  (referenced by .wslconfig)
+//     %LOCALAPPDATA%\CrossDrive-Kernel\wsl_kernel  (referenced by .wslconfig)
 //   - hfsplus.ko + apfs.ko present in /lib/modules/<KVER>/
 
 const { exec, execFile, spawn } = require('child_process');
@@ -57,12 +57,12 @@ function resolveScriptPath(name) {
 function resolveUserSessionHelperPath() {
     const candidates = [];
     if (process.resourcesPath) {
-        candidates.push(path.join(process.resourcesPath, 'native-bin', 'user-session', 'MacMount.UserSessionHelper.exe'));
-        candidates.push(path.join(process.resourcesPath, 'native-bin', 'MacMount.UserSessionHelper.exe'));
-        candidates.push(path.join(process.resourcesPath, 'app.asar.unpacked', 'native', 'bin', 'user-session', 'MacMount.UserSessionHelper.exe'));
-        candidates.push(path.join(process.resourcesPath, 'app.asar.unpacked', 'native', 'bin', 'MacMount.UserSessionHelper.exe'));
+        candidates.push(path.join(process.resourcesPath, 'native-bin', 'user-session', 'CrossDrive.UserSessionHelper.exe'));
+        candidates.push(path.join(process.resourcesPath, 'native-bin', 'CrossDrive.UserSessionHelper.exe'));
+        candidates.push(path.join(process.resourcesPath, 'app.asar.unpacked', 'native', 'bin', 'user-session', 'CrossDrive.UserSessionHelper.exe'));
+        candidates.push(path.join(process.resourcesPath, 'app.asar.unpacked', 'native', 'bin', 'CrossDrive.UserSessionHelper.exe'));
     }
-    candidates.push(path.join(__dirname, '..', 'native', 'bin', 'user-session', 'MacMount.UserSessionHelper.exe'));
+    candidates.push(path.join(__dirname, '..', 'native', 'bin', 'user-session', 'CrossDrive.UserSessionHelper.exe'));
     for (const p of candidates) {
         try { if (fs.existsSync(p)) return p; } catch { /* ignore */ }
     }
@@ -156,7 +156,7 @@ async function validateWslMountTarget(wslTarget, expectedDevice, expectedFsType,
 }
 
 function getPresentationLinksRoot() {
-    return path.join(process.env.ProgramData || 'C:\\ProgramData', 'MacMount', 'Links');
+    return path.join(process.env.ProgramData || 'C:\\ProgramData', 'CrossDrive', 'Links');
 }
 
 function makeSafeLinkName(driveId) {
@@ -265,10 +265,10 @@ async function runPowerShellEncoded(script, timeoutMs = 15000) {
 async function runUserSessionHelper(args, timeoutMs = 15000) {
     const helperPath = resolveUserSessionHelperPath();
     if (!helperPath) {
-        throw new Error('MacMount.UserSessionHelper.exe is missing from native-bin/user-session.');
+        throw new Error('CrossDrive.UserSessionHelper.exe is missing from native-bin/user-session.');
     }
 
-    const taskName = `MacMountUser_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const taskName = `CrossDriveUser_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const argumentList = args.map((arg) => `"${String(arg).replace(/"/g, '\\"')}"`).join(' ');
     const waitSeconds = Math.max(10, Math.ceil(timeoutMs / 1000));
     const wrapper = [
@@ -297,7 +297,7 @@ async function runUserSessionHelper(args, timeoutMs = 15000) {
 }
 
 async function runUserSessionHelperWithOutput(args, timeoutMs = 30000) {
-    const tempRoot = path.join(process.env.ProgramData || 'C:\\ProgramData', 'MacMount', 'wsl-ipc');
+    const tempRoot = path.join(process.env.ProgramData || 'C:\\ProgramData', 'CrossDrive', 'wsl-ipc');
     fs.mkdirSync(tempRoot, { recursive: true });
     const id = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const stdoutPath = path.join(tempRoot, `${id}.out`);
@@ -316,7 +316,7 @@ async function runUserSessionHelperWithOutput(args, timeoutMs = 30000) {
 /**
  * Map a UNC path to a Windows drive letter so it appears in This PC.
  *
- * Drive-letter mappings are per logon session. MacMount runs elevated, while
+ * Drive-letter mappings are per logon session. CrossDrive runs elevated, while
  * Explorer is normally non-elevated, so we create/remove the mapping through a
  * tiny GUI-subsystem helper launched in the user's interactive session.
  */
@@ -366,7 +366,7 @@ async function attachPhysicalDriveToWsl(driveId) {
             return { ok: true, alreadyAttached: true };
         }
         if (/elevation needed|elevated|administrator/i.test(msg)) {
-            return { ok: false, error: 'wsl --mount requires Administrator. Restart GKMacOpener as Administrator.', needsAdmin: true };
+            return { ok: false, error: 'wsl --mount requires Administrator. Restart CrossDrive as Administrator.', needsAdmin: true };
         }
         return { ok: false, error: `wsl --mount failed: ${msg.trim().slice(0, 400)}` };
     }
@@ -424,7 +424,7 @@ async function wslMountDrive(driveId, password = null, logFn = () => {}, options
     let stdout = '';
     let stderr = '';
     try {
-        const tempRoot = path.join(process.env.ProgramData || 'C:\\ProgramData', 'MacMount', 'wsl-ipc');
+        const tempRoot = path.join(process.env.ProgramData || 'C:\\ProgramData', 'CrossDrive', 'wsl-ipc');
         fs.mkdirSync(tempRoot, { recursive: true });
         const requestId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         const stdoutPath = path.join(tempRoot, `${requestId}.out`);
@@ -474,7 +474,7 @@ async function wslMountDrive(driveId, password = null, logFn = () => {}, options
     const validated = await validateWslMountTarget(wslTarget, parsed.device, parsed.fsType, mountNamespace);
     if (!validated.ok) {
         return {
-            error: `WSL mount validation failed after mount: ${validated.error}. GKMacOpener refused to expose a stale folder as a Windows drive.`
+            error: `WSL mount validation failed after mount: ${validated.error}. CrossDrive refused to expose a stale folder as a Windows drive.`
         };
     }
 
@@ -573,7 +573,7 @@ async function ensureWslKeepAlive(logFn = () => {}, mountNamespace = 'user') {
             // bash's exit on every bash version. The 60s timeout covers cold
             // WSL VM starts when the distro is in `Stopped` state and has to
             // boot the custom kernel + load modules before our command runs.
-            "pgrep -f macmount-elevated-keepalive >/dev/null 2>&1 || { nohup bash -lc 'exec -a macmount-elevated-keepalive sleep 2147483647' >/dev/null 2>&1 & disown; }"
+            "pgrep -f crossdrive-elevated-keepalive >/dev/null 2>&1 || { nohup bash -lc 'exec -a crossdrive-elevated-keepalive sleep 2147483647' >/dev/null 2>&1 & disown; }"
         ], { timeout: 60000, maxBuffer: 65536 }).then(() => {
             _wslElevatedKeepAliveStarted = true;
             return true;
@@ -619,7 +619,7 @@ function stopWslKeepAlive() {
     }
     runWsl([
         '-d', WSL_DISTRO, '-u', 'root', '--', 'sh', '-lc',
-        'pkill -f macmount-keepalive 2>/dev/null || true; pkill -f macmount-elevated-keepalive 2>/dev/null || true; rm -f /tmp/macmount/keepalive.pid'
+        'pkill -f crossdrive-keepalive 2>/dev/null || true; pkill -f crossdrive-elevated-keepalive 2>/dev/null || true; pkill -f macmount-keepalive 2>/dev/null || true; pkill -f macmount-elevated-keepalive 2>/dev/null || true; rm -f /tmp/crossdrive/keepalive.pid /tmp/macmount/keepalive.pid'
     ], { timeout: 5000, maxBuffer: 65536 }).catch(() => {});
 }
 
@@ -629,7 +629,7 @@ function stopWslKeepAlive() {
  * but the app may still think drives are mounted. This probe catches that.
  */
 async function checkWslKeepAliveAlive(mountNamespace = 'user') {
-    const procName = mountNamespace === 'elevated' ? 'macmount-elevated-keepalive' : 'macmount-keepalive';
+    const procName = mountNamespace === 'elevated' ? 'crossdrive-elevated-keepalive' : 'crossdrive-keepalive';
     try {
         const { stdout } = await runWsl([
             '-d', WSL_DISTRO, '-u', 'root', '--', 'sh', '-lc',

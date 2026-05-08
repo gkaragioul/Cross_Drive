@@ -20,8 +20,9 @@ public sealed class ApfsParser : IFileSystemParser
     public async Task<MountPlan> BuildMountPlanAsync(IRawBlockDevice device, CancellationToken cancellationToken = default)
     {
         // SAFETY: APFS write support is experimental. Disabled unless explicitly opted in.
-        var experimentalWritable = string.Equals(
-            Environment.GetEnvironmentVariable("MACMOUNT_EXPERIMENTAL_APFS_WRITES"), "1", StringComparison.Ordinal);
+        var experimentalWritable =
+            string.Equals(Environment.GetEnvironmentVariable("CROSSDRIVE_EXPERIMENTAL_APFS_WRITES"), "1", StringComparison.Ordinal) ||
+            string.Equals(Environment.GetEnvironmentVariable("MACMOUNT_EXPERIMENTAL_APFS_WRITES"), "1", StringComparison.Ordinal);
         try
         {
             var reader = new ApfsMetadataReader(device, 0, device.Length);
@@ -87,7 +88,7 @@ public sealed class ApfsParser : IFileSystemParser
                 device.DevicePath,
                 "APFS",
                 total,
-                Writable: experimentalWritable && !hardwareBound, // SAFETY: disabled unless MACMOUNT_EXPERIMENTAL_APFS_WRITES=1
+                Writable: experimentalWritable && !hardwareBound, // SAFETY: disabled unless CROSSDRIVE_EXPERIMENTAL_APFS_WRITES=1
                 Notes: notes + (hardwareBound ? " HardwareBound=true (T2/Apple Silicon — cannot unlock on Windows)." : string.Empty),
                 IsEncrypted: encryptedCount > 0,
                 NeedsPassword: needsPassword && !hardwareBound,
@@ -103,7 +104,7 @@ public sealed class ApfsParser : IFileSystemParser
                     device.DevicePath,
                     "APFS",
                     device.Length,
-                    Writable: experimentalWritable, // SAFETY: disabled unless MACMOUNT_EXPERIMENTAL_APFS_WRITES=1
+                    Writable: experimentalWritable, // SAFETY: disabled unless CROSSDRIVE_EXPERIMENTAL_APFS_WRITES=1
                     Notes: "APFS detection uncertain (NXSB parse failed).",
                     IsEncrypted: false,
                     NeedsPassword: false
@@ -124,7 +125,7 @@ public sealed class ApfsParser : IFileSystemParser
                 device.DevicePath,
                 "APFS",
                 total,
-                Writable: experimentalWritable, // SAFETY: disabled unless MACMOUNT_EXPERIMENTAL_APFS_WRITES=1
+                Writable: experimentalWritable, // SAFETY: disabled unless CROSSDRIVE_EXPERIMENTAL_APFS_WRITES=1
                 Notes: notes,
                 IsEncrypted: false,
                 NeedsPassword: false

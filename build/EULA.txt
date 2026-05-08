@@ -1,11 +1,11 @@
-GKMacOpener License and Notices
+CrossDrive License and Notices
 ===============================
 
-Copyright (c) 2026 GKMacOpener contributors
+Copyright (c) 2026 CrossDrive contributors
 
-GKMacOpener is distributed under the MIT License.
+CrossDrive is distributed under the MIT License.
 
-By installing or using GKMacOpener, you acknowledge that the software mounts
+By installing or using CrossDrive, you acknowledge that the software mounts
 physical disks and performs privileged local operations. You are responsible
 for selecting the correct physical disk and maintaining backups. The software
 is provided "as is" without warranties of any kind.
@@ -34,27 +34,27 @@ SOFTWARE.
 Third-Party Components
 ----------------------
 
-GKMacOpener includes third-party components under their own license terms.
+CrossDrive includes third-party components under their own license terms.
 See THIRD_PARTY_NOTICES.txt installed with the application.
 
 WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos:
 https://github.com/winfsp/winfsp
 
-GKMacOpener distributes the unmodified WinFsp installer under WinFsp's
+CrossDrive distributes the unmodified WinFsp installer under WinFsp's
 GPLv3/FLOSS exception path. Commercial proprietary redistribution requires a
 separate WinFsp commercial license.
 
-GKMacOpener also bundles a custom WSL2 kernel and filesystem modules. GPL
+CrossDrive also bundles a custom WSL2 kernel and filesystem modules. GPL
 source information is provided in GPL_SOURCE_OFFER.txt.
 
 Contact
 -------
 
-GKMacOpener is developed at:
+CrossDrive is developed at:
 
-    https://github.com/georgekgr12/GK_Mac_Opener
+    https://github.com/georgekgr12/CrossDrive
 
 For licensing inquiries, GPL source-code requests, or other legal questions,
 open an issue at:
 
-    https://github.com/georgekgr12/GK_Mac_Opener/issues
+    https://github.com/georgekgr12/CrossDrive/issues

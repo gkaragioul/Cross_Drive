@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './index.css';
-import appLogo from './assets/gkmacopener-logo.png';
+import appLogo from './assets/crossdrive-logo.png';
 import {
   fetchDrives as apiFetchDrives,
   fetchStatus,
@@ -88,7 +88,7 @@ const SettingsRow = ({ label, value }) => (
 );
 
 const APP_VERSION_FALLBACK = '1.5.2';
-const COPYRIGHT_NOTICE = 'Copyright (c) 2026 GKMacOpener contributors';
+const COPYRIGHT_NOTICE = 'Copyright (c) 2026 CrossDrive contributors';
 const WINFSP_NOTICE = 'WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos';
 
 const formatMountError = (result) => {
@@ -522,7 +522,7 @@ const App = () => {
       <h3 style={{ marginTop: '24px', marginBottom: '12px', opacity: 0.5, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '2.5px', fontFamily: 'var(--font-heading)', color: 'var(--primary)' }}>Support</h3>
       <div style={{ background: '#0e0e0e', border: '1px solid var(--border)', padding: '16px' }}>
         <p style={{ fontSize: '13px', color: 'var(--text-dim)', margin: '0 0 12px' }}>
-          Generate a diagnostic bundle saved to <code>%ProgramData%\GKMacOpener\Support\</code>.
+          Generate a diagnostic bundle saved to <code>%ProgramData%\CrossDrive\Support\</code>.
         </p>
         <button className="btn btn-outline" style={{ width: 'auto', padding: '8px 16px' }} onClick={doGenerateBundle} disabled={bundleStatus === 'generating'}>
           {bundleStatus === 'generating' ? 'Generating...' : 'Generate Support Bundle'}
@@ -536,7 +536,7 @@ const App = () => {
 
       <h3 style={{ marginTop: '24px', marginBottom: '12px', opacity: 0.5, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '2.5px', fontFamily: 'var(--font-heading)', color: 'var(--primary)' }}>About</h3>
       <div style={{ background: '#0e0e0e', border: '1px solid var(--border)', padding: '16px' }}>
-        <SettingsRow label="App" value="GKMacOpener" />
+        <SettingsRow label="App" value="CrossDrive" />
         <SettingsRow label="Version" value={setup?.version || APP_VERSION_FALLBACK} />
         <SettingsRow label="Developed by" value="George Karagioules" />
         <SettingsRow label="License" value="MIT" />
@@ -564,7 +564,7 @@ const App = () => {
           <div className="logo">
             <img src={appLogo} alt="" aria-hidden="true" />
           </div>
-          <h2>GKMacOpener</h2>
+          <h2>CrossDrive</h2>
         </div>
         <nav className="nav-list">
           <li className={`nav-item ${activeTab === 'drives' ? 'active' : ''}`} onClick={() => setActiveTab('drives')}>

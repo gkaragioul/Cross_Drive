@@ -1,8 +1,8 @@
-# AGENTS.md - GKMacOpener
+# AGENTS.md - CrossDrive
 
 ## Project Overview
 
-GKMacOpener is a Windows desktop app for mounting, browsing, and reading/writing APFS/HFS+ Mac drives on Windows as real local drive letters. Built on Electron + React + WSL2 kernel filesystem drivers, with the legacy .NET/WinFsp path kept as a fallback.
+CrossDrive is a Windows desktop app for mounting, browsing, and reading/writing APFS/HFS+ Mac drives on Windows as real local drive letters. Built on Electron + React + WSL2 kernel filesystem drivers, with the legacy .NET/WinFsp path kept as a fallback.
 
 **Status:** Pre-GA. APFS write is experimental. Code-signing certificate not yet configured.
 
@@ -25,7 +25,7 @@ Electron (main.js) → Express API (server.js :3001) ─┬─ WSL2 kernel mount
 React UI (src/)    ← polls Express for drive state   └─ .NET/WinFsp fallback
 ```
 
-**Mount modes** (set via `MACMOUNT_MOUNT_MODE` env var):
+**Mount modes** (set via `CROSSDRIVE_MOUNT_MODE` env var; legacy `MACMOUNT_MOUNT_MODE` is accepted):
 - `wsl_kernel` — default, mounts through WSL2 kernel drivers and maps a local drive letter
 - `native_first` — debug fallback, tries the legacy native raw provider first
 - `native_only` — debug fallback, disables the native bridge fallback path
@@ -50,7 +50,7 @@ routes/
   nativeRoutes.js    Native .NET service IPC bridge
   systemRoutes.js    Health, logs, setup status
 scripts/
-  MacMount.ps1       Main PowerShell orchestration script
+  CrossDrive.ps1     Main PowerShell orchestration script
   nativeServiceClient.js   IPC client for NativeService
   nativeBrokerClient.js    IPC client for NativeBroker
   self-test.js       Test suite
@@ -64,7 +64,7 @@ native/
   MacMount.HfsWriteTest/    .NET HFS+ write test harness (file-backed, no real disk)
 native-bridge/       WinFsp port roadmap (future)
 docs/                Commercial readiness docs (GO_NO_GO, RISK_REGISTER, etc.)
-.github/workflows/   CI (gkmacopener-ci) + release (gkmacopener-release)
+.github/workflows/   CI (crossdrive-ci) + release (crossdrive-release)
 ```
 
 ## Development Commands
@@ -100,15 +100,15 @@ npm run release:candidate    # Full production release pipeline
 
 ## CI/CD
 
-- **CI workflow** (`gkmacopener-ci`): Runs on all pushes/PRs. Node 20, .NET 9. Steps: npm ci, self-test, security audit, commercial gate, unsigned build, release audit.
-- **Release workflow** (`gkmacopener-release`): Triggered by `v*` tags or manual dispatch. Requires signing certificate secrets for code signing.
+- **CI workflow** (`crossdrive-ci`): Runs on all pushes/PRs. Node 20, .NET 9. Steps: npm ci, self-test, security audit, commercial gate, unsigned build, release audit.
+- **Release workflow** (`crossdrive-release`): Triggered by `v*` tags or manual dispatch. Requires signing certificate secrets for code signing.
 
 ## Key Conventions
 
 - **Admin required:** App uses `\\.\PHYSICALDRIVE#` raw disk access. Electron main process checks admin and relaunches with UAC if needed.
 - **Security:** Electron uses `contextIsolation: true`, `sandbox: true`, `nodeIntegration: false`. CORS is restricted to `localhost:5173` and `127.0.0.1:5173`. Express binds to loopback only.
 - **No external network calls:** Backend communicates only with local .NET services via named pipes and local WSL.
-- **Env vars:** `MACMOUNT_MOUNT_MODE`, `MACMOUNT_CANARY_PERCENT` control mount behavior.
+- **Env vars:** `CROSSDRIVE_MOUNT_MODE`, `CROSSDRIVE_CANARY_PERCENT` control mount behavior. Legacy `MACMOUNT_*` aliases are accepted for compatibility.
 - **Secrets never committed:** `.gitignore` excludes `.env*`, `*.pfx`, `*.p12`, `signing-env.ps1`.
 
 ## Testing

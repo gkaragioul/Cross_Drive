@@ -7,7 +7,7 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
-$dataDir = Join-Path $env:ProgramData 'MacMount'
+$dataDir = Join-Path $env:ProgramData 'CrossDrive'
 New-Item -ItemType Directory -Path $dataDir -Force -ErrorAction SilentlyContinue | Out-Null
 $logPath = Join-Path $dataDir 'user-session-map.log'
 
@@ -21,7 +21,7 @@ Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
-public class MacMountQdd {
+public class CrossDriveQdd {
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     public static extern uint QueryDosDevice(string lpDeviceName, StringBuilder lpTargetPath, uint ucchMax);
 }
@@ -31,7 +31,7 @@ $deviceFile = Join-Path $dataDir "device-target-$Letter.txt"
 $target = $null
 for ($i = 0; $i -lt 10; $i++) {
     $sb = New-Object System.Text.StringBuilder 4096
-    $len = [MacMountQdd]::QueryDosDevice("$Letter`:", $sb, 4096)
+    $len = [CrossDriveQdd]::QueryDosDevice("$Letter`:", $sb, 4096)
     if ($len -gt 0) {
         $target = $sb.ToString().Trim()
         if ($target.Length -gt 0) { break }
@@ -49,10 +49,10 @@ Write-MapLog "Resolved ${Letter}: -> $target"
 
 function Resolve-UserSessionHelper {
     $candidates = @(
-        (Join-Path $PSScriptRoot '..\native-bin\user-session\MacMount.UserSessionHelper.exe'),
-        (Join-Path $PSScriptRoot '..\native-bin\MacMount.UserSessionHelper.exe'),
-        (Join-Path $PSScriptRoot '..\native\bin\user-session\MacMount.UserSessionHelper.exe'),
-        (Join-Path $PSScriptRoot '..\native\bin\MacMount.UserSessionHelper.exe')
+        (Join-Path $PSScriptRoot '..\native-bin\user-session\CrossDrive.UserSessionHelper.exe'),
+        (Join-Path $PSScriptRoot '..\native-bin\CrossDrive.UserSessionHelper.exe'),
+        (Join-Path $PSScriptRoot '..\native\bin\user-session\CrossDrive.UserSessionHelper.exe'),
+        (Join-Path $PSScriptRoot '..\native\bin\CrossDrive.UserSessionHelper.exe')
     )
 
     foreach ($candidate in $candidates) {
@@ -73,7 +73,7 @@ function Quote-TaskArgument([string]$Value) {
 
 $helperPath = Resolve-UserSessionHelper
 if (-not $helperPath) {
-    Write-MapLog "MacMount.UserSessionHelper.exe not found; cannot silently map ${Letter}:"
+    Write-MapLog "CrossDrive.UserSessionHelper.exe not found; cannot silently map ${Letter}:"
     exit 6
 }
 
@@ -83,7 +83,7 @@ if ([string]::IsNullOrWhiteSpace($userId)) {
     exit 4
 }
 
-$taskName = "MacMountMap_${Letter}_$([guid]::NewGuid().ToString('N').Substring(0, 12))"
+$taskName = "CrossDriveMap_${Letter}_$([guid]::NewGuid().ToString('N').Substring(0, 12))"
 try {
     $helperArgs = @('map', "$Letter`:", $target) | ForEach-Object { Quote-TaskArgument $_ }
     $action = New-ScheduledTaskAction -Execute $helperPath -Argument ($helperArgs -join ' ')
@@ -116,3 +116,4 @@ try {
 
 Write-MapLog "User-session map completed for ${Letter}:"
 exit 0
+

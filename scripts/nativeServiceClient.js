@@ -3,7 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 
-const PIPE_PATH = '\\\\.\\pipe\\macmount.native';
+const PIPE_PATH = '\\\\.\\pipe\\crossdrive.native';
 let nativeProcess = null;
 
 function resolveExistingPath(candidates) {
@@ -18,12 +18,12 @@ function resolveExistingPath(candidates) {
 
 function getNativeServiceExecutable() {
   const candidates = [
-    process.resourcesPath ? path.join(process.resourcesPath, 'native-bin', 'MacMount.NativeService.exe') : null,
-    process.resourcesPath ? path.join(process.resourcesPath, 'native-bin', 'service', 'MacMount.NativeService.exe') : null,
-    process.resourcesPath ? path.join(process.resourcesPath, 'app.asar.unpacked', 'native', 'bin', 'MacMount.NativeService.exe') : null,
-    process.resourcesPath ? path.join(process.resourcesPath, 'app.asar.unpacked', 'native', 'bin', 'service', 'MacMount.NativeService.exe') : null,
-    path.join(__dirname, '..', 'native', 'bin', 'MacMount.NativeService.exe'),
-    path.join(__dirname, '..', 'native', 'bin', 'service', 'MacMount.NativeService.exe'),
+    process.resourcesPath ? path.join(process.resourcesPath, 'native-bin', 'CrossDrive.NativeService.exe') : null,
+    process.resourcesPath ? path.join(process.resourcesPath, 'native-bin', 'service', 'CrossDrive.NativeService.exe') : null,
+    process.resourcesPath ? path.join(process.resourcesPath, 'app.asar.unpacked', 'native', 'bin', 'CrossDrive.NativeService.exe') : null,
+    process.resourcesPath ? path.join(process.resourcesPath, 'app.asar.unpacked', 'native', 'bin', 'service', 'CrossDrive.NativeService.exe') : null,
+    path.join(__dirname, '..', 'native', 'bin', 'CrossDrive.NativeService.exe'),
+    path.join(__dirname, '..', 'native', 'bin', 'service', 'CrossDrive.NativeService.exe'),
   ];
   return resolveExistingPath(candidates);
 }

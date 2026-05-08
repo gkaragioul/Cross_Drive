@@ -3,14 +3,15 @@
 
 ## Summary
 
-Update-check feedback improvement. Manual update checks now show a visible notification when GKMacOpener is already on the latest version.
+Rename release: the app is now CrossDrive across the UI, installer, update feed, release artifacts, docs, and packaged helper binaries.
 
 ## Notable changes
 
-- **Manual update check:** shows "You're running the latest version." when no newer release is available.
-- **Update errors:** shows a visible failure notification instead of silently ignoring the check.
-- **Self-test:** adds a guard so the manual update-check notification remains wired.
+- **CrossDrive branding:** renames the app, installer, portable build, EULA, docs, README, release tooling, update state paths, and GitHub feed references.
+- **Update compatibility:** keeps the installer upgrade identity stable so the new CrossDrive installer can replace the pre-rename install in place.
+- **Packaged helpers:** publishes native helper executables as `CrossDrive.NativeService.exe`, `CrossDrive.NativeBroker.exe`, and `CrossDrive.UserSessionHelper.exe`.
+- **Manual update check:** keeps the visible "You're running the latest version." notification when no newer release is available.
 
 ## Where to download
 
-Permanent installer link: https://github.com/georgekgr12/GK_Mac_Opener/releases/latest/download/GKMacOpenerSetup.exe
+Permanent installer link: https://github.com/georgekgr12/CrossDrive/releases/latest/download/CrossDriveSetup.exe

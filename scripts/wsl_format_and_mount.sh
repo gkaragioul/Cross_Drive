@@ -45,7 +45,7 @@ DEVPATH="/dev/$PART"
 echo "Partition: $DEVPATH"
 
 # Make sure no stale mount is holding it
-umount /mnt/macmount_test 2>/dev/null || true
+umount /mnt/crossdrive_test 2>/dev/null || true
 
 # Format as plain (unjournaled) HFS+ — kernel hfsplus driver needs unjournaled for full R/W
 echo "=== mkfs.hfsplus -v MMTEST $DEVPATH ==="
@@ -53,12 +53,13 @@ mkfs.hfsplus -v MMTEST "$DEVPATH" 2>&1
 
 # Mount via kernel hfsplus
 echo "=== Mounting RW ==="
-mkdir -p /mnt/macmount_test
+mkdir -p /mnt/crossdrive_test
 modprobe hfsplus
-mount -t hfsplus -o rw,uid=1000,gid=1000,umask=000,force "$DEVPATH" /mnt/macmount_test 2>&1
-mount | grep macmount_test
+mount -t hfsplus -o rw,uid=1000,gid=1000,umask=000,force "$DEVPATH" /mnt/crossdrive_test 2>&1
+mount | grep crossdrive_test
 
 echo "=== Empty filesystem ready: ==="
-ls -la /mnt/macmount_test
-df -h /mnt/macmount_test
+ls -la /mnt/crossdrive_test
+df -h /mnt/crossdrive_test
 echo "DONE"
+

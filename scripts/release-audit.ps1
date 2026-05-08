@@ -11,7 +11,7 @@ $distDir = Join-Path $root "dist"
 if (-not (Test-Path $pkgPath)) { throw "package.json not found." }
 $pkg = Get-Content $pkgPath | ConvertFrom-Json
 $productName = if (-not [string]::IsNullOrWhiteSpace($pkg.build.productName)) { $pkg.build.productName } else { $pkg.productName }
-if ([string]::IsNullOrWhiteSpace($productName)) { $productName = "GKMacOpener" }
+if ([string]::IsNullOrWhiteSpace($productName)) { $productName = "CrossDrive" }
 
 $setupPatterns = @(
     "${productName}Setup.exe",        # current stable artifactName
@@ -27,8 +27,8 @@ foreach ($pattern in $setupPatterns) {
     }
 }
 $portablePatterns = @(
-    "$productName-*.exe",             # current artifactName: GKMacOpener-<version>.exe
-    "$productName *.exe"              # legacy: GKMacOpener <version>.exe
+    "$productName-*.exe",             # current artifactName: CrossDrive-<version>.exe
+    "$productName *.exe"              # legacy: CrossDrive <version>.exe
 )
 $portableExe = $null
 foreach ($pattern in $portablePatterns) {
@@ -237,8 +237,8 @@ $checks += [pscustomobject]@{
 }
 
 $checks += [pscustomobject]@{
-    Check = "GKMacOpener MIT copyright documented"
-    Passed = ($noticeText -match "Copyright \(c\) 2026 GKMacOpener contributors") -and ((Get-Content (Join-Path $root "LICENSE") -Raw) -match "Copyright \(c\) 2026 GKMacOpener contributors")
+    Check = "CrossDrive MIT copyright documented"
+    Passed = ($noticeText -match "Copyright \(c\) 2026 CrossDrive contributors") -and ((Get-Content (Join-Path $root "LICENSE") -Raw) -match "Copyright \(c\) 2026 CrossDrive contributors")
     Detail = "LICENSE + THIRD_PARTY_NOTICES.txt"
 }
 
@@ -268,7 +268,7 @@ $gplOfferText = if (Test-Path (Join-Path $root "build\GPL_SOURCE_OFFER.txt")) {
 } else { "" }
 $checks += [pscustomobject]@{
     Check = "GPL written offer names a real source channel"
-    Passed = ($gplOfferText -match "github\.com/georgekgr12/GK_Mac_Opener")
+    Passed = ($gplOfferText -match "github\.com/georgekgr12/CrossDrive")
     Detail = "build\GPL_SOURCE_OFFER.txt"
 }
 
@@ -293,27 +293,27 @@ $checks += [pscustomobject]@{
 }
 
 $checks += [pscustomobject]@{
-    Check = "NSIS artifactName is GKMacOpenerSetup.exe"
-    Passed = ($nsisCfg.artifactName -eq "GKMacOpenerSetup.exe")
+    Check = "NSIS artifactName is CrossDriveSetup.exe"
+    Passed = ($nsisCfg.artifactName -eq "CrossDriveSetup.exe")
     Detail = "package.json build.nsis.artifactName = $($nsisCfg.artifactName)"
 }
 
 $updateRoutesPath = Join-Path $root "routes\updateRoutes.js"
 $updateRoutesText = if (Test-Path $updateRoutesPath) { Get-Content $updateRoutesPath -Raw } else { "" }
 $checks += [pscustomobject]@{
-    Check = "updateRoutes targets GK_Mac_Opener"
-    Passed = (Test-Path $updateRoutesPath) -and ($updateRoutesText -match "GK_Mac_Opener") -and ($updateRoutesText -notmatch "GK_Mac_Opener_Releases")
+    Check = "updateRoutes targets CrossDrive"
+    Passed = (Test-Path $updateRoutesPath) -and ($updateRoutesText -match "CrossDrive") -and ($updateRoutesText -notmatch "CrossDrive_Releases")
     Detail = $updateRoutesPath
 }
 
-$setupExePath = Join-Path $root "dist\GKMacOpenerSetup.exe"
+$setupExePath = Join-Path $root "dist\CrossDriveSetup.exe"
 $checks += [pscustomobject]@{
     Check = "Stable installer artifact present"
     Passed = (Test-Path $setupExePath)
     Detail = $setupExePath
 }
 
-$kernelPath = Join-Path $root "prereqs\macmount-kernel\wsl_kernel"
+$kernelPath = Join-Path $root "prereqs\crossdrive-kernel\wsl_kernel"
 $checks += [pscustomobject]@{
     Check = "Bundled WSL kernel"
     Passed = (Test-Path $kernelPath)
@@ -326,7 +326,7 @@ $wslModules = @(
     @{ Label = "Bundled WSL module: hfsplus.ko"; Name = "hfsplus.ko" }
 )
 foreach ($module in $wslModules) {
-    $modulePath = Join-Path $root "prereqs\macmount-kernel\modules\$($module.Name)"
+    $modulePath = Join-Path $root "prereqs\crossdrive-kernel\modules\$($module.Name)"
     $checks += [pscustomobject]@{
         Check = $module.Label
         Passed = (Test-Path $modulePath)
@@ -335,9 +335,9 @@ foreach ($module in $wslModules) {
 }
 
 $nativeRequired = @(
-    @{ Label = "Native service published"; Path = (Join-Path $root "native\bin\service\MacMount.NativeService.exe") },
-    @{ Label = "Native broker published"; Path = (Join-Path $root "native\bin\broker\MacMount.NativeBroker.exe") },
-    @{ Label = "User-session helper published"; Path = (Join-Path $root "native\bin\user-session\MacMount.UserSessionHelper.exe") }
+    @{ Label = "Native service published"; Path = (Join-Path $root "native\bin\service\CrossDrive.NativeService.exe") },
+    @{ Label = "Native broker published"; Path = (Join-Path $root "native\bin\broker\CrossDrive.NativeBroker.exe") },
+    @{ Label = "User-session helper published"; Path = (Join-Path $root "native\bin\user-session\CrossDrive.UserSessionHelper.exe") }
 )
 foreach ($item in $nativeRequired) {
     $checks += [pscustomobject]@{
@@ -362,7 +362,7 @@ if ([string]::IsNullOrWhiteSpace($effectiveCscLink)) {
 }
 $signEnv = -not [string]::IsNullOrWhiteSpace($effectiveCscLink)
 $usesPlaceholderPfx = $false
-if ($signEnv -and $effectiveCscLink -match "macmount-signing-placeholder\.pfx") {
+if ($signEnv -and $effectiveCscLink -match "crossdrive-signing-placeholder\.pfx") {
     $usesPlaceholderPfx = $true
 }
 $checks += [pscustomobject]@{

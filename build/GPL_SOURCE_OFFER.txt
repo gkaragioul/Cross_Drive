@@ -1,7 +1,7 @@
 OFFER FOR SOURCE CODE - GPL-COVERED COMPONENTS
 ==============================================
 
-GKMacOpener binary distributions may include object-code forms of GPL-covered
+CrossDrive binary distributions may include object-code forms of GPL-covered
 components, including:
 
 - a custom WSL2 Linux kernel binary: wsl_kernel
@@ -16,9 +16,9 @@ GPL license.
 How to Obtain Source
 --------------------
 
-1. The official GKMacOpener source repository is:
+1. The official CrossDrive source repository is:
 
-       https://github.com/georgekgr12/GK_Mac_Opener
+       https://github.com/georgekgr12/CrossDrive
 
    It contains a GPL source manifest at:
 
@@ -31,7 +31,7 @@ How to Obtain Source
 2. If the corresponding source for a GPL-covered binary you received is not
    already present in the repository above, request it by opening an issue at:
 
-       https://github.com/georgekgr12/GK_Mac_Opener/issues
+       https://github.com/georgekgr12/CrossDrive/issues
 
    The request will be fulfilled by providing a durable download link, a
    source archive, or a public repository containing the complete
@@ -45,7 +45,7 @@ Duration
 --------
 
 This offer is valid for at least three years from the date of distribution
-of the corresponding binary, and for as long as GKMacOpener offers support
+of the corresponding binary, and for as long as CrossDrive offers support
 or spare parts for that release, whichever is longer. This offer is valid to
 any third party in receipt of the binary, regardless of how they obtained it.
 

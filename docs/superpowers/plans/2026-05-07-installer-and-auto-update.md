@@ -1,8 +1,8 @@
-# GKMacOpener Installer + Auto-Update Implementation Plan
+# CrossDrive Installer + Auto-Update Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship GKMacOpener as a normal Windows installer with EULA gate, plus an in-app update flow backed by a new public `GK_Mac_Opener_Releases` repo. Mirrors the MyLocalBackup-releases pattern.
+**Goal:** Ship CrossDrive as a normal Windows installer with EULA gate, plus an in-app update flow backed by a new public `CrossDrive_Releases` repo. Mirrors the MyLocalBackup-releases pattern.
 
 **Architecture:** Two repos (source + releases-only). NSIS assisted wizard. Express updateRoutes polls GitHub Releases API with ETag caching, downloads installer to %TEMP%, verifies SHA256 from release notes body, hands off to a PowerShell helper that runs the installer (full UI) then relaunches the app. React UI: launch-time banner + modal + Settings card. Direct port of `MyLocalBackup.Core/Services/UpdateService.cs` to Node.
 
@@ -22,21 +22,21 @@
 - [ ] **Step 1: Create the empty public repo**
 
 ```bash
-gh repo create georgekgr12/GK_Mac_Opener_Releases \
+gh repo create georgekgr12/CrossDrive_Releases \
   --public \
-  --description "Official Windows installer downloads for GKMacOpener" \
-  --homepage "https://github.com/georgekgr12/GK_Mac_Opener"
+  --description "Official Windows installer downloads for CrossDrive" \
+  --homepage "https://github.com/georgekgr12/CrossDrive"
 ```
 
-Expected output: `✓ Created repository georgekgr12/GK_Mac_Opener_Releases on GitHub`
+Expected output: `✓ Created repository georgekgr12/CrossDrive_Releases on GitHub`
 
 - [ ] **Step 2: Confirm it exists and is public**
 
 ```bash
-gh api repos/georgekgr12/GK_Mac_Opener_Releases --jq '{full_name, private, description}'
+gh api repos/georgekgr12/CrossDrive_Releases --jq '{full_name, private, description}'
 ```
 
-Expected: `{"full_name":"georgekgr12/GK_Mac_Opener_Releases","private":false,"description":"Official Windows installer downloads for GKMacOpener"}`
+Expected: `{"full_name":"georgekgr12/CrossDrive_Releases","private":false,"description":"Official Windows installer downloads for CrossDrive"}`
 
 ---
 
@@ -48,14 +48,14 @@ Expected: `{"full_name":"georgekgr12/GK_Mac_Opener_Releases","private":false,"de
 - [ ] **Step 1: Clone the empty repo to a temp location**
 
 ```bash
-mkdir -p /tmp/gkmo_releases_init && cd /tmp/gkmo_releases_init
-gh repo clone georgekgr12/GK_Mac_Opener_Releases .
+mkdir -p /tmp/crossdrive_releases_init && cd /tmp/crossdrive_releases_init
+gh repo clone georgekgr12/CrossDrive_Releases .
 ```
 
 - [ ] **Step 2: Copy LICENSE from source repo**
 
 ```bash
-cp h:/DevWork/Win_Apps/GK_Mac_Opener/LICENSE LICENSE
+cp h:/DevWork/Win_Apps/CrossDrive/LICENSE LICENSE
 ```
 
 - [ ] **Step 3: Create README.md**
@@ -63,15 +63,15 @@ cp h:/DevWork/Win_Apps/GK_Mac_Opener/LICENSE LICENSE
 Write `README.md` with this exact content:
 
 ```markdown
-# GKMacOpener — Releases
+# CrossDrive — Releases
 
-Official Windows installer downloads for **GKMacOpener** — a free, open-source desktop app for mounting, browsing, and copying files from APFS and HFS+ Mac-formatted drives on Windows.
+Official Windows installer downloads for **CrossDrive** — a free, open-source desktop app for mounting, browsing, and copying files from APFS and HFS+ Mac-formatted drives on Windows.
 
 ## Download Latest
 
-[![Download Installer](https://img.shields.io/badge/Download-GKMacOpenerSetup.exe-blue?style=for-the-badge&logo=windows)](https://github.com/georgekgr12/GK_Mac_Opener_Releases/releases/latest/download/GKMacOpenerSetup.exe)
+[![Download Installer](https://img.shields.io/badge/Download-CrossDriveSetup.exe-blue?style=for-the-badge&logo=windows)](https://github.com/georgekgr12/CrossDrive_Releases/releases/latest/download/CrossDriveSetup.exe)
 
-> **Direct link:** https://github.com/georgekgr12/GK_Mac_Opener_Releases/releases/latest/download/GKMacOpenerSetup.exe
+> **Direct link:** https://github.com/georgekgr12/CrossDrive_Releases/releases/latest/download/CrossDriveSetup.exe
 
 ## Features
 
@@ -90,18 +90,18 @@ Official Windows installer downloads for **GKMacOpener** — a free, open-source
 
 ## License
 
-GKMacOpener is **free, open-source software** distributed under the MIT License. Full terms in [LICENSE](LICENSE) and shown during installation. Source code and contribution guidelines: https://github.com/georgekgr12/GK_Mac_Opener.
+CrossDrive is **free, open-source software** distributed under the MIT License. Full terms in [LICENSE](LICENSE) and shown during installation. Source code and contribution guidelines: https://github.com/georgekgr12/CrossDrive.
 
-For licensing inquiries: open an issue at https://github.com/georgekgr12/GK_Mac_Opener/issues.
+For licensing inquiries: open an issue at https://github.com/georgekgr12/CrossDrive/issues.
 
 ---
-© 2026 GKMacOpener contributors.
+© 2026 CrossDrive contributors.
 ```
 
 - [ ] **Step 4: Commit and push initial content**
 
 ```bash
-cd /tmp/gkmo_releases_init
+cd /tmp/crossdrive_releases_init
 git add README.md LICENSE
 git commit -m "Initial commit: README + MIT LICENSE"
 git push
@@ -110,18 +110,18 @@ git push
 - [ ] **Step 5: Verify the repo's README renders on GitHub**
 
 ```bash
-gh repo view georgekgr12/GK_Mac_Opener_Releases --web
+gh repo view georgekgr12/CrossDrive_Releases --web
 ```
 
 Visually confirm the README and Download badge appear. Then:
 
 ```bash
-rm -rf /tmp/gkmo_releases_init
+rm -rf /tmp/crossdrive_releases_init
 ```
 
 - [ ] **Step 6: Commit nothing in source repo (this task only touches the new repo)**
 
-No commit needed in the GK_Mac_Opener source repo for this task.
+No commit needed in the CrossDrive source repo for this task.
 
 ---
 
@@ -129,12 +129,12 @@ No commit needed in the GK_Mac_Opener source repo for this task.
 
 ### Task B1: Convert the new logo PNG to a square padded PNG + multi-resolution ICO
 
-**Background:** The source `Gemini_Generated_Image_hk2lpxhk2lpxhk2l-removebg-preview.png` is 613×407 (non-square). Windows app icons must be square, so we pad it to 1024×1024 on a transparent canvas, then generate a multi-resolution `.ico` (256/128/64/48/32/16) for `build/icon.ico`. The same padded PNG goes to `build/icon.png` (used by Linux/macOS by some tooling) and `src/assets/gkmacopener-logo.png` (used in the app sidebar).
+**Background:** The source `Gemini_Generated_Image_hk2lpxhk2lpxhk2l-removebg-preview.png` is 613×407 (non-square). Windows app icons must be square, so we pad it to 1024×1024 on a transparent canvas, then generate a multi-resolution `.ico` (256/128/64/48/32/16) for `build/icon.ico`. The same padded PNG goes to `build/icon.png` (used by Linux/macOS by some tooling) and `src/assets/crossdrive-logo.png` (used in the app sidebar).
 
 **Files:**
-- Create: `h:/DevWork/Win_Apps/GK_Mac_Opener/scripts/build-icons.js`
-- Modify: `h:/DevWork/Win_Apps/GK_Mac_Opener/package.json` (add devDependencies + script)
-- Output (regenerated): `build/icon.png`, `build/icon.ico`, `src/assets/gkmacopener-logo.png`
+- Create: `h:/DevWork/Win_Apps/CrossDrive/scripts/build-icons.js`
+- Modify: `h:/DevWork/Win_Apps/CrossDrive/package.json` (add devDependencies + script)
+- Output (regenerated): `build/icon.png`, `build/icon.ico`, `src/assets/crossdrive-logo.png`
 
 - [ ] **Step 1: Add `sharp` and `png-to-ico` as devDependencies**
 
@@ -149,7 +149,7 @@ Expected: both packages added under `devDependencies` in `package.json`.
 ```js
 // One-shot icon generator. Reads the source logo PNG, pads it to 1024x1024
 // on a transparent canvas, writes the padded PNG to build/icon.png and
-// src/assets/gkmacopener-logo.png, and generates a multi-resolution ICO at
+// src/assets/crossdrive-logo.png, and generates a multi-resolution ICO at
 // build/icon.ico. Re-run whenever the source logo changes.
 const fs = require('fs');
 const path = require('path');
@@ -160,7 +160,7 @@ const root = path.resolve(__dirname, '..');
 const SOURCE = path.join(root, 'Gemini_Generated_Image_hk2lpxhk2lpxhk2l-removebg-preview.png');
 const OUT_PNG = path.join(root, 'build', 'icon.png');
 const OUT_ICO = path.join(root, 'build', 'icon.ico');
-const LOGO_PNG = path.join(root, 'src', 'assets', 'gkmacopener-logo.png');
+const LOGO_PNG = path.join(root, 'src', 'assets', 'crossdrive-logo.png');
 
 async function main() {
   if (!fs.existsSync(SOURCE)) {
@@ -205,15 +205,15 @@ npm run build:icons
 Expected stdout:
 
 ```
-Wrote h:\DevWork\Win_Apps\GK_Mac_Opener\build\icon.png
-Wrote h:\DevWork\Win_Apps\GK_Mac_Opener\src\assets\gkmacopener-logo.png
-Wrote h:\DevWork\Win_Apps\GK_Mac_Opener\build\icon.ico (sizes: 256,128,64,48,32,16)
+Wrote h:\DevWork\Win_Apps\CrossDrive\build\icon.png
+Wrote h:\DevWork\Win_Apps\CrossDrive\src\assets\crossdrive-logo.png
+Wrote h:\DevWork\Win_Apps\CrossDrive\build\icon.ico (sizes: 256,128,64,48,32,16)
 ```
 
 Confirm `build/icon.png` is now ~1024×1024 by inspecting in any image viewer or:
 
 ```bash
-file h:/DevWork/Win_Apps/GK_Mac_Opener/build/icon.png
+file h:/DevWork/Win_Apps/CrossDrive/build/icon.png
 ```
 
 Expected: `PNG image data, 1024 x 1024, 8-bit/color RGBA`.
@@ -221,7 +221,7 @@ Expected: `PNG image data, 1024 x 1024, 8-bit/color RGBA`.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add scripts/build-icons.js package.json package-lock.json build/icon.png build/icon.ico src/assets/gkmacopener-logo.png
+git add scripts/build-icons.js package.json package-lock.json build/icon.png build/icon.ico src/assets/crossdrive-logo.png
 git commit -m "feat(branding): regenerate icon set from new logo (square 1024 PNG + multi-res ICO)"
 ```
 
@@ -232,7 +232,7 @@ git commit -m "feat(branding): regenerate icon set from new logo (square 1024 PN
 Electron-builder picks up `build/icon.ico` automatically for the .exe icon, but we make it explicit on the `nsis` block so the wizard header and the installer file icon both come from the new asset. We also point the .exe file icon directly via `win.icon`, and the existing `extraResources` already copies `build/icon.ico` and `build/icon.png` into the install folder.
 
 **Files:**
-- Modify: `h:/DevWork/Win_Apps/GK_Mac_Opener/package.json`
+- Modify: `h:/DevWork/Win_Apps/CrossDrive/package.json`
 
 - [ ] **Step 1: Add explicit installer icons under `build.nsis`**
 
@@ -268,7 +268,7 @@ git commit -m "build(nsis): explicit installerIcon + uninstallerIcon + header ic
 ### Task B3: Switch NSIS to assisted wizard with locked path and stable filename
 
 **Files:**
-- Modify: `h:/DevWork/Win_Apps/GK_Mac_Opener/package.json` (build.nsis + add build.portable artifactName)
+- Modify: `h:/DevWork/Win_Apps/CrossDrive/package.json` (build.nsis + add build.portable artifactName)
 
 - [ ] **Step 1: Edit `package.json` build section**
 
@@ -284,12 +284,12 @@ Find the existing `"nsis": { ... }` block (currently around lines 149–158) and
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "include": "build/installer.nsh",
-      "artifactName": "GKMacOpenerSetup.exe",
-      "uninstallDisplayName": "GKMacOpener",
+      "artifactName": "CrossDriveSetup.exe",
+      "uninstallDisplayName": "CrossDrive",
       "runAfterFinish": true
     },
     "portable": {
-      "artifactName": "GKMacOpener-${version}.exe"
+      "artifactName": "CrossDrive-${version}.exe"
     },
 ```
 
@@ -315,7 +315,7 @@ git commit -m "build(installer): assisted NSIS wizard with EULA gate, locked pat
 ### Task B4: Update self-test.js to assert the new build config
 
 **Files:**
-- Modify: `h:/DevWork/Win_Apps/GK_Mac_Opener/scripts/self-test.js` (insert near the existing `winTargets` checks around line 86)
+- Modify: `h:/DevWork/Win_Apps/CrossDrive/scripts/self-test.js` (insert near the existing `winTargets` checks around line 86)
 
 - [ ] **Step 1: Add the new assertions**
 
@@ -336,14 +336,14 @@ else pass('nsis.oneClick is false');
 if (nsisCfg.allowToChangeInstallationDirectory !== false) fail('nsis.allowToChangeInstallationDirectory must be false (locked install path for updates)');
 else pass('nsis.allowToChangeInstallationDirectory is false');
 
-if (nsisCfg.artifactName !== 'GKMacOpenerSetup.exe') fail(`nsis.artifactName must be 'GKMacOpenerSetup.exe', found '${nsisCfg.artifactName}'`);
-else pass('nsis.artifactName is GKMacOpenerSetup.exe');
+if (nsisCfg.artifactName !== 'CrossDriveSetup.exe') fail(`nsis.artifactName must be 'CrossDriveSetup.exe', found '${nsisCfg.artifactName}'`);
+else pass('nsis.artifactName is CrossDriveSetup.exe');
 
 if (nsisCfg.license !== 'build/EULA.txt') fail(`nsis.license must be 'build/EULA.txt', found '${nsisCfg.license}'`);
 else pass('nsis.license points to build/EULA.txt');
 
 const portableCfg = (pkg.build && pkg.build.portable) || {};
-if (portableCfg.artifactName !== 'GKMacOpener-${version}.exe') fail(`portable.artifactName must be 'GKMacOpener-\${version}.exe', found '${portableCfg.artifactName}'`);
+if (portableCfg.artifactName !== 'CrossDrive-${version}.exe') fail(`portable.artifactName must be 'CrossDrive-\${version}.exe', found '${portableCfg.artifactName}'`);
 else pass('portable.artifactName is versioned');
 ```
 
@@ -375,24 +375,24 @@ git commit -m "test(self-test): assert new NSIS + portable build config"
 npm run release:win:unsigned
 ```
 
-Expected: `dist/GKMacOpenerSetup.exe` and `dist/GKMacOpener-1.5.2.exe` are produced. The release-audit may print warnings about new gates that don't exist yet — that's fine for now; full hardening lands in sub-project E.
+Expected: `dist/CrossDriveSetup.exe` and `dist/CrossDrive-1.5.2.exe` are produced. The release-audit may print warnings about new gates that don't exist yet — that's fine for now; full hardening lands in sub-project E.
 
 - [ ] **Step 2: Confirm artifact names**
 
 ```bash
-ls -la "h:/DevWork/Win_Apps/GK_Mac_Opener/dist/" | grep -E "GKMacOpener(Setup)?(-1\.5\.2)?\.exe"
+ls -la "h:/DevWork/Win_Apps/CrossDrive/dist/" | grep -E "CrossDrive(Setup)?(-1\.5\.2)?\.exe"
 ```
 
-Expected: exactly two matches — `GKMacOpenerSetup.exe` and `GKMacOpener-1.5.2.exe`.
+Expected: exactly two matches — `CrossDriveSetup.exe` and `CrossDrive-1.5.2.exe`.
 
 - [ ] **Step 3: Manually run the NSIS installer in a sandbox or VM**
 
-Run `dist/GKMacOpenerSetup.exe` and walk the wizard. Verify:
+Run `dist/CrossDriveSetup.exe` and walk the wizard. Verify:
 - The installer's `.exe` file icon (visible in Explorer before double-clicking) is the new logo.
 - A "Welcome / I accept the agreement" screen appears showing the EULA from `build/EULA.txt`. The wizard's header/title-bar icon is the new logo.
 - The user must click "I Agree" to proceed.
 - No install-folder selection screen appears (locked path).
-- After install, the new GKMacOpener launches automatically because `runAfterFinish: true`.
+- After install, the new CrossDrive launches automatically because `runAfterFinish: true`.
 - The taskbar icon and Start Menu shortcut both show the new logo.
 
 If any step fails, fix `package.json` and rebuild before continuing. If it works, uninstall the test install via Apps & Features so the smoke test in sub-project F is clean.
@@ -406,7 +406,7 @@ If any step fails, fix `package.json` and rebuild before continuing. If it works
 ### Task C1: Create state-file path helpers in updateRoutes.js
 
 **Files:**
-- Create: `h:/DevWork/Win_Apps/GK_Mac_Opener/routes/updateRoutes.js`
+- Create: `h:/DevWork/Win_Apps/CrossDrive/routes/updateRoutes.js`
 
 - [ ] **Step 1: Create the file with state-file helpers**
 
@@ -420,7 +420,7 @@ const { spawn } = require('child_process');
 
 const STATE_DIR = path.join(
   process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
-  'GKMacOpener',
+  'CrossDrive',
   'updates'
 );
 const ETAG_FILE = path.join(STATE_DIR, 'github_etag.txt');
@@ -429,9 +429,9 @@ const PENDING_FILE = path.join(STATE_DIR, 'pending_update.txt');
 const PREVIOUS_FILE = path.join(STATE_DIR, 'previous_version.txt');
 
 const RELEASES_OWNER = 'georgekgr12';
-const RELEASES_REPO = 'GK_Mac_Opener_Releases';
+const RELEASES_REPO = 'CrossDrive_Releases';
 const RELEASES_API = `https://api.github.com/repos/${RELEASES_OWNER}/${RELEASES_REPO}/releases/latest`;
-const INSTALLER_ASSET = 'GKMacOpenerSetup.exe';
+const INSTALLER_ASSET = 'CrossDriveSetup.exe';
 
 function ensureStateDir() {
   try { fs.mkdirSync(STATE_DIR, { recursive: true }); } catch { /* ignore */ }
@@ -485,7 +485,7 @@ git commit -m "feat(updater): updateRoutes scaffold + state-file paths"
 ### Task C2: Implement `GET /api/update/check`
 
 **Files:**
-- Modify: `h:/DevWork/Win_Apps/GK_Mac_Opener/routes/updateRoutes.js`
+- Modify: `h:/DevWork/Win_Apps/CrossDrive/routes/updateRoutes.js`
 
 - [ ] **Step 1: Add the check handler and helpers**
 
@@ -520,7 +520,7 @@ Inside the `module.exports = function mountUpdateRoutes(app, ctx)` body, before 
     const cachedBody = rest.join('\n');
 
     const headers = {
-      'User-Agent': `GKMacOpener/${getCurrentVersion()}`,
+      'User-Agent': `CrossDrive/${getCurrentVersion()}`,
       'Accept': 'application/vnd.github+json'
     };
     if (cachedEtag) headers['If-None-Match'] = cachedEtag;
@@ -603,17 +603,17 @@ else pass('updateRoutes.js exports a register function');
 
 for (const key of ['STATE_DIR', 'ETAG_FILE', 'DISMISSED_FILE', 'PENDING_FILE', 'PREVIOUS_FILE']) {
   const value = updateRoutes[key];
-  if (typeof value !== 'string' || !path.isAbsolute(value) || !value.includes('GKMacOpener')) {
-    fail(`updateRoutes.${key} must be an absolute path under GKMacOpener (got: ${value})`);
+  if (typeof value !== 'string' || !path.isAbsolute(value) || !value.includes('CrossDrive')) {
+    fail(`updateRoutes.${key} must be an absolute path under CrossDrive (got: ${value})`);
   } else {
     pass(`updateRoutes.${key} is absolute and namespaced`);
   }
 }
 
-if (updateRoutes.RELEASES_API !== 'https://api.github.com/repos/georgekgr12/GK_Mac_Opener_Releases/releases/latest') {
-  fail(`updateRoutes.RELEASES_API does not point to GK_Mac_Opener_Releases`);
+if (updateRoutes.RELEASES_API !== 'https://api.github.com/repos/georgekgr12/CrossDrive_Releases/releases/latest') {
+  fail(`updateRoutes.RELEASES_API does not point to CrossDrive_Releases`);
 } else {
-  pass('updateRoutes.RELEASES_API points to GK_Mac_Opener_Releases');
+  pass('updateRoutes.RELEASES_API points to CrossDrive_Releases');
 }
 ```
 
@@ -637,7 +637,7 @@ git commit -m "feat(updater): GET /api/update/check with ETag + dismissed-versio
 ### Task C3: Implement `POST /api/update/download` + `GET /api/update/progress`
 
 **Files:**
-- Modify: `h:/DevWork/Win_Apps/GK_Mac_Opener/routes/updateRoutes.js`
+- Modify: `h:/DevWork/Win_Apps/CrossDrive/routes/updateRoutes.js`
 
 - [ ] **Step 1: Add download + progress handlers**
 
@@ -655,12 +655,12 @@ Inside `mountUpdateRoutes`, after the `app.get('/api/update/check', ...)` handle
     if (!downloadUrl || !sha256 || !version) return res.status(400).json({ error: 'downloadUrl, sha256, and version are required' });
     if (activeDownload && activeDownload.status === 'running') return res.status(409).json({ error: 'a download is already in progress' });
 
-    const tmpPath = path.join(os.tmpdir(), `gkmo_${crypto.randomUUID()}_${INSTALLER_ASSET}`);
+    const tmpPath = path.join(os.tmpdir(), `crossdrive_${crypto.randomUUID()}_${INSTALLER_ASSET}`);
     activeDownload = { totalBytes: 0, bytesDone: 0, status: 'running', error: null, path: tmpPath, version };
     log(`download starting: ${version} -> ${tmpPath}`);
 
     function downloadOnce(url, redirectsLeft) {
-      const req2 = https.request(url, { method: 'GET', headers: { 'User-Agent': `GKMacOpener/${getCurrentVersion()}` }, timeout: 30000 }, (resp) => {
+      const req2 = https.request(url, { method: 'GET', headers: { 'User-Agent': `CrossDrive/${getCurrentVersion()}` }, timeout: 30000 }, (resp) => {
         if ([301, 302, 303, 307, 308].includes(resp.statusCode) && resp.headers.location && redirectsLeft > 0) {
           resp.resume();
           return downloadOnce(resp.headers.location, redirectsLeft - 1);
@@ -746,7 +746,7 @@ git commit -m "feat(updater): /download (streamed) + /progress (polled) with SHA
 ### Task C4: Implement `POST /api/update/launch` (PowerShell helper spawn)
 
 **Files:**
-- Modify: `h:/DevWork/Win_Apps/GK_Mac_Opener/routes/updateRoutes.js`
+- Modify: `h:/DevWork/Win_Apps/CrossDrive/routes/updateRoutes.js`
 
 - [ ] **Step 1: Add the launch handler and PS-helper builder**
 
@@ -757,7 +757,7 @@ Inside `mountUpdateRoutes`, after `/download`:
     // Verbatim port of MyLocalBackup.Core/Services/UpdateService.cs:399-415.
     // Sleep 2s -> run installer (full UI, no /passive) -> wait -> launch new app.
     const escSingle = (s) => String(s).replace(/'/g, "''");
-    const newApp = `${process.env.LOCALAPPDATA}\\Programs\\GKMacOpener\\GKMacOpener.exe`;
+    const newApp = `${process.env.LOCALAPPDATA}\\Programs\\CrossDrive\\CrossDrive.exe`;
     return [
       `$installer = '${escSingle(installerPath)}'`,
       `$oldApp = '${escSingle(oldExePath)}'`,
@@ -779,7 +779,7 @@ Inside `mountUpdateRoutes`, after `/download`:
     writeState(PREVIOUS_FILE, `${getCurrentVersion()}|`);
 
     const oldExe = process.execPath; // current Electron exe — fallback if installer is cancelled
-    const helperPath = path.join(os.tmpdir(), `gkmo_relaunch_${crypto.randomUUID()}.ps1`);
+    const helperPath = path.join(os.tmpdir(), `crossdrive_relaunch_${crypto.randomUUID()}.ps1`);
     fs.writeFileSync(helperPath, buildRelaunchScript(installerPath, oldExe), 'utf8');
 
     const child = spawn(
@@ -822,7 +822,7 @@ git commit -m "feat(updater): /launch endpoint spawns PowerShell helper for full
 ### Task C5: Implement `POST /api/update/dismiss` and pending-update detection on startup
 
 **Files:**
-- Modify: `h:/DevWork/Win_Apps/GK_Mac_Opener/routes/updateRoutes.js`
+- Modify: `h:/DevWork/Win_Apps/CrossDrive/routes/updateRoutes.js`
 
 - [ ] **Step 1: Add /dismiss handler + run a startup check inside the register function**
 
@@ -878,7 +878,7 @@ git commit -m "feat(updater): /dismiss + startup detection of failed pending upd
 ### Task C6: Wire updateRoutes into server.js
 
 **Files:**
-- Modify: `h:/DevWork/Win_Apps/GK_Mac_Opener/server.js`
+- Modify: `h:/DevWork/Win_Apps/CrossDrive/server.js`
 
 - [ ] **Step 1: Add the require near the other route requires**
 
@@ -929,8 +929,8 @@ git commit -m "feat(server): register updateRoutes"
 ### Task C7: Add IPC channel `quit-for-update` (main + preload)
 
 **Files:**
-- Modify: `h:/DevWork/Win_Apps/GK_Mac_Opener/main.js`
-- Modify: `h:/DevWork/Win_Apps/GK_Mac_Opener/preload.js`
+- Modify: `h:/DevWork/Win_Apps/CrossDrive/main.js`
+- Modify: `h:/DevWork/Win_Apps/CrossDrive/preload.js`
 
 - [ ] **Step 1: Add ipcMain handler in main.js**
 
@@ -986,7 +986,7 @@ git commit -m "feat(ipc): expose quit-for-update channel for the in-app updater"
 ### Task D1: Add update API client functions
 
 **Files:**
-- Modify: `h:/DevWork/Win_Apps/GK_Mac_Opener/src/api.js`
+- Modify: `h:/DevWork/Win_Apps/CrossDrive/src/api.js`
 
 - [ ] **Step 1: Append the new API functions**
 
@@ -1034,7 +1034,7 @@ git commit -m "feat(api): add update client functions"
 ### Task D2: Create the UpdateBanner component
 
 **Files:**
-- Create: `h:/DevWork/Win_Apps/GK_Mac_Opener/src/UpdateBanner.jsx`
+- Create: `h:/DevWork/Win_Apps/CrossDrive/src/UpdateBanner.jsx`
 
 - [ ] **Step 1: Write the component**
 
@@ -1098,7 +1098,7 @@ git commit -m "feat(ui): UpdateBanner component"
 ### Task D3: Create the UpdateModal component
 
 **Files:**
-- Create: `h:/DevWork/Win_Apps/GK_Mac_Opener/src/UpdateModal.jsx`
+- Create: `h:/DevWork/Win_Apps/CrossDrive/src/UpdateModal.jsx`
 
 - [ ] **Step 1: Write the component**
 
@@ -1168,7 +1168,7 @@ export default function UpdateModal({ update, onClose }) {
       <div className="modal-content glass" style={{ maxWidth: 560, width: '92%' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
           <h3 style={{ margin: 0, fontFamily: 'var(--font-heading)', letterSpacing: 2, textTransform: 'uppercase', fontSize: 15 }}>
-            Update GKMacOpener
+            Update CrossDrive
           </h3>
           <span style={{ fontSize: 11, opacity: 0.6, fontFamily: 'var(--font-mono)' }}>
             v{update.current} &rarr; {update.version}
@@ -1262,7 +1262,7 @@ git commit -m "feat(ui): UpdateModal with progress, SHA256-verified download, in
 ### Task D4: Wire banner + modal + Settings card into App.jsx
 
 **Files:**
-- Modify: `h:/DevWork/Win_Apps/GK_Mac_Opener/src/App.jsx`
+- Modify: `h:/DevWork/Win_Apps/CrossDrive/src/App.jsx`
 
 - [ ] **Step 1: Add imports + state**
 
@@ -1393,7 +1393,7 @@ git commit -m "feat(ui): wire UpdateBanner + UpdateModal + Settings update card 
 ### Task E1: Create RELEASE_NOTES.md template
 
 **Files:**
-- Create: `h:/DevWork/Win_Apps/GK_Mac_Opener/RELEASE_NOTES.md`
+- Create: `h:/DevWork/Win_Apps/CrossDrive/RELEASE_NOTES.md`
 
 - [ ] **Step 1: Write the template**
 
@@ -1426,13 +1426,13 @@ git commit -m "docs: add RELEASE_NOTES.md template for the publish pipeline"
 ### Task E2: Create scripts/publish-release.ps1
 
 **Files:**
-- Create: `h:/DevWork/Win_Apps/GK_Mac_Opener/scripts/publish-release.ps1`
+- Create: `h:/DevWork/Win_Apps/CrossDrive/scripts/publish-release.ps1`
 
 - [ ] **Step 1: Write the script**
 
 ```powershell
 #!/usr/bin/env pwsh
-# Publish a GKMacOpener release to GK_Mac_Opener_Releases on GitHub.
+# Publish a CrossDrive release to CrossDrive_Releases on GitHub.
 # Usage: .\scripts\publish-release.ps1 -Version 1.5.3 [-Manual]
 #   -Manual: skip the gh release create step; print the SHA256 line for manual upload.
 
@@ -1450,7 +1450,7 @@ $root = Split-Path -Parent $PSScriptRoot
 Push-Location $root
 
 try {
-  Write-Host "=== GKMacOpener Release v$Version ===" -ForegroundColor Cyan
+  Write-Host "=== CrossDrive Release v$Version ===" -ForegroundColor Cyan
 
   # 1. Verify clean tree on main
   $branch = (& git rev-parse --abbrev-ref HEAD).Trim()
@@ -1477,8 +1477,8 @@ try {
   if ($LASTEXITCODE -ne 0) { throw "release:gate failed" }
 
   # 4. Locate artifacts and compute hash
-  $setupExe = Join-Path $root "dist\GKMacOpenerSetup.exe"
-  $portableExe = Join-Path $root ("dist\GKMacOpener-{0}.exe" -f $Version)
+  $setupExe = Join-Path $root "dist\CrossDriveSetup.exe"
+  $portableExe = Join-Path $root ("dist\CrossDrive-{0}.exe" -f $Version)
   if (-not (Test-Path $setupExe)) { throw "Missing $setupExe" }
   if (-not (Test-Path $portableExe)) { throw "Missing $portableExe" }
 
@@ -1491,7 +1491,7 @@ try {
   if (-not (Test-Path $notesSource)) { throw "RELEASE_NOTES.md missing. Edit it before running this script." }
   $notes = Get-Content $notesSource -Raw
   $notesFinal = "$notes`n`nSHA256: $hash`n"
-  $tmpNotes = Join-Path $env:TEMP "gkmo_release_notes_$Version.md"
+  $tmpNotes = Join-Path $env:TEMP "crossdrive_release_notes_$Version.md"
   Set-Content $tmpNotes -Value $notesFinal -Encoding UTF8
 
   # 6. Tag and push
@@ -1503,7 +1503,7 @@ try {
   if ($Manual) {
     Write-Host ""
     Write-Host "=== Manual upload ===" -ForegroundColor Green
-    Write-Host "Upload these two files to a new release v$Version on georgekgr12/GK_Mac_Opener_Releases:"
+    Write-Host "Upload these two files to a new release v$Version on georgekgr12/CrossDrive_Releases:"
     Write-Host "  $setupExe"
     Write-Host "  $portableExe"
     Write-Host ""
@@ -1516,9 +1516,9 @@ try {
   }
 
   # 7. gh release create on the releases repo
-  Write-Host "[6/6] Creating GitHub release on GK_Mac_Opener_Releases..." -ForegroundColor Yellow
+  Write-Host "[6/6] Creating GitHub release on CrossDrive_Releases..." -ForegroundColor Yellow
   & gh release create "v$Version" `
-      --repo georgekgr12/GK_Mac_Opener_Releases `
+      --repo georgekgr12/CrossDrive_Releases `
       --title "v$Version" `
       --notes-file $tmpNotes `
       $setupExe $portableExe
@@ -1526,7 +1526,7 @@ try {
 
   Write-Host ""
   Write-Host "=== Release v$Version published ===" -ForegroundColor Green
-  Write-Host "URL: https://github.com/georgekgr12/GK_Mac_Opener_Releases/releases/tag/v$Version"
+  Write-Host "URL: https://github.com/georgekgr12/CrossDrive_Releases/releases/tag/v$Version"
 }
 finally {
   Pop-Location
@@ -1545,7 +1545,7 @@ powershell -NoProfile -Command "Get-Command -Syntax scripts/publish-release.ps1"
 
 ```bash
 git add scripts/publish-release.ps1
-git commit -m "feat(release): publish-release.ps1 builds, hashes, and pushes to GK_Mac_Opener_Releases"
+git commit -m "feat(release): publish-release.ps1 builds, hashes, and pushes to CrossDrive_Releases"
 ```
 
 ---
@@ -1553,7 +1553,7 @@ git commit -m "feat(release): publish-release.ps1 builds, hashes, and pushes to 
 ### Task E3: Add release-audit gates for the new install + updater config
 
 **Files:**
-- Modify: `h:/DevWork/Win_Apps/GK_Mac_Opener/scripts/release-audit.ps1`
+- Modify: `h:/DevWork/Win_Apps/CrossDrive/scripts/release-audit.ps1`
 
 - [ ] **Step 1: Add four new checks**
 
@@ -1574,20 +1574,20 @@ $checks += [pscustomobject]@{
 }
 
 $checks += [pscustomobject]@{
-    Check = "NSIS artifactName is GKMacOpenerSetup.exe"
-    Passed = ($nsisCfg.artifactName -eq "GKMacOpenerSetup.exe")
+    Check = "NSIS artifactName is CrossDriveSetup.exe"
+    Passed = ($nsisCfg.artifactName -eq "CrossDriveSetup.exe")
     Detail = "package.json build.nsis.artifactName = $($nsisCfg.artifactName)"
 }
 
 $updateRoutesPath = Join-Path $root "routes\updateRoutes.js"
 $updateRoutesText = if (Test-Path $updateRoutesPath) { Get-Content $updateRoutesPath -Raw } else { "" }
 $checks += [pscustomobject]@{
-    Check = "updateRoutes targets GK_Mac_Opener_Releases"
-    Passed = (Test-Path $updateRoutesPath) -and ($updateRoutesText -match "GK_Mac_Opener_Releases")
+    Check = "updateRoutes targets CrossDrive_Releases"
+    Passed = (Test-Path $updateRoutesPath) -and ($updateRoutesText -match "CrossDrive_Releases")
     Detail = $updateRoutesPath
 }
 
-$setupExePath = Join-Path $root "dist\GKMacOpenerSetup.exe"
+$setupExePath = Join-Path $root "dist\CrossDriveSetup.exe"
 $checks += [pscustomobject]@{
     Check = "Stable installer artifact present"
     Passed = (Test-Path $setupExePath)
@@ -1607,7 +1607,7 @@ Expected: the new check rows appear in the table. They may report False until a 
 
 ```bash
 git add scripts/release-audit.ps1
-git commit -m "test(release-audit): gate on assisted installer config + GK_Mac_Opener_Releases URL"
+git commit -m "test(release-audit): gate on assisted installer config + CrossDrive_Releases URL"
 ```
 
 ---
@@ -1615,7 +1615,7 @@ git commit -m "test(release-audit): gate on assisted installer config + GK_Mac_O
 ### Task E4: Add `npm run publish:release` script alias
 
 **Files:**
-- Modify: `h:/DevWork/Win_Apps/GK_Mac_Opener/package.json`
+- Modify: `h:/DevWork/Win_Apps/CrossDrive/package.json`
 
 - [ ] **Step 1: Add the script entry**
 
@@ -1658,13 +1658,13 @@ Replace the template content with something like:
 ```markdown
 ## Summary
 
-GKMacOpener v1.5.3: assisted Windows installer with EULA acceptance gate, plus in-app one-click updates from a public releases repo.
+CrossDrive v1.5.3: assisted Windows installer with EULA acceptance gate, plus in-app one-click updates from a public releases repo.
 
 ## Notable changes
 
 - Installer: new assisted wizard (Welcome → EULA → Install → Finish), locks install path, auto-launches the app.
-- Updates: app checks `GK_Mac_Opener_Releases` on launch and via Settings → Check for updates. SHA256 from release notes is verified before any installer is launched.
-- Releases repo: https://github.com/georgekgr12/GK_Mac_Opener_Releases
+- Updates: app checks `CrossDrive_Releases` on launch and via Settings → Check for updates. SHA256 from release notes is verified before any installer is launched.
+- Releases repo: https://github.com/georgekgr12/CrossDrive_Releases
 ```
 
 - [ ] **Step 2: Build the current branch as v1.5.2 first (to act as the "old" version that will be updated)**
@@ -1675,7 +1675,7 @@ Confirm `package.json` says `"version": "1.5.2"`. Then build:
 npm run release:win:full
 ```
 
-Manually run `dist/GKMacOpenerSetup.exe` to install GKMacOpener v1.5.2 on this machine.
+Manually run `dist/CrossDriveSetup.exe` to install CrossDrive v1.5.2 on this machine.
 
 - [ ] **Step 3: Bump and publish v1.5.3**
 
@@ -1683,11 +1683,11 @@ Manually run `dist/GKMacOpenerSetup.exe` to install GKMacOpener v1.5.2 on this m
 .\scripts\publish-release.ps1 -Version 1.5.3
 ```
 
-Expected: builds, hashes, tags, and uploads to `GK_Mac_Opener_Releases`. Final line prints the release URL.
+Expected: builds, hashes, tags, and uploads to `CrossDrive_Releases`. Final line prints the release URL.
 
 - [ ] **Step 4: Launch the installed v1.5.2**
 
-Run GKMacOpener from Start Menu. Within ~5 seconds the **Update banner** should appear at the top of the Drives view: "Update available: v1.5.3".
+Run CrossDrive from Start Menu. Within ~5 seconds the **Update banner** should appear at the top of the Drives view: "Update available: v1.5.3".
 
 - [ ] **Step 5: Click "Update now"**
 
@@ -1697,9 +1697,9 @@ Modal opens with the release notes from step 1 + a "Download & Install" button. 
 
 Electron quits. The NSIS installer wizard appears. Verify:
 - The EULA from `build/EULA.txt` is shown and must be accepted.
-- After Finish, the new GKMacOpener v1.5.3 launches automatically.
-- About dialog (Help → About GKMacOpener) shows v1.5.3.
-- `%LOCALAPPDATA%\GKMacOpener\updates\pending_update.txt` no longer exists.
+- After Finish, the new CrossDrive v1.5.3 launches automatically.
+- About dialog (Help → About CrossDrive) shows v1.5.3.
+- `%LOCALAPPDATA%\CrossDrive\updates\pending_update.txt` no longer exists.
 
 - [ ] **Step 7: Tampered-download negative test**
 
@@ -1722,7 +1722,7 @@ If any step fails, file the bug and fix before declaring smoke complete.
 | Spec section | Covered by |
 |---|---|
 | Releases repo (README + LICENSE only) | A1, A2 |
-| Permanent installer download URL | A2 (README badge), F1 (smoke test reaches via `releases/latest/download/GKMacOpenerSetup.exe`) |
+| Permanent installer download URL | A2 (README badge), F1 (smoke test reaches via `releases/latest/download/CrossDriveSetup.exe`) |
 | New logo on installer + app icon (taskbar / wizard header / .exe file icon) | B1 (square pad + multi-res ICO), B2 (NSIS config), B5 (manual verification) |
 | Installer rework (oneClick=false, locked path, stable name) | B3, B4, B5, E3 |
 | `routes/updateRoutes.js` `/check` | C1, C2 |
@@ -1745,6 +1745,6 @@ No gaps.
 
 **Placeholder scan:** No TBD/TODO/"add appropriate handling". Every step has real code or real commands.
 
-**Type consistency:** Endpoint contract is consistent across `routes/updateRoutes.js`, `src/api.js`, `UpdateBanner`, `UpdateModal`. State-file constants `STATE_DIR`/`ETAG_FILE`/`DISMISSED_FILE`/`PENDING_FILE`/`PREVIOUS_FILE` are defined once in C1 and reused in C2/C3/C4/C5. `INSTALLER_ASSET = "GKMacOpenerSetup.exe"` matches `nsis.artifactName` set in B1 and gated in E3.
+**Type consistency:** Endpoint contract is consistent across `routes/updateRoutes.js`, `src/api.js`, `UpdateBanner`, `UpdateModal`. State-file constants `STATE_DIR`/`ETAG_FILE`/`DISMISSED_FILE`/`PENDING_FILE`/`PREVIOUS_FILE` are defined once in C1 and reused in C2/C3/C4/C5. `INSTALLER_ASSET = "CrossDriveSetup.exe"` matches `nsis.artifactName` set in B1 and gated in E3.
 
 **Scope:** One implementation plan, six sub-projects. Each commits independently. Smoke test in F1 verifies the whole stack end-to-end.

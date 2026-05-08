@@ -1,6 +1,6 @@
 // One-shot icon generator. Reads the source logo PNG, pads it to 1024x1024
 // on a transparent canvas, writes the padded PNG to build/icon.png and
-// src/assets/gkmacopener-logo.png, and generates a multi-resolution ICO at
+// src/assets/crossdrive-logo.png, and generates a multi-resolution ICO at
 // build/icon.ico. Re-run whenever the source logo changes.
 const fs = require('fs');
 const path = require('path');
@@ -11,7 +11,7 @@ const root = path.resolve(__dirname, '..');
 const SOURCE = path.join(root, 'Gemini_Generated_Image_hk2lpxhk2lpxhk2l-removebg-preview.png');
 const OUT_PNG = path.join(root, 'build', 'icon.png');
 const OUT_ICO = path.join(root, 'build', 'icon.ico');
-const LOGO_PNG = path.join(root, 'src', 'assets', 'gkmacopener-logo.png');
+const LOGO_PNG = path.join(root, 'src', 'assets', 'crossdrive-logo.png');
 
 async function main() {
   if (!fs.existsSync(SOURCE)) {

@@ -40,25 +40,26 @@ done < <(lsblk -nlbo NAME,SIZE "/dev/$DEV" 2>/dev/null)
 DEVPATH="/dev/$PART"
 echo "Mounting $DEVPATH"
 
-mkdir -p /mnt/macmount_test
+mkdir -p /mnt/crossdrive_test
 modprobe hfsplus
-mount -t hfsplus -o rw,uid=1000,gid=1000,umask=000,force "$DEVPATH" /mnt/macmount_test 2>&1
+mount -t hfsplus -o rw,uid=1000,gid=1000,umask=000,force "$DEVPATH" /mnt/crossdrive_test 2>&1
 echo "--- mount table ---"
-mount | grep macmount_test
+mount | grep crossdrive_test
 echo "--- root contents ---"
-ls -la /mnt/macmount_test 2>&1
+ls -la /mnt/crossdrive_test 2>&1
 echo "--- WRITE TEST ---"
-echo "Hello from real Linux kernel hfsplus driver! $(date)" > /mnt/macmount_test/wsl_kernel_write.txt
-mkdir -p /mnt/macmount_test/MyFolder
-echo "subfolder write" > /mnt/macmount_test/MyFolder/inside.txt
-ls -la /mnt/macmount_test 2>&1
+echo "Hello from real Linux kernel hfsplus driver! $(date)" > /mnt/crossdrive_test/wsl_kernel_write.txt
+mkdir -p /mnt/crossdrive_test/MyFolder
+echo "subfolder write" > /mnt/crossdrive_test/MyFolder/inside.txt
+ls -la /mnt/crossdrive_test 2>&1
 echo "--- READ BACK ---"
-cat /mnt/macmount_test/wsl_kernel_write.txt
-cat /mnt/macmount_test/MyFolder/inside.txt
+cat /mnt/crossdrive_test/wsl_kernel_write.txt
+cat /mnt/crossdrive_test/MyFolder/inside.txt
 echo "--- COPY 100MB FILE TEST ---"
-dd if=/dev/urandom of=/mnt/macmount_test/big_test.bin bs=1M count=100 2>&1 | tail -3
-ls -la /mnt/macmount_test/big_test.bin
+dd if=/dev/urandom of=/mnt/crossdrive_test/big_test.bin bs=1M count=100 2>&1 | tail -3
+ls -la /mnt/crossdrive_test/big_test.bin
 echo "--- sync + free space ---"
 sync
-df -h /mnt/macmount_test
+df -h /mnt/crossdrive_test
 echo "DONE"
+

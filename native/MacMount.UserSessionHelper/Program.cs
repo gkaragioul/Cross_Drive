@@ -121,7 +121,7 @@ static class Program
             process.StartInfo.ArgumentList.Add("--");
             process.StartInfo.ArgumentList.Add("bash");
             process.StartInfo.ArgumentList.Add("-lc");
-            process.StartInfo.ArgumentList.Add("pgrep -f macmount-keepalive >/dev/null 2>&1 || nohup bash -lc 'exec -a macmount-keepalive sleep 2147483647' >/dev/null 2>&1 &");
+            process.StartInfo.ArgumentList.Add("pgrep -f crossdrive-keepalive >/dev/null 2>&1 || nohup bash -lc 'exec -a crossdrive-keepalive sleep 2147483647' >/dev/null 2>&1 &");
             process.Start();
             return 0;
         }
@@ -147,7 +147,7 @@ static class Program
             var nativeUncTarget = ToNativeDosTarget(target);
             if (DefineDosDevice(DDD_RAW_TARGET_PATH, letter, nativeUncTarget))
             {
-                SetExplorerLabel(letter, "MacMount");
+                SetExplorerLabel(letter, "CrossDrive");
                 return 0;
             }
 
@@ -161,7 +161,7 @@ static class Program
             var result = WNetAddConnection2(ref nr, null, null, CONNECT_TEMPORARY);
             if (result == 0)
             {
-                SetExplorerLabel(letter, "MacMount");
+                SetExplorerLabel(letter, "CrossDrive");
                 return 0;
             }
 
@@ -176,7 +176,7 @@ static class Program
             return Marshal.GetLastWin32Error();
         }
 
-        SetExplorerLabel(letter, "MacMount");
+        SetExplorerLabel(letter, "CrossDrive");
         return 0;
     }
 

@@ -4,7 +4,7 @@
 #
 # Args:
 #   $1 = absolute Linux path to the modules directory containing
-#        hfsplus.ko, hfs.ko, apfs.ko (e.g. /mnt/c/.../prereqs/macmount-kernel/modules)
+#        hfsplus.ko, hfs.ko, apfs.ko (e.g. /mnt/c/.../prereqs/crossdrive-kernel/modules)
 #
 # Output (stdout): one JSON line: {"success":true|false, "kver":"...", "loaded":[...], "error":"..."}
 
@@ -30,7 +30,7 @@ fi
 case "$KVER" in
     *+) ;;
     *)
-        emit_json "{\"success\":false,\"error\":$(json_escape "running kernel ($KVER) is not the MacMount custom kernel; .wslconfig may not be applied. Run wsl --shutdown and retry."),\"kver\":$(json_escape "$KVER")}"
+        emit_json "{\"success\":false,\"error\":$(json_escape "running kernel ($KVER) is not the CrossDrive custom kernel; .wslconfig may not be applied. Run wsl --shutdown and retry."),\"kver\":$(json_escape "$KVER")}"
         exit 0
         ;;
 esac

@@ -1,17 +1,17 @@
-GKMacOpener - Third-Party Notices
+CrossDrive - Third-Party Notices
 =================================
 Last updated: 2026-05-07
 
-GKMacOpener is distributed under the MIT License. This file summarizes the
+CrossDrive is distributed under the MIT License. This file summarizes the
 major third-party components that ship with, are bundled into, or are required
-by GKMacOpener binary distributions. The original components remain governed
+by CrossDrive binary distributions. The original components remain governed
 by their own license terms.
 
 ----------------------------------------------------------------------
-GKMacOpener application
+CrossDrive application
 ----------------------------------------------------------------------
 License: MIT License
-Copyright: Copyright (c) 2026 GKMacOpener contributors
+Copyright: Copyright (c) 2026 CrossDrive contributors
 
 The full MIT license text is included in LICENSE.txt.
 
@@ -24,7 +24,7 @@ License: GPLv3 with WinFsp FLOSS exception, or commercial license
 Repository: https://github.com/winfsp/winfsp
 License information: https://winfsp.dev/ and https://winfsp.dev/com/
 
-GKMacOpener is intended to be distributed as Free/Libre/Open Source Software
+CrossDrive is intended to be distributed as Free/Libre/Open Source Software
 under the MIT License and uses WinFsp through the WinFsp FLOSS exception path.
 The required user-facing attribution is:
 

@@ -46,8 +46,8 @@ export default function UpdateModal({ update, onClose }) {
     try {
       await launchUpdateInstaller(installerPath, update.version);
       // tell main to quit so the helper script can run the installer
-      if (window.macmount?.invoke) {
-        try { await window.macmount.invoke('quit-for-update'); } catch {}
+      if (window.crossdrive?.invoke) {
+        try { await window.crossdrive.invoke('quit-for-update'); } catch {}
       }
     } catch (e) {
       setError(e.message);
@@ -63,7 +63,7 @@ export default function UpdateModal({ update, onClose }) {
       <div className="modal-content glass" style={{ maxWidth: 560, width: '92%' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
           <h3 style={{ margin: 0, fontFamily: 'var(--font-heading)', letterSpacing: 2, textTransform: 'uppercase', fontSize: 15 }}>
-            Update GKMacOpener
+            Update CrossDrive
           </h3>
           <span style={{ fontSize: 11, opacity: 0.6, fontFamily: 'var(--font-mono)' }}>
             v{update.current} &rarr; {update.version}

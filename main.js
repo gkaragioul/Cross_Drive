@@ -3,9 +3,9 @@ const path = require('path');
 const fs = require('fs');
 const { execSync, execFile } = require('child_process');
 
-const APP_NAME = 'GKMacOpener';
-const APP_ID = 'com.gkmacopener.app';
-const COPYRIGHT_NOTICE = 'Copyright (c) 2026 GKMacOpener contributors';
+const APP_NAME = 'CrossDrive';
+const APP_ID = 'com.crossdrive.app';
+const COPYRIGHT_NOTICE = 'Copyright (c) 2026 CrossDrive contributors';
 const WINFSP_NOTICE = 'WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos';
 
 app.setName(APP_NAME);

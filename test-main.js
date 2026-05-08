@@ -4,7 +4,7 @@ function createWindow() {
     const mainWindow = new BrowserWindow({
         width: 1200,
         height: 800,
-        title: "MacMount Test",
+        title: "CrossDrive Test",
         backgroundColor: '#000000',
     });
 

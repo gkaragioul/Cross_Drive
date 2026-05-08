@@ -24,5 +24,5 @@ pause
 exit /b 1
 
 :start
-echo Starting MacMount dev server...
+echo Starting CrossDrive dev server...
 npm run start

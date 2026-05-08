@@ -1,22 +1,23 @@
-# GKMacOpener - Mac Drive Manager for Windows
+# CrossDrive - Mac Drive Manager for Windows
 
-GKMacOpener is a Windows desktop app for mounting, browsing, and copying files
+CrossDrive is a Windows desktop app for mounting, browsing, and copying files
 from APFS and HFS+ Mac-formatted drives. Supported volumes are exposed as local
 Windows drive letters through an Electron + React UI, a loopback Express API,
 WSL2 kernel filesystem drivers, and native Windows helper services.
 
 ## Status
 
-GKMacOpener is pre-GA. APFS write support is experimental and disabled by
-default unless `MACMOUNT_EXPERIMENTAL_APFS_WRITES=1` is set. CoreStorage /
+CrossDrive is pre-GA. APFS write support is experimental and disabled by
+default unless `CROSSDRIVE_EXPERIMENTAL_APFS_WRITES=1` is set. The legacy
+`MACMOUNT_EXPERIMENTAL_APFS_WRITES` alias is still accepted. CoreStorage /
 FileVault 1 is detected but explicitly unsupported.
 
 ## License
 
-GKMacOpener is Free/Libre/Open Source Software distributed under the MIT
+CrossDrive is Free/Libre/Open Source Software distributed under the MIT
 License. See [LICENSE](LICENSE).
 
-Copyright (c) 2026 GKMacOpener contributors.
+Copyright (c) 2026 CrossDrive contributors.
 
 ## Third-Party Notices
 
@@ -32,9 +33,9 @@ WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos
 
 https://github.com/winfsp/winfsp
 
-GKMacOpener uses the WinFsp FLOSS exception path by distributing the app under
+CrossDrive uses the WinFsp FLOSS exception path by distributing the app under
 MIT and shipping the unmodified WinFsp installer. Do not distribute
-GKMacOpener as proprietary software with WinFsp unless you have a separate
+CrossDrive as proprietary software with WinFsp unless you have a separate
 commercial WinFsp license.
 
 ## Architecture
@@ -47,7 +48,7 @@ WSL2 kernel path      -> primary APFS/HFS/HFS+ mount path
 WinFsp                -> Windows presentation/fallback support
 ```
 
-Mount modes are controlled by `MACMOUNT_MOUNT_MODE`:
+Mount modes are controlled by `CROSSDRIVE_MOUNT_MODE`:
 
 - `wsl_kernel` - default production path.
 - `native_first` - debug fallback, native raw provider first.
@@ -84,8 +85,10 @@ npm run hfs:test
 npm run apfs:test
 ```
 
-Native project names still use the historical `MacMount.*` namespace. Those
-names are internal implementation details and are not the public product name.
+Native source folders still use the historical `MacMount.*` namespace. Those
+names are internal implementation details; shipped app branding, helper
+processes, installer metadata, update feed paths, and user-visible state paths
+use CrossDrive.
 
 ## Release
 
@@ -96,8 +99,8 @@ npm run release:audit
 
 Release artifacts:
 
-- `dist/GKMacOpener Setup <version>.exe`
-- `dist/GKMacOpener <version>.exe`
+- `dist/CrossDriveSetup.exe`
+- `dist/CrossDrive-<version>.exe`
 
 For unsigned staging audits:
 
@@ -113,10 +116,10 @@ For production Authenticode signing, configure a real certificate with
 The installer should ship:
 
 - unmodified `prereqs/winfsp.msi`
-- `prereqs/macmount-kernel/wsl_kernel`
-- `prereqs/macmount-kernel/modules/apfs.ko`
-- `prereqs/macmount-kernel/modules/hfs.ko`
-- `prereqs/macmount-kernel/modules/hfsplus.ko`
+- `prereqs/crossdrive-kernel/wsl_kernel`
+- `prereqs/crossdrive-kernel/modules/apfs.ko`
+- `prereqs/crossdrive-kernel/modules/hfs.ko`
+- `prereqs/crossdrive-kernel/modules/hfsplus.ko`
 - published native service, broker, and user-session helper binaries
 - `LICENSE.txt`
 - `THIRD_PARTY_NOTICES.txt`

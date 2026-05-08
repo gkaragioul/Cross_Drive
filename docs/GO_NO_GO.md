@@ -1,10 +1,10 @@
-# GKMacOpener Go/No-Go (Commercial Release)
+# CrossDrive Go/No-Go (Commercial Release)
 
 ## Mandatory Go Gates
 
 1. `npm run release:win:full` completes and emits both:
-- `GKMacOpener Setup *.exe`
-- `GKMacOpener *.exe` (portable)
+- `CrossDrive Setup *.exe`
+- `CrossDrive *.exe` (portable)
 
 2. `npm run release:gate` passes with:
 - zero failing checks
@@ -38,7 +38,7 @@
 - Placeholder PFX/certificate in any release path.
 - Installer not signed or signature invalid.
 - Missing WinFsp MSI, WSL kernel, `apfs.ko`, `hfs.ko`, `hfsplus.ko`, native service, native broker, or user-session helper from release artifacts.
-- APFS writes exposed without `MACMOUNT_EXPERIMENTAL_APFS_WRITES=1`.
+- APFS writes exposed without `CROSSDRIVE_EXPERIMENTAL_APFS_WRITES=1`.
 - CoreStorage/FileVault 1 presented as mountable.
 - Regressions in mount stability, drive visibility, or data correctness.
 - Unresolved `P0` or `P1` defects in current release candidate.

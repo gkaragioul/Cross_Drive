@@ -1,4 +1,4 @@
-# GKMacOpener End-to-End Validation Script
+# CrossDrive End-to-End Validation Script
 # Run as Administrator on a clean Windows machine with a Mac drive attached.
 # Usage: powershell -ExecutionPolicy Bypass -File scripts\validate-release.ps1
 
@@ -132,7 +132,7 @@ if (-not $apfsFuseFound) {
 }
 
 # PowerShell scripts
-$psScripts = @("MacMount.ps1", "map-drive-user-session.ps1")
+$psScripts = @("CrossDrive.ps1", "map-drive-user-session.ps1")
 foreach ($ps in $psScripts) {
     $psPath = Join-Path $scriptDir "scripts\$ps"
     if (Test-Path $psPath) {
@@ -146,7 +146,7 @@ foreach ($ps in $psScripts) {
 Section "3. PowerShell Script Validation"
 # ============================================================
 
-$psScript = Join-Path $scriptDir "scripts\MacMount.ps1"
+$psScript = Join-Path $scriptDir "scripts\CrossDrive.ps1"
 
 # Preflight check
 try {
@@ -211,7 +211,7 @@ Write-Host ", " -NoNewline -ForegroundColor White
 Write-Host "$failCount failed" -ForegroundColor Red
 
 if ($failCount -eq 0) {
-    Write-Host "`nGKMacOpener is ready for release testing." -ForegroundColor Green
+    Write-Host "`nCrossDrive is ready for release testing." -ForegroundColor Green
     exit 0
 } else {
     Write-Host "`n$failCount issue(s) must be resolved before release." -ForegroundColor Red

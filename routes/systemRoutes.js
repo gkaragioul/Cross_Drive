@@ -115,7 +115,7 @@ module.exports = function mountSystemRoutes(app, ctx) {
         }
 
         const psEscaped = safePath.replace(/'/g, "''");
-        const taskName = `GKMacOpenerOpen_${Date.now()}`;
+        const taskName = `CrossDriveOpen_${Date.now()}`;
         const openCmd =
             `$p='${psEscaped}'; ` +
             `$a=New-ScheduledTaskAction -Execute 'explorer.exe' -Argument $p; ` +
@@ -141,7 +141,7 @@ module.exports = function mountSystemRoutes(app, ctx) {
 
     app.get('/api/support/bundle', async (req, res) => {
         try {
-            const outDir = path.join(process.env.ProgramData || 'C:\\ProgramData', 'GKMacOpener', 'Support');
+            const outDir = path.join(process.env.ProgramData || 'C:\\ProgramData', 'CrossDrive', 'Support');
             fs.mkdirSync(outDir, { recursive: true });
             const filePath = path.join(outDir, `support-${Date.now()}.json`);
             const payload = {

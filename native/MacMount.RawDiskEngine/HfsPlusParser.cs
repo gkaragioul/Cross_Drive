@@ -26,9 +26,10 @@ public sealed class HfsPlusParser : IFileSystemParser
     {
         var format = DetectFormat(device, cancellationToken);
         // HFS+ mounts read-write by default (matches the v1.1.0 baseline behavior). The
-        // MACMOUNT_EXPERIMENTAL_HFS_WRITES env var override is left in place for callers
+        // CROSSDRIVE_EXPERIMENTAL_HFS_WRITES env var override is left in place for callers
         // that need to force read-only via env vars.
         var disableWrite =
+            string.Equals(Environment.GetEnvironmentVariable("CROSSDRIVE_EXPERIMENTAL_HFS_WRITES"), "0", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(Environment.GetEnvironmentVariable("MACMOUNT_EXPERIMENTAL_HFS_WRITES"), "0", StringComparison.OrdinalIgnoreCase);
         var experimentalWritable = !disableWrite;
         var encryptedProbe = await ProbeEncryptedOrUnreadableCatalogAsync(device, cancellationToken).ConfigureAwait(false);

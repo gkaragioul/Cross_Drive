@@ -8,7 +8,7 @@ const express = require('express');
 
 const STATE_DIR = path.join(
   process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
-  'GKMacOpener',
+  'CrossDrive',
   'updates'
 );
 const DISMISSED_FILE = path.join(STATE_DIR, 'dismissed_update.txt');
@@ -16,10 +16,10 @@ const PENDING_FILE = path.join(STATE_DIR, 'pending_update.txt');
 const PREVIOUS_FILE = path.join(STATE_DIR, 'previous_version.txt');
 
 const RELEASES_OWNER = 'georgekgr12';
-const RELEASES_REPO = 'GK_Mac_Opener';
+const RELEASES_REPO = 'CrossDrive';
 const RELEASES_API = `https://api.github.com/repos/${RELEASES_OWNER}/${RELEASES_REPO}/releases/latest`;
 const ETAG_FILE = path.join(STATE_DIR, `github_etag_${RELEASES_REPO}.txt`);
-const INSTALLER_ASSET = 'GKMacOpenerSetup.exe';
+const INSTALLER_ASSET = 'CrossDriveSetup.exe';
 
 function ensureStateDir() {
   try { fs.mkdirSync(STATE_DIR, { recursive: true }); } catch { /* ignore */ }
@@ -67,7 +67,7 @@ module.exports = function mountUpdateRoutes(app, ctx) {
     const cachedBody = rest.join('\n');
 
     const headers = {
-      'User-Agent': `GKMacOpener/${getCurrentVersion()}`,
+      'User-Agent': `CrossDrive/${getCurrentVersion()}`,
       'Accept': 'application/vnd.github+json'
     };
     if (cachedEtag) headers['If-None-Match'] = cachedEtag;
@@ -149,12 +149,12 @@ module.exports = function mountUpdateRoutes(app, ctx) {
     if (!downloadUrl || !sha256 || !version) return res.status(400).json({ error: 'downloadUrl, sha256, and version are required' });
     if (activeDownload && activeDownload.status === 'running') return res.status(409).json({ error: 'a download is already in progress' });
 
-    const tmpPath = path.join(os.tmpdir(), `gkmo_${crypto.randomUUID()}_${INSTALLER_ASSET}`);
+    const tmpPath = path.join(os.tmpdir(), `crossdrive_${crypto.randomUUID()}_${INSTALLER_ASSET}`);
     activeDownload = { totalBytes: 0, bytesDone: 0, status: 'running', error: null, path: tmpPath, version };
     log(`download starting: ${version} -> ${tmpPath}`);
 
     function downloadOnce(url, redirectsLeft) {
-      const req2 = https.request(url, { method: 'GET', headers: { 'User-Agent': `GKMacOpener/${getCurrentVersion()}` }, timeout: 30000 }, (resp) => {
+      const req2 = https.request(url, { method: 'GET', headers: { 'User-Agent': `CrossDrive/${getCurrentVersion()}` }, timeout: 30000 }, (resp) => {
         if ([301, 302, 303, 307, 308].includes(resp.statusCode) && resp.headers.location && redirectsLeft > 0) {
           resp.resume();
           return downloadOnce(resp.headers.location, redirectsLeft - 1);
@@ -221,7 +221,7 @@ module.exports = function mountUpdateRoutes(app, ctx) {
       // install folder. NSIS's customInit macro does the same (see
       // build/installer.nsh); keeping it here too so installs triggered
       // from older deployed builds upgrade cleanly.
-      `Get-Process -Name GKMacOpener,MacMount.NativeBroker,MacMount.NativeService,MacMount.UserSessionHelper -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue`,
+      `Get-Process -Name CrossDrive,CrossDrive.NativeBroker,CrossDrive.NativeService,CrossDrive.UserSessionHelper,MacMount.NativeBroker,MacMount.NativeService,MacMount.UserSessionHelper -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue`,
       `Start-Sleep -Seconds 1`,
       // Launch the installer:
       // - No -Wait: NSIS handles app relaunch via `runAfterFinish: true`,
@@ -245,7 +245,7 @@ module.exports = function mountUpdateRoutes(app, ctx) {
     writeState(PREVIOUS_FILE, `${getCurrentVersion()}|`);
 
     const oldExe = process.execPath; // current Electron exe — fallback if installer is cancelled
-    const helperPath = path.join(os.tmpdir(), `gkmo_relaunch_${crypto.randomUUID()}.ps1`);
+    const helperPath = path.join(os.tmpdir(), `crossdrive_relaunch_${crypto.randomUUID()}.ps1`);
     fs.writeFileSync(helperPath, buildRelaunchScript(installerPath, oldExe), 'utf8');
 
     // Launch via `cmd /c start "" /B`. This is critical on Windows: Electron

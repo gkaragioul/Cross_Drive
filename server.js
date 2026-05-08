@@ -20,15 +20,18 @@ let httpServer = null;
 
 let logs = [];
 const VALID_RUNTIME_MOUNT_MODES = new Set(['wsl_kernel', 'native_first', 'native_only']);
+function readCrossDriveEnv(name, fallbackName = null) {
+    return process.env[name] ?? (fallbackName ? process.env[fallbackName] : undefined);
+}
 const RUNTIME_MOUNT_MODE = (() => {
-    const raw = String(process.env.MACMOUNT_MOUNT_MODE || '').trim().toLowerCase();
+    const raw = String(readCrossDriveEnv('CROSSDRIVE_MOUNT_MODE', 'MACMOUNT_MOUNT_MODE') || '').trim().toLowerCase();
     if (!raw) return 'wsl_kernel';
     if (raw === 'experimental_raw') return 'native_only';
     if (raw === 'wsl_unc' || raw === 'hybrid_canary') return 'wsl_kernel';
     return VALID_RUNTIME_MOUNT_MODES.has(raw) ? raw : 'wsl_kernel';
 })();
 const RUNTIME_CANARY_PERCENT = (() => {
-    const raw = Number.parseInt(String(process.env.MACMOUNT_CANARY_PERCENT || '100'), 10);
+    const raw = Number.parseInt(String(readCrossDriveEnv('CROSSDRIVE_CANARY_PERCENT', 'MACMOUNT_CANARY_PERCENT') || '100'), 10);
     if (!Number.isFinite(raw)) return 100;
     return Math.max(0, Math.min(100, raw));
 })();
@@ -112,7 +115,7 @@ function execPsMount(driveId, password = '', skipLetter = false) {
     if (hasPassword) {
         args.push('-Password', String(password).replace(/'/g, "''"));
     }
-    const env = skipLetter ? { ...process.env, MACMOUNT_SKIP_LETTER: '1' } : process.env;
+    const env = skipLetter ? { ...process.env, CROSSDRIVE_SKIP_LETTER: '1', MACMOUNT_SKIP_LETTER: '1' } : process.env;
 
     // Use spawn instead of exec.  exec waits for ALL pipe handles to close,
     // but apfs-fuse inherits PowerShell's pipe handles and runs indefinitely,
@@ -272,7 +275,7 @@ function removeUserSessionDriveMapping(letter) {
 
     const tmpDir = process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp';
     // Use a stable name so stale scripts from prior crashes are overwritten, not leaked.
-    const tmpScript = path.join(tmpDir, `MacMount_Unmap_${L}.ps1`);
+    const tmpScript = path.join(tmpDir, `CrossDrive_Unmap_${L}.ps1`);
 
     // The inner script runs non-elevated (RunLevel Limited) via scheduled task.
     // It calls QueryDosDevice / DefineDosDevice to remove the drive mapping from
@@ -282,7 +285,7 @@ function removeUserSessionDriveMapping(letter) {
         `using System;`,
         `using System.Runtime.InteropServices;`,
         `using System.Text;`,
-        `public class MacMountUmDef_${L} {`,
+        `public class CrossDriveUmDef_${L} {`,
         `    [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Auto)]`,
         `    public static extern bool DefineDosDevice(uint f, string d, string t);`,
         `    [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]`,
@@ -290,11 +293,11 @@ function removeUserSessionDriveMapping(letter) {
         `}`,
         `'@ -ErrorAction SilentlyContinue`,
         `$sb = New-Object System.Text.StringBuilder 512`,
-        `$qLen = [MacMountUmDef_${L}]::QueryDosDevice('${L}:', $sb, 512)`,
+        `$qLen = [CrossDriveUmDef_${L}]::QueryDosDevice('${L}:', $sb, 512)`,
         `if ($qLen -gt 0) {`,
-        `    [MacMountUmDef_${L}]::DefineDosDevice(7, '${L}:', $sb.ToString()) | Out-Null`,
+        `    [CrossDriveUmDef_${L}]::DefineDosDevice(7, '${L}:', $sb.ToString()) | Out-Null`,
         `} else {`,
-        `    [MacMountUmDef_${L}]::DefineDosDevice(2, '${L}:', $null) | Out-Null`,
+        `    [CrossDriveUmDef_${L}]::DefineDosDevice(2, '${L}:', $null) | Out-Null`,
         `}`,
         `Remove-Item -Path 'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\DriveIcons\\${L}' -Recurse -Force -ErrorAction SilentlyContinue`,
     ].join('\r\n');
@@ -306,7 +309,7 @@ function removeUserSessionDriveMapping(letter) {
         return;
     }
 
-    const taskName = `MacMountUnmap${L}_${Date.now()}`;
+    const taskName = `CrossDriveUnmap${L}_${Date.now()}`;
     // Build the outer psCmd using only single-quoted PS strings and concatenation
     // to avoid any double-quote escaping issues inside -Command "..."
     const safeScript = tmpScript.replace(/'/g, "''");
@@ -349,7 +352,7 @@ function getTrackedManagedLetters() {
             '-WindowStyle', 'Hidden',
             '-ExecutionPolicy', 'Bypass',
             '-Command',
-            `"if (Test-Path 'HKCU:\\Software\\MacMount\\DriveMap') { Get-ItemProperty -Path 'HKCU:\\Software\\MacMount\\DriveMap' | ConvertTo-Json -Compress }"`
+            `"if (Test-Path 'HKCU:\\Software\\CrossDrive\\DriveMap') { Get-ItemProperty -Path 'HKCU:\\Software\\CrossDrive\\DriveMap' | ConvertTo-Json -Compress }"`
         ].join(' ');
         const out = execSync(cmd, {
             timeout: 8000,
@@ -455,7 +458,7 @@ async function tryMountRawWithFallbackLetters(driveId, preferred = '', sourcePat
                     error: 'Native broker is unavailable or not elevated.',
                     analysis: lastAnalysis,
                     needsPassword: false,
-                    suggestion: 'Restart GKMacOpener as Administrator so the elevated broker can mount raw disks.'
+                    suggestion: 'Restart CrossDrive as Administrator so the elevated broker can mount raw disks.'
                 };
             }
 
@@ -595,7 +598,7 @@ app.use((err, req, res, next) => {
     return next(err);
 });
 
-addLog("MacMount Backend started and logging initialized.");
+addLog("CrossDrive Backend started and logging initialized.");
 addLog(
     `Runtime mount mode: ${RUNTIME_MOUNT_MODE}` +
     ` (wslPrimary=${RUNTIME_MOUNT_MODE === 'wsl_kernel'}, nativeEnabled=${RUNTIME_NATIVE_MOUNT_ENABLED}, canaryPercent=${RUNTIME_CANARY_PERCENT}, allowBridgeFallback=${RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK})`
@@ -649,16 +652,16 @@ function packagedAssetPath(...parts) {
 
 const PS_PATH = (() => {
     const candidates = [
-        process.resourcesPath ? path.join(process.resourcesPath, 'scripts', 'MacMount.ps1') : '',
-        packagedAssetPath('scripts', 'MacMount.ps1'),
-        path.join(__dirname, 'scripts', 'MacMount.ps1')
+        process.resourcesPath ? path.join(process.resourcesPath, 'scripts', 'CrossDrive.ps1') : '',
+        packagedAssetPath('scripts', 'CrossDrive.ps1'),
+        path.join(__dirname, 'scripts', 'CrossDrive.ps1')
     ].filter(Boolean);
     for (const p of candidates) {
         try {
             if (fs.existsSync(p)) return p;
         } catch { }
     }
-    return path.join(__dirname, 'scripts', 'MacMount.ps1');
+    return path.join(__dirname, 'scripts', 'CrossDrive.ps1');
 })();
 
 const MAP_USER_SESSION_PS_PATH = (() => {
@@ -769,7 +772,7 @@ async function clearStartupMountState() {
 
     try {
         const tmpDir = process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp';
-        const stalePattern = path.join(tmpDir, 'MacMount_Unmap_*.ps1');
+        const stalePattern = path.join(tmpDir, 'CrossDrive_Unmap_*.ps1');
         // Clean stale unmap scripts — fs.glob isn't available in Node core,
         // so invoke PowerShell briefly. Best-effort only.
         execSync(

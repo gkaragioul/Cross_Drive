@@ -1,4 +1,4 @@
-# MacMount.ps1 - Core logic for mounting Mac drives on Windows via native bridge helpers
+# CrossDrive.ps1 - Core logic for mounting Mac drives on Windows via native bridge helpers
 
 param (
     [Parameter(Mandatory = $false)]
@@ -9,16 +9,25 @@ param (
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-$REG_BASE = "HKCU:\Software\MacMount\DriveMap"
+$REG_BASE = "HKCU:\Software\CrossDrive\DriveMap"
 
 function Resolve-ApfsFuseExe {
     # Optional override for CI, portable installs, or custom layouts.
-    $envPath = $env:MACMOUNT_APFS_FUSE_EXE
+    $envPath = $env:CROSSDRIVE_APFS_FUSE_EXE
     if ([string]::IsNullOrWhiteSpace($envPath)) {
-        $envPath = [Environment]::GetEnvironmentVariable("MACMOUNT_APFS_FUSE_EXE", "User")
+        $envPath = $env:MACMOUNT_APFS_FUSE_EXE
     }
     if ([string]::IsNullOrWhiteSpace($envPath)) {
-        $envPath = [Environment]::GetEnvironmentVariable("MACMOUNT_APFS_FUSE_EXE", "Machine")
+        $envPath = [Environment]::GetEnvironmentVariable("CROSSDRIVE_APFS_FUSE_EXE", "User")
+        if ([string]::IsNullOrWhiteSpace($envPath)) {
+            $envPath = [Environment]::GetEnvironmentVariable("MACMOUNT_APFS_FUSE_EXE", "User")
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($envPath)) {
+        $envPath = [Environment]::GetEnvironmentVariable("CROSSDRIVE_APFS_FUSE_EXE", "Machine")
+        if ([string]::IsNullOrWhiteSpace($envPath)) {
+            $envPath = [Environment]::GetEnvironmentVariable("MACMOUNT_APFS_FUSE_EXE", "Machine")
+        }
     }
     if (-not [string]::IsNullOrWhiteSpace($envPath) -and (Test-Path -LiteralPath $envPath)) {
         return (Resolve-Path -LiteralPath $envPath).Path
@@ -67,7 +76,7 @@ function Set-UserSessionDriveMapping($letter, $devicePath) {
     # Elevated processes have a separate DOS-device namespace from non-elevated Explorer,
     # so we must also map the drive letter in the user's interactive session.
     try {
-        $scriptPath = "C:\ProgramData\MacMount\user-mount.ps1"
+        $scriptPath = "C:\ProgramData\CrossDrive\user-mount.ps1"
         $scriptContent = @"
 Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class UM{[DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Auto)]public static extern bool DefineDosDevice(uint f,string d,string t);}' -ErrorAction SilentlyContinue
 [UM]::DefineDosDevice(1, "${letter}:", "$devicePath")
@@ -78,10 +87,10 @@ Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;publ
         $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited
         $settings = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
         $task = New-ScheduledTask -Action $action -Principal $principal -Settings $settings
-        Register-ScheduledTask -TaskName "MacMountMap$letter" -InputObject $task -Force | Out-Null
-        Start-ScheduledTask -TaskName "MacMountMap$letter" | Out-Null
+        Register-ScheduledTask -TaskName "CrossDriveMap$letter" -InputObject $task -Force | Out-Null
+        Start-ScheduledTask -TaskName "CrossDriveMap$letter" | Out-Null
         Start-Sleep -Milliseconds 500
-        Unregister-ScheduledTask -TaskName "MacMountMap$letter" -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+        Unregister-ScheduledTask -TaskName "CrossDriveMap$letter" -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
     } catch {}
 }
 
@@ -91,7 +100,7 @@ function Remove-UserSessionDriveMapping($letter) {
     # DDD_REMOVE_DEFINITION|DDD_RAW_TARGET_PATH|DDD_EXACT_MATCH_ON_REMOVE (7)
     # to remove the precise mapping we created during mount.
     try {
-        $scriptPath = "C:\ProgramData\MacMount\user-unmount.ps1"
+        $scriptPath = "C:\ProgramData\CrossDrive\user-unmount.ps1"
         $scriptContent = @"
 Add-Type -TypeDefinition @'
 using System;
@@ -119,22 +128,22 @@ if (`$qLen -gt 0) {
         $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive
         $settings = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
         $task = New-ScheduledTask -Action $action -Principal $principal -Settings $settings
-        Register-ScheduledTask -TaskName "MacMountUnmap$letter" -InputObject $task -Force | Out-Null
-        Start-ScheduledTask -TaskName "MacMountUnmap$letter" | Out-Null
+        Register-ScheduledTask -TaskName "CrossDriveUnmap$letter" -InputObject $task -Force | Out-Null
+        Start-ScheduledTask -TaskName "CrossDriveUnmap$letter" | Out-Null
         Start-Sleep -Milliseconds 1000
-        Unregister-ScheduledTask -TaskName "MacMountUnmap$letter" -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+        Unregister-ScheduledTask -TaskName "CrossDriveUnmap$letter" -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
     } catch {}
 }
 
 function Remove-CurrentSessionDriveMapping($letter) {
     if (-not $letter) { return }
     try {
-        if (-not ([System.Management.Automation.PSTypeName]'MacMountDosDevice').Type) {
+        if (-not ([System.Management.Automation.PSTypeName]'CrossDriveDosDevice').Type) {
             Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
-public class MacMountDosDevice {
+public class CrossDriveDosDevice {
     [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Auto)]
     public static extern bool DefineDosDevice(uint dwFlags, string lpDeviceName, string lpTargetPath);
     [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
@@ -144,14 +153,14 @@ public class MacMountDosDevice {
         }
 
         $sb = New-Object System.Text.StringBuilder 512
-        $qLen = [MacMountDosDevice]::QueryDosDevice("${letter}:", $sb, 512)
+        $qLen = [CrossDriveDosDevice]::QueryDosDevice("${letter}:", $sb, 512)
         if ($qLen -gt 0) {
             # flags: DDD_REMOVE_DEFINITION(2) | DDD_RAW_TARGET_PATH(1) | DDD_EXACT_MATCH_ON_REMOVE(4) = 7
-            [MacMountDosDevice]::DefineDosDevice(7, "${letter}:", $sb.ToString()) | Out-Null
+            [CrossDriveDosDevice]::DefineDosDevice(7, "${letter}:", $sb.ToString()) | Out-Null
         }
         else {
             # Fallback when the target cannot be queried but the drive bit still lingers.
-            [MacMountDosDevice]::DefineDosDevice(2, "${letter}:", $null) | Out-Null
+            [CrossDriveDosDevice]::DefineDosDevice(2, "${letter}:", $null) | Out-Null
         }
     }
     catch {}
@@ -178,7 +187,7 @@ function Remove-DriveLetterMapping($letter) {
     if (-not $letter) { return }
     try { subst /d "${letter}:" 2>$null | Out-Null } catch {}
     try { net use "${letter}:" /delete /y 2>$null | Out-Null } catch {}
-    try { Invoke-InteractiveHiddenCommand "MacMountMapCleanup$letter" "subst /d ${letter}: >`$null 2>&1; net use ${letter}: /delete /y >`$null 2>&1" } catch {}
+    try { Invoke-InteractiveHiddenCommand "CrossDriveMapCleanup$letter" "subst /d ${letter}: >`$null 2>&1; net use ${letter}: /delete /y >`$null 2>&1" } catch {}
 }
 
 function Hide-MacMetadataItems($rootPath) {
@@ -187,14 +196,14 @@ function Hide-MacMetadataItems($rootPath) {
     # This is a no-op; kept for future use if a writable mount becomes available.
 }
 
-function Cleanup-OrphanedMacMountMappings {
+function Cleanup-OrphanedCrossDriveMappings {
     try {
         $lines = & subst.exe 2>$null
         foreach ($line in $lines) {
             if ($line -match '^\s*([A-Z]):\\:\s*=>\s*(.+)$') {
                 $letter = $matches[1].ToUpper()
                 $target = $matches[2].Trim()
-                if ($letter -in @('M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z') -and $target -like 'C:\ProgramData\MacMount\Drive*') {
+                if ($letter -in @('M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z') -and $target -like 'C:\ProgramData\CrossDrive\Drive*') {
                     Remove-DriveLetterMapping $letter
                 }
             }
@@ -276,7 +285,7 @@ function Get-Drives {
                 Remove-CurrentSessionDriveMapping $driveLetter
                 Remove-UserSessionDriveMapping $driveLetter
                 Remove-DriveLetterMapping $driveLetter
-                $linkPath = "C:\ProgramData\MacMount\Drive$id"
+                $linkPath = "C:\ProgramData\CrossDrive\Drive$id"
                 if (Test-Path $linkPath) { Remove-Item -LiteralPath $linkPath -Force -ErrorAction SilentlyContinue }
                 Clear-AssignedLetter $id
                 $driveLetter = $null
@@ -303,19 +312,19 @@ function Initialize-WSL {
     return @{
         success = $true
         ready = $true
-        note = "WSL setup flow has been retired. GKMacOpener now uses native Windows mount paths only."
+        note = "WSL setup flow has been retired. CrossDrive now uses native Windows mount paths only."
     } | ConvertTo-Json
 }
 
 function Mount-Drive($id, $Password = "") {
-    Cleanup-OrphanedMacMountMappings
+    Cleanup-OrphanedCrossDriveMappings
 
     $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).
         IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     if (-not $isAdmin) {
         return @{
             error = "Mount requires Administrator privileges."
-            suggestion = "Restart GKMacOpener as Administrator."
+            suggestion = "Restart CrossDrive as Administrator."
             needsPassword = $false
         } | ConvertTo-Json
     }
@@ -369,13 +378,13 @@ function Mount-Drive($id, $Password = "") {
         } | ConvertTo-Json
     }
 
-    # APFS path via apfs-fuse (dev tree, packaged resources\native-bridge-bin, or MACMOUNT_APFS_FUSE_EXE)
+    # APFS path via apfs-fuse (dev tree, packaged resources\native-bridge-bin, or CROSSDRIVE_APFS_FUSE_EXE)
     $apfsExe = Resolve-ApfsFuseExe
 
     if (-not $apfsExe) {
         return @{
             error = "Native apfs-fuse driver not found."
-            suggestion = "Build apfs-fuse into native-bridge\apfs-fuse\build\, place apfs-fuse.exe in native-bridge-bin\, or set MACMOUNT_APFS_FUSE_EXE to the full path."
+            suggestion = "Build apfs-fuse into native-bridge\apfs-fuse\build\, place apfs-fuse.exe in native-bridge-bin\, or set CROSSDRIVE_APFS_FUSE_EXE to the full path."
         } | ConvertTo-Json
     }
 
@@ -412,9 +421,9 @@ function Mount-Drive($id, $Password = "") {
     $cmdArgs += $mountPoint
 
     $apfsDir = Split-Path $apfsExe
-    $errLog = "C:\ProgramData\MacMount\apfs_error.log"
-    $outLog = "C:\ProgramData\MacMount\apfs_out.log"
-    New-Item -Path "C:\ProgramData\MacMount" -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
+    $errLog = "C:\ProgramData\CrossDrive\apfs_error.log"
+    $outLog = "C:\ProgramData\CrossDrive\apfs_out.log"
+    New-Item -Path "C:\ProgramData\CrossDrive" -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
 
     # Kill any orphaned apfs-fuse processes for a clean start
     $orphans = Get-Process apfs-fuse -ErrorAction SilentlyContinue
@@ -432,12 +441,12 @@ function Mount-Drive($id, $Password = "") {
     # Load DefineDosDevice for manual drive letter assignment.
     # WinFsp's FspMountSet can silently fail to assign the drive letter in elevated contexts,
     # so we poll lsvol for the WinFsp device and assign it manually with the kernel32 API.
-    if (-not ([System.Management.Automation.PSTypeName]'MacMountDosDevice').Type) {
+    if (-not ([System.Management.Automation.PSTypeName]'CrossDriveDosDevice').Type) {
         Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
-public class MacMountDosDevice {
+public class CrossDriveDosDevice {
     // DDD_RAW_TARGET_PATH = 1: treat lpTargetPath as an NT namespace path
     [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Auto)]
     public static extern bool DefineDosDevice(uint dwFlags, string lpDeviceName, string lpTargetPath);
@@ -456,9 +465,9 @@ public class MacMountDosDevice {
         $preExisting = @(& $fsptool lsvol 2>$null | Where-Object { $_ -match '\\Device\\Volume' } |
             ForEach-Object { if ($_ -match '\\Device\\Volume\{[^\}]+\}') { $Matches[0] } })
     }
-    [Console]::Error.WriteLine("[MacMount] Pre-existing WinFsp devices: $($preExisting -join ',')")
+    [Console]::Error.WriteLine("[CrossDrive] Pre-existing WinFsp devices: $($preExisting -join ',')")
 
-    [Console]::Error.WriteLine("[MacMount] Starting apfs-fuse: $($cmdArgs -join ' ')")
+    [Console]::Error.WriteLine("[CrossDrive] Starting apfs-fuse: $($cmdArgs -join ' ')")
     if (Test-Path $errLog) { Remove-Item $errLog -Force }
     if (Test-Path $outLog) { Remove-Item $outLog -Force }
 
@@ -475,14 +484,14 @@ public class MacMountDosDevice {
         $mounted = Test-Path $mountPathForCheck
 
         if ($mounted) {
-            [Console]::Error.WriteLine("[MacMount] t+${elapsed}s alive=$alive mounted=True")
+            [Console]::Error.WriteLine("[CrossDrive] t+${elapsed}s alive=$alive mounted=True")
             break
         }
 
         # If not yet mounted and process is alive, check lsvol for our new WinFsp device
         if ($alive -and -not $winfspDevice -and (Test-Path $fsptool)) {
             $lsvolLines = @(& $fsptool lsvol 2>$null)
-            [Console]::Error.WriteLine("[MacMount] t+${elapsed}s lsvol: $($lsvolLines -join ' | ')")
+            [Console]::Error.WriteLine("[CrossDrive] t+${elapsed}s lsvol: $($lsvolLines -join ' | ')")
 
             foreach ($line in $lsvolLines) {
                 if ($line -match '\\Device\\Volume\{[^\}]+\}') {
@@ -492,12 +501,12 @@ public class MacMountDosDevice {
                         # Check it has no mount point yet (line starts with -)
                         if ($line -match '^\s*-\s') {
                             $winfspDevice = $candidate
-                            [Console]::Error.WriteLine("[MacMount] t+${elapsed}s Found new WinFsp device (no mount point): $winfspDevice")
+                            [Console]::Error.WriteLine("[CrossDrive] t+${elapsed}s Found new WinFsp device (no mount point): $winfspDevice")
                             break
                         }
                         elseif ($line -match '^\s*[A-Z]:') {
                             # Already has a drive letter assigned - great, just wait for FS
-                            [Console]::Error.WriteLine("[MacMount] t+${elapsed}s Device already has drive letter assigned")
+                            [Console]::Error.WriteLine("[CrossDrive] t+${elapsed}s Device already has drive letter assigned")
                             $winfspDevice = $candidate
                             break
                         }
@@ -507,19 +516,19 @@ public class MacMountDosDevice {
 
             # If we found a device with no drive letter, assign one manually
             if ($winfspDevice -and -not $mounted) {
-                $ddResult = [MacMountDosDevice]::DefineDosDevice(1, $mountPoint, $winfspDevice)
+                $ddResult = [CrossDriveDosDevice]::DefineDosDevice(1, $mountPoint, $winfspDevice)
                 $ddErr = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
-                [Console]::Error.WriteLine("[MacMount] t+${elapsed}s DefineDosDevice('$mountPoint','$winfspDevice'): $ddResult err=$ddErr")
+                [Console]::Error.WriteLine("[CrossDrive] t+${elapsed}s DefineDosDevice('$mountPoint','$winfspDevice'): $ddResult err=$ddErr")
                 Start-Sleep -Milliseconds 200
                 $mounted = Test-Path $mountPathForCheck
             }
         }
         elseif (-not $alive) {
-            [Console]::Error.WriteLine("[MacMount] t+${elapsed}s alive=False mounted=$mounted")
+            [Console]::Error.WriteLine("[CrossDrive] t+${elapsed}s alive=False mounted=$mounted")
             break
         }
         else {
-            [Console]::Error.WriteLine("[MacMount] t+${elapsed}s alive=$alive mounted=$mounted device=$winfspDevice")
+            [Console]::Error.WriteLine("[CrossDrive] t+${elapsed}s alive=$alive mounted=$mounted device=$winfspDevice")
         }
 
         if ($mounted) { break }
@@ -551,7 +560,7 @@ public class MacMountDosDevice {
                     $candidate = $Matches[0]
                     if ($preExisting -notcontains $candidate) {
                         $winfspDevice = $candidate
-                        [Console]::Error.WriteLine("[MacMount] Post-mount lsvol found device: $winfspDevice")
+                        [Console]::Error.WriteLine("[CrossDrive] Post-mount lsvol found device: $winfspDevice")
                         break
                     }
                 }
@@ -562,10 +571,10 @@ public class MacMountDosDevice {
         # Elevated processes have a separate DOS-device namespace; without this mapping
         # the drive is invisible to Explorer and all non-elevated applications.
         if ($winfspDevice) {
-            [Console]::Error.WriteLine("[MacMount] Creating user-session mapping: ${freeLetter}: -> $winfspDevice")
+            [Console]::Error.WriteLine("[CrossDrive] Creating user-session mapping: ${freeLetter}: -> $winfspDevice")
             Set-UserSessionDriveMapping $freeLetter $winfspDevice
         } else {
-            [Console]::Error.WriteLine("[MacMount] WARNING: No WinFsp device found for user-session mapping")
+            [Console]::Error.WriteLine("[CrossDrive] WARNING: No WinFsp device found for user-session mapping")
         }
 
         # APFS containers expose a root/ subfolder containing the actual volume data.
@@ -595,7 +604,7 @@ public class MacMountDosDevice {
     } catch {}
     # Remove any DOS device mapping we created for the drive letter
     if ($winfspDevice) {
-        try { [MacMountDosDevice]::DefineDosDevice(2+1+4, $mountPoint, $winfspDevice) | Out-Null } catch {}
+        try { [CrossDriveDosDevice]::DefineDosDevice(2+1+4, $mountPoint, $winfspDevice) | Out-Null } catch {}
     }
     
     $errText = Get-LogTail $errLog
@@ -651,7 +660,7 @@ function Remove-Drive($id) {
 function Install-Distro {
     return @{
         success = $false
-        error = "WSL bootstrap has been removed from MacMount."
+        error = "WSL bootstrap has been removed from CrossDrive."
         suggestion = "Install WinFsp and ship native bridge binaries instead."
     } | ConvertTo-Json
 }
@@ -659,7 +668,7 @@ function Install-Distro {
 function Repair-Drivers {
     return @{
         success = $false
-        error = "WSL-based driver repair has been removed from MacMount."
+        error = "WSL-based driver repair has been removed from CrossDrive."
         suggestion = "Bundle WinFsp and the native bridge binaries with the app installer."
     } | ConvertTo-Json
 }
@@ -693,7 +702,7 @@ function Get-PreflightCheck {
         success = $true
         ready   = $ready
         items   = $items
-        note    = "WSL-based checks have been removed. GKMacOpener now validates only native Windows components."
+        note    = "WSL-based checks have been removed. CrossDrive now validates only native Windows components."
     } | ConvertTo-Json -Depth 5
 }
 
@@ -709,24 +718,24 @@ function Install-WinFsp {
     $msiCandidates = @(
         (Join-Path $PSScriptRoot "..\prereqs\winfsp.msi"),
         (Join-Path $PSScriptRoot "..\prereqs\winfsp-2.1.25156.msi"),
-        "C:\ProgramData\MacMount\prereqs\winfsp.msi"
+        "C:\ProgramData\CrossDrive\prereqs\winfsp.msi"
     )
     foreach ($msi in $msiCandidates) {
         if (Test-Path $msi) {
             $msiAbs = (Resolve-Path $msi).Path
-            [Console]::Error.WriteLine("[MacMount] Installing Winfsp from: $msiAbs")
+            [Console]::Error.WriteLine("[CrossDrive] Installing Winfsp from: $msiAbs")
             $proc = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$msiAbs`" /quiet /norestart" -Wait -WindowStyle Hidden -PassThru
             if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010) {
                 Start-Sleep -Seconds 3
                 return @{ success = $true; method = "msi"; path = $msiAbs } | ConvertTo-Json
             } else {
-                [Console]::Error.WriteLine("[MacMount] WinFsp MSI install failed with exit code $($proc.ExitCode)")
+                [Console]::Error.WriteLine("[CrossDrive] WinFsp MSI install failed with exit code $($proc.ExitCode)")
             }
         }
     }
 
     # 2. Fall back to winget
-    [Console]::Error.WriteLine("[MacMount] Falling back to winget for WinFsp installation")
+    [Console]::Error.WriteLine("[CrossDrive] Falling back to winget for WinFsp installation")
     try {
         $wingetProc = Start-Process -FilePath "winget" -ArgumentList "install --id WinFsp.WinFsp --silent --accept-package-agreements --accept-source-agreements" -Wait -WindowStyle Hidden -PassThru
         if ($wingetProc.ExitCode -eq 0 -or $wingetProc.ExitCode -eq 3010) {
@@ -734,7 +743,7 @@ function Install-WinFsp {
             return @{ success = $true; method = "winget" } | ConvertTo-Json
         }
     } catch {
-        [Console]::Error.WriteLine("[MacMount] winget install failed: $_")
+        [Console]::Error.WriteLine("[CrossDrive] winget install failed: $_")
     }
 
     return @{ success = $false; error = "WinFsp installation failed. Please install manually from https://github.com/winfsp/winfsp/releases" } | ConvertTo-Json
@@ -747,7 +756,7 @@ function Invoke-PreflightFix {
     $actions = @()
 
     if (-not $winFspItem.ok) {
-        [Console]::Error.WriteLine("[MacMount] WinFsp missing, attempting installation...")
+        [Console]::Error.WriteLine("[CrossDrive] WinFsp missing, attempting installation...")
         $installResult = Install-WinFsp | ConvertFrom-Json
         if ($installResult.success) {
             $actions += "Installed WinFsp via $($installResult.method)"
@@ -796,3 +805,4 @@ switch ($Action) {
     "PreflightCheck" { Get-PreflightCheck }
     "PreflightFix" { Invoke-PreflightFix }
 }
+

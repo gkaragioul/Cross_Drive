@@ -1,6 +1,6 @@
-' MacMount silent production launcher.
+' CrossDrive silent production launcher.
 ' Runs "npm run start:prod" with no visible terminal window.
-' Double-click this file to start MacMount without any console windows appearing.
+' Double-click this file to start CrossDrive without any console windows appearing.
 
 Set WshShell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")

@@ -782,7 +782,7 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
     private static string BuildInfoText(ApfsContainerSummary summary, MountPlan plan)
     {
         var sb = new StringBuilder();
-        sb.AppendLine("MacMount APFS Native Metadata");
+        sb.AppendLine("CrossDrive APFS Native Metadata");
         sb.AppendLine($"PhysicalDrivePath: {plan.PhysicalDrivePath}");
         sb.AppendLine($"PartitionOffsetBytes: {plan.PartitionOffsetBytes}");
         sb.AppendLine($"PartitionLengthBytes: {plan.PartitionLengthBytes}");

@@ -5,8 +5,9 @@ const path = require('path');
 const { wslMountDrive, wslUnmountDrive, verifyWslMountStillAlive, checkWslKeepAliveAlive, findFreeDriveLetter, substMapDriveLetter } = require('../scripts/wslMountClient');
 
 const execAsync = promisify(exec);
-const ENABLE_WSL_WINFSP_PRESENTATION = process.env.MACMOUNT_DISABLE_WSL_WINFSP !== '1';
-const ENABLE_WSL_DRIVE_LETTER = process.env.MACMOUNT_ENABLE_WSL_DRIVE_LETTER !== '0';
+const readCrossDriveEnv = (name, fallbackName) => process.env[name] ?? process.env[fallbackName];
+const ENABLE_WSL_WINFSP_PRESENTATION = readCrossDriveEnv('CROSSDRIVE_DISABLE_WSL_WINFSP', 'MACMOUNT_DISABLE_WSL_WINFSP') !== '1';
+const ENABLE_WSL_DRIVE_LETTER = readCrossDriveEnv('CROSSDRIVE_ENABLE_WSL_DRIVE_LETTER', 'MACMOUNT_ENABLE_WSL_DRIVE_LETTER') !== '0';
 
 async function mapDriveLetterInUserSession(letter, mapScriptPath, logFn) {
     // WinFsp mounts in the elevated session; Explorer runs non-elevated.
@@ -30,7 +31,7 @@ async function mapDriveLetterInUserSession(letter, mapScriptPath, logFn) {
     } catch (error) {
         const tail = (() => {
             try {
-                const logFile = path.join(process.env.ProgramData || 'C:\\ProgramData', 'MacMount', 'user-session-map.log');
+                const logFile = path.join(process.env.ProgramData || 'C:\\ProgramData', 'CrossDrive', 'user-session-map.log');
                 if (fs.existsSync(logFile)) {
                     const lines = fs.readFileSync(logFile, 'utf8').trim().split(/\r?\n/);
                     return lines.slice(-6).join(' | ');
@@ -40,7 +41,7 @@ async function mapDriveLetterInUserSession(letter, mapScriptPath, logFn) {
             return '';
         })();
         logFn?.(
-            `User-session drive map failed for ${L}: ${error.message || error}. ${tail ? `Log tail: ${tail}` : 'See C:\\ProgramData\\MacMount\\user-session-map.log'}`,
+            `User-session drive map failed for ${L}: ${error.message || error}. ${tail ? `Log tail: ${tail}` : 'See C:\\ProgramData\\CrossDrive\\user-session-map.log'}`,
             'warning'
         );
         return false;
@@ -51,7 +52,7 @@ function syncAssignedLetter(driveId, letter = null) {
     const resolvedDriveId = String(driveId || '').trim();
     if (!/^\d+$/.test(resolvedDriveId)) return;
 
-    const regBase = 'HKCU:\\Software\\MacMount\\DriveMap';
+    const regBase = 'HKCU:\\Software\\CrossDrive\\DriveMap';
     let script = `$regBase = '${regBase}'; `;
 
     if (letter === null || letter === undefined || String(letter).trim() === '') {
@@ -244,7 +245,7 @@ module.exports = function mountMountRoutes(app, ctx) {
                 if (!hasRawDiskAccess?.()) {
                     return res.status(403).json({
                         error: 'Administrator privileges are required to attach a physical drive to WSL2.',
-                        suggestion: 'Restart GKMacOpener as Administrator.',
+                        suggestion: 'Restart CrossDrive as Administrator.',
                         requiresAdmin: true,
                         mode: 'wsl_kernel'
                     });
@@ -273,7 +274,7 @@ module.exports = function mountMountRoutes(app, ctx) {
                         }
                         return res.status(502).json({
                             error: presentationError.message || 'WinFsp presentation failed.',
-                            suggestion: 'GKMacOpener could mount the Linux filesystem but could not expose it as a local Windows drive. Direct WSL fallback was intentionally skipped because it would use the wrong namespace.',
+                            suggestion: 'CrossDrive could mount the Linux filesystem but could not expose it as a local Windows drive. Direct WSL fallback was intentionally skipped because it would use the wrong namespace.',
                             mode: 'wsl_kernel'
                         });
                     }
@@ -338,7 +339,7 @@ module.exports = function mountMountRoutes(app, ctx) {
 
                         return res.status(502).json({
                             error: `WSL mount vanished before Windows presentation completed: ${finalHealth.error}`,
-                            suggestion: 'GKMacOpener refused to expose a stale WSL folder as a writable Windows drive. Retry mount; if this repeats, keep the drive connected and share logs.',
+                            suggestion: 'CrossDrive refused to expose a stale WSL folder as a writable Windows drive. Retry mount; if this repeats, keep the drive connected and share logs.',
                             mode: 'wsl_kernel'
                         });
                     }
@@ -390,7 +391,7 @@ module.exports = function mountMountRoutes(app, ctx) {
                 if (RUNTIME_MOUNT_MODE === 'wsl_kernel') {
                     return res.status(502).json({
                         error: wslResult.error || 'WSL2 kernel mount failed.',
-                        suggestion: 'GKMacOpener uses the WSL2 kernel path for writable Mac drives. Native HFS+ write fallback is disabled by default because it is not reliable for real-world copies.',
+                        suggestion: 'CrossDrive uses the WSL2 kernel path for writable Mac drives. Native HFS+ write fallback is disabled by default because it is not reliable for real-world copies.',
                         mode: 'wsl_kernel'
                     });
                 }
@@ -405,7 +406,7 @@ module.exports = function mountMountRoutes(app, ctx) {
                     try { cleanupGhostDriveLetters?.(); } catch {}
                     return res.status(403).json({
                         error: 'Administrator privileges are required for raw disk access.',
-                        suggestion: 'Restart GKMacOpener as Administrator so it can open physical drives and mount them properly.',
+                        suggestion: 'Restart CrossDrive as Administrator so it can open physical drives and mount them properly.',
                         requiresAdmin: true,
                         mode: RUNTIME_MOUNT_MODE
                     });

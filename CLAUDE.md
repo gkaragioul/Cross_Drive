@@ -1,8 +1,8 @@
-# CLAUDE.md - GKMacOpener
+# CLAUDE.md - CrossDrive
 
 ## Project Overview
 
-GKMacOpener is a Windows desktop app for mounting, browsing, and reading **and writing** APFS/HFS+ Mac drives on Windows as real local drive letters. Built on Electron + React + WSL2 (Linux kernel hfsplus driver + linux-apfs-rw module). The legacy native .NET writer is kept as a fallback only.
+CrossDrive is a Windows desktop app for mounting, browsing, and reading **and writing** APFS/HFS+ Mac drives on Windows as real local drive letters. Built on Electron + React + WSL2 (Linux kernel hfsplus driver + linux-apfs-rw module). The legacy native .NET writer is kept as a fallback only.
 
 **Status:** v1.4.0 ships WSL2-backed R/W for HFS+. APFS R/W via apfs.ko v0.3.20 module is built but not yet wired through the UI. Code-signing certificate not yet configured.
 
@@ -31,7 +31,7 @@ React UI (src/)                                      │   wsl --mount → fsck.
 1. WSL2 path: attach drive via `wsl --mount \\.\PHYSICALDRIVEN --bare`, run [`scripts/wsl_mount.sh`](scripts/wsl_mount.sh) which fscks + mounts via the kernel, then `subst <L>:` from a Scheduled Task with `LogonType Interactive` so Explorer (non-elevated) sees the drive letter.
 2. Native fallback: only used if WSL is unavailable; for HFS+ writes it is unreliable — DO NOT recommend it.
 
-Set `forceNative: true` in `/api/mount` body to skip WSL2 (debugging only). `MACMOUNT_MOUNT_MODE=wsl_kernel` is the default; legacy aliases `wsl_unc` and `hybrid_canary` resolve to the same WSL2 path. Use `native_first` or `native_only` only for debugging the legacy native engine.
+Set `forceNative: true` in `/api/mount` body to skip WSL2 (debugging only). `CROSSDRIVE_MOUNT_MODE=wsl_kernel` is the default; legacy aliases `wsl_unc` and `hybrid_canary` resolve to the same WSL2 path. Use `native_first` or `native_only` only for debugging the legacy native engine.
 
 ## WSL2 Setup (required for primary mount path)
 
@@ -39,13 +39,13 @@ The installer is responsible for the steps below. Manual setup for development:
 
 1. `wsl --install` (Microsoft Store) → Ubuntu distro
 2. Inside Ubuntu: `apt install hfsfuse hfsplus hfsprogs apfs-fuse`
-3. Build a custom WSL2 kernel from [microsoft/WSL2-Linux-Kernel](https://github.com/microsoft/WSL2-Linux-Kernel) tag `linux-msft-wsl-6.6.87.2` with `CONFIG_HFSPLUS_FS=m` and `CONFIG_HFS_FS=m`. Drop `bzImage` into `%LOCALAPPDATA%\MacMount-Kernel\wsl_kernel`.
+3. Build a custom WSL2 kernel from [microsoft/WSL2-Linux-Kernel](https://github.com/microsoft/WSL2-Linux-Kernel) tag `linux-msft-wsl-6.6.87.2` with `CONFIG_HFSPLUS_FS=m` and `CONFIG_HFS_FS=m`. Drop `bzImage` into `%LOCALAPPDATA%\CrossDrive-Kernel\wsl_kernel`.
 4. Build `apfs.ko` from [linux-apfs/linux-apfs-rw](https://github.com/linux-apfs/linux-apfs-rw) (tag `0.3.20+`) against the custom kernel headers.
-5. Drop `hfsplus.ko`, `hfs.ko`, `apfs.ko` into `%LOCALAPPDATA%\MacMount-Kernel\modules\`. Installer copies them to `/lib/modules/<KVER>/extra/` and runs `depmod -a`.
+5. Drop `hfsplus.ko`, `hfs.ko`, `apfs.ko` into `%LOCALAPPDATA%\CrossDrive-Kernel\modules\`. Installer copies them to `/lib/modules/<KVER>/extra/` and runs `depmod -a`.
 6. Write `%USERPROFILE%\.wslconfig`:
    ```
    [wsl2]
-   kernel=C:\\Users\\<user>\\AppData\\Local\\MacMount-Kernel\\wsl_kernel
+   kernel=C:\\Users\\<user>\\AppData\\Local\\CrossDrive-Kernel\\wsl_kernel
    vmIdleTimeout=2147483647
    ```
 7. `wsl --shutdown` to apply.
@@ -68,7 +68,7 @@ routes/
   nativeRoutes.js    Native .NET service IPC bridge
   systemRoutes.js    Health, logs, setup status
 scripts/
-  MacMount.ps1              Main PowerShell orchestration script (legacy native path)
+  CrossDrive.ps1            Main PowerShell orchestration script (legacy native path)
   nativeServiceClient.js    IPC client for NativeService
   nativeBrokerClient.js     IPC client for NativeBroker
   self-test.js              Test suite
@@ -87,7 +87,7 @@ native/
   MacMount.HfsFormatTool/   One-off HFS+ format tool (dev diagnostic; not shipped to users)
 native-bridge/       WinFsp port roadmap (future)
 docs/                Commercial readiness docs (GO_NO_GO, RISK_REGISTER, etc.)
-.github/workflows/   CI (gkmacopener-ci) + release (gkmacopener-release)
+.github/workflows/   CI (crossdrive-ci) + release (crossdrive-release)
 ```
 
 ## Development Commands
@@ -123,15 +123,15 @@ npm run release:candidate    # Full production release pipeline
 
 ## CI/CD
 
-- **CI workflow** (`gkmacopener-ci`): Runs on all pushes/PRs. Node 20, .NET 9. Steps: npm ci, self-test, security audit, commercial gate, unsigned build, release audit.
-- **Release workflow** (`gkmacopener-release`): Triggered by `v*` tags or manual dispatch. Requires signing certificate secrets for code signing.
+- **CI workflow** (`crossdrive-ci`): Runs on all pushes/PRs. Node 20, .NET 9. Steps: npm ci, self-test, security audit, commercial gate, unsigned build, release audit.
+- **Release workflow** (`crossdrive-release`): Triggered by `v*` tags or manual dispatch. Requires signing certificate secrets for code signing.
 
 ## Key Conventions
 
 - **Admin required:** App uses `\\.\PHYSICALDRIVE#` raw disk access. Electron main process checks admin and relaunches with UAC if needed.
 - **Security:** Electron uses `contextIsolation: true`, `sandbox: true`, `nodeIntegration: false`. CORS is restricted to `localhost:5173` and `127.0.0.1:5173`. Express binds to loopback only.
 - **No external network calls:** Backend communicates only with local .NET services via named pipes and local WSL.
-- **Env vars:** `MACMOUNT_MOUNT_MODE` defaults to `wsl_kernel`; `MACMOUNT_CANARY_PERCENT` is legacy telemetry/config only.
+- **Env vars:** `CROSSDRIVE_MOUNT_MODE` defaults to `wsl_kernel`; `CROSSDRIVE_CANARY_PERCENT` is legacy telemetry/config only. Legacy `MACMOUNT_*` aliases are accepted for compatibility.
 - **Secrets never committed:** `.gitignore` excludes `.env*`, `*.pfx`, `*.p12`, `signing-env.ps1`.
 
 ## Testing
@@ -173,7 +173,7 @@ The native engine supports password-based APFS encrypted volume unlock:
 
 ## Known Gotchas
 
-- **WSL2 required for R/W.** Without WSL2 + the bundled custom kernel, GKMacOpener falls back to the legacy native engine. Installer must `wsl --install` and drop `wsl_kernel` + module bundles.
+- **WSL2 required for R/W.** Without WSL2 + the bundled custom kernel, CrossDrive falls back to the legacy native engine. Installer must `wsl --install` and drop `wsl_kernel` + module bundles.
 - **Custom WSL2 kernel.** `vmIdleTimeout=2147483647` is set in `.wslconfig` to prevent VM idle-shutdown which otherwise tears down the kernel mount. The Node backend also holds an in-VM keep-alive process for belt-and-braces.
 - **fsck.hfsplus is mandatory.** The Linux kernel refuses R/W on HFS+ volumes with the dirty flag set; the mount script always runs fsck first.
 - **Drive letters need user-session subst.** `subst` writes per-token DOS device namespaces — running it from the elevated Electron process won't show up in non-elevated Explorer. We schedule a Task with `LogonType Interactive` to run subst as the user.

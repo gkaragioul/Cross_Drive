@@ -6,8 +6,8 @@
 ## Status Summary
 - `NOT READY` for public GA until a real signing certificate is configured, signed artifacts pass audit, and clean-machine physical-drive smoke testing is complete.
 - Production architecture is WSL2 kernel primary for APFS/HFS+ mounting, with WinFsp/native components used for Windows drive-letter presentation and fallback/debug paths.
-- Licensing path is MIT/FLOSS. WinFsp is used through its FLOSS exception; do not ship GKMacOpener as proprietary software with WinFsp unless a separate WinFsp commercial license is obtained.
-- APFS write support remains experimental and disabled unless `MACMOUNT_EXPERIMENTAL_APFS_WRITES=1`.
+- Licensing path is MIT/FLOSS. WinFsp is used through its FLOSS exception; do not ship CrossDrive as proprietary software with WinFsp unless a separate WinFsp commercial license is obtained.
+- APFS write support remains experimental and disabled unless `CROSSDRIVE_EXPERIMENTAL_APFS_WRITES=1`.
 - CoreStorage/FileVault 1 is detected but unsupported for GA.
 
 ## Release Gates
@@ -27,7 +27,7 @@
 1. Configure a real code-signing certificate (`CSC_LINK`/`WIN_CSC_LINK`) and password env vars on the release machine.
 2. Produce and verify signed NSIS + portable artifacts.
 3. Run clean-machine smoke tests for APFS read, encrypted APFS password unlock, HFS+ read-write, unsupported CoreStorage messaging, and stale-drive cleanup.
-4. Keep APFS writes hidden/gated unless the environment explicitly opts in with `MACMOUNT_EXPERIMENTAL_APFS_WRITES=1`.
+4. Keep APFS writes hidden/gated unless the environment explicitly opts in with `CROSSDRIVE_EXPERIMENTAL_APFS_WRITES=1`.
 
 ## Operational SLO Targets
 

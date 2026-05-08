@@ -79,7 +79,7 @@ internal sealed class NativeService
 
     public async Task RunAsync()
     {
-        Console.WriteLine($"MacMount.NativeService starting (pid={Environment.ProcessId})");
+        Console.WriteLine($"CrossDrive.NativeService starting (pid={Environment.ProcessId})");
 
         while (true)
         {
@@ -89,7 +89,7 @@ internal sealed class NativeService
                 try
                 {
                     server = new NamedPipeServerStream(
-                        "macmount.native",
+                        "crossdrive.native",
                         PipeDirection.InOut,
                         16,
                         PipeTransmissionMode.Byte,
@@ -103,7 +103,7 @@ internal sealed class NativeService
                     try
                     {
                         server = new NamedPipeServerStream(
-                            "macmount.native",
+                            "crossdrive.native",
                             PipeDirection.InOut,
                             16,
                             PipeTransmissionMode.Byte,
@@ -159,7 +159,7 @@ internal sealed class NativeService
             switch (action)
             {
                 case "ping":
-                    response = new { ok = true, requestId, service = "MacMount.NativeService", version = "0.3.0-alpha", pid = Environment.ProcessId, elevated = IsElevated() };
+                    response = new { ok = true, requestId, service = "CrossDrive.NativeService", version = "0.3.0-alpha", pid = Environment.ProcessId, elevated = IsElevated() };
                     break;
                 case "status":
                     response = BuildStatusResponse(requestId);
@@ -556,7 +556,7 @@ internal sealed class WinFspMountEngine : IMountEngine
     {
         var host = new FileSystemHost(fs)
         {
-            FileSystemName = "MacMount",
+            FileSystemName = "CrossDrive",
             Prefix = "",
             SectorSize = 4096,
             SectorsPerAllocationUnit = 1,
@@ -600,7 +600,7 @@ internal sealed class RawProbeFileSystem : FileSystemBase
     public RawProbeFileSystem(MountPlan plan)
     {
         _infoText =
-            $"MacMount Raw Probe FileSystem{Environment.NewLine}" +
+            $"CrossDrive Raw Probe FileSystem{Environment.NewLine}" +
             $"PhysicalDrivePath: {plan.PhysicalDrivePath}{Environment.NewLine}" +
             $"FileSystemType: {plan.FileSystemType}{Environment.NewLine}" +
             $"TotalBytes: {plan.TotalBytes}{Environment.NewLine}" +

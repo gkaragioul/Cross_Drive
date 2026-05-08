@@ -11,7 +11,7 @@ New-Item -ItemType Directory -Path $certDir -Force | Out-Null
 
 $resolvedPfx = $PfxPath
 if ([string]::IsNullOrWhiteSpace($resolvedPfx)) {
-    $resolvedPfx = Join-Path $certDir "macmount-signing-placeholder.pfx"
+    $resolvedPfx = Join-Path $certDir "crossdrive-signing-placeholder.pfx"
     if (-not (Test-Path $resolvedPfx)) {
         Set-Content -Path $resolvedPfx -Value "PLACEHOLDER - replace with a real code signing PFX for production." -Encoding ascii
     }

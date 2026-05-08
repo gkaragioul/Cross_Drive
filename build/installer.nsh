@@ -1,20 +1,23 @@
 !macro preInit
   SetRegView 64
-  WriteRegExpandStr HKLM "${INSTALL_REGISTRY_KEY}" InstallLocation "$LocalAppData\Programs\GKMacOpener"
-  WriteRegExpandStr HKLM "${INSTALL_REGISTRY_KEY}" StartMenuLink "GKMacOpener"
+  WriteRegExpandStr HKLM "${INSTALL_REGISTRY_KEY}" InstallLocation "$LocalAppData\Programs\CrossDrive"
+  WriteRegExpandStr HKLM "${INSTALL_REGISTRY_KEY}" StartMenuLink "CrossDrive"
   SetRegView 32
-  WriteRegExpandStr HKLM "${INSTALL_REGISTRY_KEY}" InstallLocation "$LocalAppData\Programs\GKMacOpener"
-  WriteRegExpandStr HKLM "${INSTALL_REGISTRY_KEY}" StartMenuLink "GKMacOpener"
+  WriteRegExpandStr HKLM "${INSTALL_REGISTRY_KEY}" InstallLocation "$LocalAppData\Programs\CrossDrive"
+  WriteRegExpandStr HKLM "${INSTALL_REGISTRY_KEY}" StartMenuLink "CrossDrive"
 !macroend
 
 !macro customInit
-  ; Kill any running GKMacOpener-related processes so the installer can
+  ; Kill any running CrossDrive-related processes so the installer can
   ; overwrite their EXE/DLL files without sharing violations. The native
   ; broker / service / user-session helper are spawned by Electron via
   ; child_process.spawn and survive the parent's app.quit(); without this
   ; cleanup the upgrade installer fails partway through file replacement.
-  DetailPrint "Stopping any running GKMacOpener components..."
-  nsExec::Exec 'taskkill /F /IM GKMacOpener.exe /T'
+  DetailPrint "Stopping any running CrossDrive components..."
+  nsExec::Exec 'taskkill /F /IM CrossDrive.exe /T'
+  nsExec::Exec 'taskkill /F /IM CrossDrive.NativeBroker.exe /T'
+  nsExec::Exec 'taskkill /F /IM CrossDrive.NativeService.exe /T'
+  nsExec::Exec 'taskkill /F /IM CrossDrive.UserSessionHelper.exe /T'
   nsExec::Exec 'taskkill /F /IM MacMount.NativeBroker.exe /T'
   nsExec::Exec 'taskkill /F /IM MacMount.NativeService.exe /T'
   nsExec::Exec 'taskkill /F /IM MacMount.UserSessionHelper.exe /T'
@@ -23,7 +26,10 @@
 
 !macro customUnInit
   ; Same cleanup for the uninstall path.
-  nsExec::Exec 'taskkill /F /IM GKMacOpener.exe /T'
+  nsExec::Exec 'taskkill /F /IM CrossDrive.exe /T'
+  nsExec::Exec 'taskkill /F /IM CrossDrive.NativeBroker.exe /T'
+  nsExec::Exec 'taskkill /F /IM CrossDrive.NativeService.exe /T'
+  nsExec::Exec 'taskkill /F /IM CrossDrive.UserSessionHelper.exe /T'
   nsExec::Exec 'taskkill /F /IM MacMount.NativeBroker.exe /T'
   nsExec::Exec 'taskkill /F /IM MacMount.NativeService.exe /T'
   nsExec::Exec 'taskkill /F /IM MacMount.UserSessionHelper.exe /T'

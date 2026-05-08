@@ -36,7 +36,7 @@ if (-not (Test-Path $pfxPath)) {
     throw "Signing certificate not found: $pfxPath"
 }
 
-if ($pfxPath -match 'macmount-signing-placeholder\.pfx') {
+if ($pfxPath -match 'crossdrive-signing-placeholder\.pfx') {
     if ($RequireRealCert) {
         throw "Placeholder certificate detected. Real certificate is required."
     }

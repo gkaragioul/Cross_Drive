@@ -3,7 +3,7 @@
 # Run as root after `wsl --mount \\.\PHYSICALDRIVE<N> --bare`.
 #
 # Args:
-#   $1 = MacMount drive ID (e.g. 3) — used in the mount path for uniqueness
+#   $1 = CrossDrive drive ID (e.g. 3) - used in the mount path for uniqueness
 #   $2 = optional APFS volume password
 #
 # Output: a single JSON object on stdout, one of:
@@ -50,7 +50,7 @@ verify_mount() {
 
     if ! mountpoint -q "$target" 2>/dev/null; then
         rmdir "$target" 2>/dev/null || true
-        fail "Mounted path verification failed: $target is not a mountpoint. GKMacOpener refused to expose a stale WSL folder as a Windows drive."
+        fail "Mounted path verification failed: $target is not a mountpoint. CrossDrive refused to expose a stale WSL folder as a Windows drive."
     fi
 
     actual_device=$(findmnt -rn -T "$target" -o SOURCE 2>/dev/null | head -n 1)

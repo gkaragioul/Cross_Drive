@@ -3,8 +3,8 @@ const path = require('path');
 const fs = require('fs');
 const { exec, spawn } = require('child_process');
 
-const PIPE_PATH = '\\\\.\\pipe\\macmount.broker';
-const BROKER_TASK = 'MacMountStartUserBroker';
+const PIPE_PATH = '\\\\.\\pipe\\crossdrive.broker';
+const BROKER_TASK = 'CrossDriveStartUserBroker';
 let brokerStartPromise = null;
 
 function resolveExistingPath(candidates) {
@@ -19,12 +19,12 @@ function resolveExistingPath(candidates) {
 
 function getBrokerExecutable() {
   const candidates = [
-    process.resourcesPath ? path.join(process.resourcesPath, 'native-bin', 'MacMount.NativeBroker.exe') : null,
-    process.resourcesPath ? path.join(process.resourcesPath, 'native-bin', 'broker', 'MacMount.NativeBroker.exe') : null,
-    process.resourcesPath ? path.join(process.resourcesPath, 'app.asar.unpacked', 'native', 'bin', 'MacMount.NativeBroker.exe') : null,
-    process.resourcesPath ? path.join(process.resourcesPath, 'app.asar.unpacked', 'native', 'bin', 'broker', 'MacMount.NativeBroker.exe') : null,
-    path.join(__dirname, '..', 'native', 'bin', 'MacMount.NativeBroker.exe'),
-    path.join(__dirname, '..', 'native', 'bin', 'broker', 'MacMount.NativeBroker.exe'),
+    process.resourcesPath ? path.join(process.resourcesPath, 'native-bin', 'CrossDrive.NativeBroker.exe') : null,
+    process.resourcesPath ? path.join(process.resourcesPath, 'native-bin', 'broker', 'CrossDrive.NativeBroker.exe') : null,
+    process.resourcesPath ? path.join(process.resourcesPath, 'app.asar.unpacked', 'native', 'bin', 'CrossDrive.NativeBroker.exe') : null,
+    process.resourcesPath ? path.join(process.resourcesPath, 'app.asar.unpacked', 'native', 'bin', 'broker', 'CrossDrive.NativeBroker.exe') : null,
+    path.join(__dirname, '..', 'native', 'bin', 'CrossDrive.NativeBroker.exe'),
+    path.join(__dirname, '..', 'native', 'bin', 'broker', 'CrossDrive.NativeBroker.exe'),
   ];
   return resolveExistingPath(candidates);
 }

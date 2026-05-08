@@ -15,19 +15,19 @@ using MacMount.RawDiskEngine;
 Mutex? singleInstanceMutex = null;
 try
 {
-    singleInstanceMutex = new Mutex(initiallyOwned: true, "Global\\GKMacOpener.NativeBroker", out var ownsMutex);
+    singleInstanceMutex = new Mutex(initiallyOwned: true, "Global\\CrossDrive.NativeBroker", out var ownsMutex);
     if (!ownsMutex)
     {
-        Console.Error.WriteLine("MacMount.NativeBroker already running; exiting duplicate process.");
+        Console.Error.WriteLine("CrossDrive.NativeBroker already running; exiting duplicate process.");
         return;
     }
 }
 catch (UnauthorizedAccessException)
 {
-    singleInstanceMutex = new Mutex(initiallyOwned: true, "Local\\GKMacOpener.NativeBroker", out var ownsMutex);
+    singleInstanceMutex = new Mutex(initiallyOwned: true, "Local\\CrossDrive.NativeBroker", out var ownsMutex);
     if (!ownsMutex)
     {
-        Console.Error.WriteLine("MacMount.NativeBroker already running in this logon session; exiting duplicate process.");
+        Console.Error.WriteLine("CrossDrive.NativeBroker already running in this logon session; exiting duplicate process.");
         return;
     }
 }
@@ -98,14 +98,14 @@ internal sealed class BrokerService
 
     public async Task RunAsync()
     {
-        Console.WriteLine($"MacMount.NativeBroker starting (pid={Environment.ProcessId})");
+        Console.WriteLine($"CrossDrive.NativeBroker starting (pid={Environment.ProcessId})");
 
         while (true)
         {
             try
             {
                 var server = new NamedPipeServerStream(
-                    "macmount.broker",
+                    "crossdrive.broker",
                     PipeDirection.InOut,
                     16,
                     PipeTransmissionMode.Byte,
@@ -151,7 +151,7 @@ internal sealed class BrokerService
             object response;
             if (string.Equals(action, "ping", StringComparison.Ordinal))
             {
-                response = new { ok = true, requestId, service = "MacMount.NativeBroker", pid = Environment.ProcessId, elevated = IsElevated() };
+                response = new { ok = true, requestId, service = "CrossDrive.NativeBroker", pid = Environment.ProcessId, elevated = IsElevated() };
             }
             else if (string.Equals(action, "status", StringComparison.Ordinal))
             {
@@ -201,7 +201,7 @@ internal sealed class BrokerService
         var driveId = root.TryGetProperty("driveId", out var d) ? d.GetString() : null;
         var letter = root.TryGetProperty("letter", out var l) ? l.GetString() : null;
         var sourceSummary = root.TryGetProperty("sourceSummary", out var s) ? s.GetString() : "raw";
-        var infoText = root.TryGetProperty("infoText", out var i) ? i.GetString() : "MacMount probe";
+        var infoText = root.TryGetProperty("infoText", out var i) ? i.GetString() : "CrossDrive probe";
 
         if (string.IsNullOrWhiteSpace(driveId) || string.IsNullOrWhiteSpace(letter))
         {
@@ -218,10 +218,10 @@ internal sealed class BrokerService
 
         try
         {
-            var fs = new BrokerProbeFileSystem(infoText ?? "MacMount probe");
+            var fs = new BrokerProbeFileSystem(infoText ?? "CrossDrive probe");
             var host = new FileSystemHost(fs)
             {
-                FileSystemName = "MacMount",
+                FileSystemName = "CrossDrive",
                 Prefix = "",
                 SectorSize = 4096,
                 SectorsPerAllocationUnit = 1,
@@ -292,7 +292,7 @@ internal sealed class BrokerService
             var fs = new BrokerPassthroughFileSystem(sourcePath, totalBytes, freeBytes);
             var host = new FileSystemHost(fs)
             {
-                FileSystemName = "MacMount",
+                FileSystemName = "CrossDrive",
                 Prefix = "",
                 SectorSize = 4096,
                 SectorsPerAllocationUnit = 1,
@@ -554,7 +554,7 @@ internal sealed class BrokerService
             var fs = new BrokerRawProviderFileSystem(provider);
             host = new FileSystemHost(fs)
             {
-                FileSystemName = "MacMount",
+                FileSystemName = "CrossDrive",
                 Prefix = "",
                 SectorSize = 4096,
                 SectorsPerAllocationUnit = 1,
@@ -810,7 +810,7 @@ internal sealed class BrokerRawProviderFileSystem : FileSystemBase
     private readonly DirectoryBuffer _dirBuffer = new();
     private static readonly string _debugLog = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-        "MacMount", "winfsp_debug.log");
+        "CrossDrive", "winfsp_debug.log");
 
     private static void DebugLog(string msg)
     {
@@ -1227,18 +1227,22 @@ internal sealed class BrokerPassthroughFileSystem : FileSystemBase
         ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".heic", ".heif", ".avif"
     };
 
+    private static bool EnvIsEnabled(string primaryName, string legacyName) =>
+        string.Equals(Environment.GetEnvironmentVariable(primaryName), "1", StringComparison.Ordinal) ||
+        string.Equals(Environment.GetEnvironmentVariable(legacyName), "1", StringComparison.Ordinal);
+
     public BrokerPassthroughFileSystem(string rootPath, long totalBytes = 0, long freeBytes = 0)
     {
         _rootPath = Path.GetFullPath(rootPath);
         var isUncBacked = _rootPath.StartsWith("\\\\", StringComparison.Ordinal);
         _enableMetadataCache =
             !isUncBacked ||
-            string.Equals(Environment.GetEnvironmentVariable("MACMOUNT_ENABLE_UNC_METADATA_CACHE"), "1", StringComparison.Ordinal);
+            EnvIsEnabled("CROSSDRIVE_ENABLE_UNC_METADATA_CACHE", "MACMOUNT_ENABLE_UNC_METADATA_CACHE");
         _enableLocalMirrorCache =
-            string.Equals(Environment.GetEnvironmentVariable("MACMOUNT_ENABLE_LOCAL_MIRROR_CACHE"), "1", StringComparison.Ordinal) &&
+            EnvIsEnabled("CROSSDRIVE_ENABLE_LOCAL_MIRROR_CACHE", "MACMOUNT_ENABLE_LOCAL_MIRROR_CACHE") &&
             !isUncBacked;
         _enableAggressivePrefetch =
-            string.Equals(Environment.GetEnvironmentVariable("MACMOUNT_ENABLE_AGGRESSIVE_PREFETCH"), "1", StringComparison.Ordinal);
+            EnvIsEnabled("CROSSDRIVE_ENABLE_AGGRESSIVE_PREFETCH", "MACMOUNT_ENABLE_AGGRESSIVE_PREFETCH");
         _localCacheRoot = BuildLocalCacheRoot(_rootPath);
         if (_enableLocalMirrorCache)
         {
@@ -2755,7 +2759,7 @@ internal sealed class BrokerPassthroughFileSystem : FileSystemBase
     {
         var basePath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            "MacMount",
+            "CrossDrive",
             "ReadCache"
         );
         var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(sourceRoot.ToUpperInvariant()));
