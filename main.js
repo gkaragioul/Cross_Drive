@@ -183,10 +183,10 @@ function createWindow() {
     const isProd = process.env.NODE_ENV === 'production' || process.argv.includes('--prod');
     const isDev = !app.isPackaged && !isProd;
     const startUrl = app.isPackaged
-        ? `file://${path.join(process.resourcesPath, 'app.asar', 'dist', 'index.html')}`
+        ? `file://${path.join(process.resourcesPath, 'app.asar', 'dist', 'renderer', 'index.html')}`
         : isDev
             ? 'http://localhost:5173'
-            : `file://${path.join(__dirname, 'dist', 'index.html')}`;
+            : `file://${path.join(__dirname, 'dist', 'renderer', 'index.html')}`;
 
     console.log('Loading URL:', startUrl);
     console.log('Is packaged:', app.isPackaged);

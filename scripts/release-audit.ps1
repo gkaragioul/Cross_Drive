@@ -212,6 +212,22 @@ $checks += [pscustomobject]@{
     Detail = $(if ($forbiddenFound.Count -eq 0) { "No forbidden scripts found in resources/scripts or app.asar.unpacked/scripts" } else { ($forbiddenFound -join "; ") })
 }
 
+$nativeBinResourcePath = Join-Path $root "dist\win-unpacked\resources\native-bin"
+$duplicateNativeBinPath = Join-Path $root "dist\win-unpacked\resources\app.asar.unpacked\native\bin"
+$checks += [pscustomobject]@{
+    Check = "Native payload packaged once"
+    Passed = (Test-Path $nativeBinResourcePath) -and (-not (Test-Path $duplicateNativeBinPath))
+    Detail = "native-bin present; app.asar.unpacked/native/bin absent"
+}
+
+$appAsarPath = Join-Path $root "dist\win-unpacked\resources\app.asar"
+$appAsar = if (Test-Path $appAsarPath) { Get-Item $appAsarPath } else { $null }
+$checks += [pscustomobject]@{
+    Check = "app.asar excludes release output"
+    Passed = ($null -ne $appAsar) -and ($appAsar.Length -lt 50MB)
+    Detail = $(if ($appAsar) { "$([math]::Round($appAsar.Length / 1MB, 1)) MB" } else { $appAsarPath })
+}
+
 $noticePath = Join-Path $root "build\THIRD_PARTY_NOTICES.txt"
 $noticeText = if (Test-Path $noticePath) { Get-Content $noticePath -Raw } else { "" }
 $checks += [pscustomobject]@{

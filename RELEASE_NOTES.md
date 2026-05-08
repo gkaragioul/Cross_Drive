@@ -3,13 +3,13 @@
 
 ## Summary
 
-Updater smoke-test release for the GitHub repo migration. This version exists so an installed `v1.5.17` build can confirm that in-app update checks now read from the main `GK_Mac_Opener` repository.
+Installer startup performance fix. The previous build packaged the native .NET runtime payload more than once, making the installer much larger than necessary and giving Windows/NSIS more data to scan before the setup wizard appeared.
 
 ## Notable changes
 
-- **Update feed:** confirms the app checks `https://api.github.com/repos/georgekgr12/GK_Mac_Opener/releases/latest`.
-- **Release packaging:** publishes the normal installer and portable artifacts to the main repo Releases tab.
-- **No functional app changes:** this is intentionally a version bump and release-feed validation build.
+- **Installer size/startup:** package native binaries only once under `resources/native-bin`.
+- **Release audit:** add a gate that fails if `native/bin` is duplicated into `app.asar.unpacked`.
+- **Self-test:** add config checks to prevent future native payload duplication.
 
 ## Where to download
 

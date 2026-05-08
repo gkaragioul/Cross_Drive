@@ -83,6 +83,34 @@ if (!(pkg.build && Array.isArray(pkg.build.files) && pkg.build.files.includes('p
 } else {
   pass('electron build includes preload.js');
 }
+if (pkg.build.files.includes('dist/**/*')) {
+  fail('electron build files must not include broad dist/**/* because release output lives under dist');
+} else {
+  pass('electron build avoids broad dist glob');
+}
+if (!pkg.build.files.includes('dist/renderer/**/*')) {
+  fail('electron build files must include dist/renderer/**/*');
+} else {
+  pass('electron build includes renderer output only');
+}
+if (pkg.build.files.includes('native/bin/**/*')) {
+  fail('electron build files must not pack native/bin into app.asar; use extraResources/native-bin only');
+} else {
+  pass('electron build does not pack native/bin into app.asar');
+}
+if (Array.isArray(pkg.build.asarUnpack) && pkg.build.asarUnpack.includes('native/bin/**/*')) {
+  fail('electron build asarUnpack must not duplicate native/bin; use extraResources/native-bin only');
+} else {
+  pass('electron build does not duplicate native/bin in app.asar.unpacked');
+}
+const nativeBinResource = Array.isArray(pkg.build.extraResources)
+  ? pkg.build.extraResources.find(r => r && r.from === 'native/bin' && r.to === 'native-bin')
+  : null;
+if (!nativeBinResource) {
+  fail('electron build must package native/bin as extraResources/native-bin');
+} else {
+  pass('electron build packages native/bin as native-bin resource');
+}
 
 const winTargets = (((pkg.build || {}).win || {}).target || []).map(String);
 if (!winTargets.includes('nsis')) fail('package.json build.win.target missing nsis');
@@ -111,6 +139,9 @@ else pass('portable.artifactName is versioned');
 const mainJs = fs.readFileSync(mainPath, 'utf8');
 if (!mainJs.includes('contextIsolation: true')) fail('main.js missing contextIsolation: true');
 else pass('contextIsolation enabled');
+
+if (!mainJs.includes("'dist', 'renderer', 'index.html'")) fail('main.js does not load packaged renderer from dist/renderer');
+else pass('main.js loads renderer from dist/renderer');
 
 if (!mainJs.includes('nodeIntegration: false')) fail('main.js missing nodeIntegration: false');
 else pass('nodeIntegration disabled');

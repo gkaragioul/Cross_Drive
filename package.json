@@ -68,7 +68,7 @@
     "appId": "com.gkmacopener.app",
     "productName": "GKMacOpener",
     "files": [
-      "dist/**/*",
+      "dist/renderer/**/*",
       "main.js",
       "preload.js",
       "server.js",
@@ -77,12 +77,9 @@
       "scripts/nativeBrokerClient.js",
       "scripts/wslMountClient.js",
       "scripts/wslSetup.js",
-      "native/bin/**/*",
       "package.json"
     ],
-    "asarUnpack": [
-      "native/bin/**/*"
-    ],
+    "asarUnpack": [],
     "extraResources": [
       {
         "from": "build/icon.ico",
