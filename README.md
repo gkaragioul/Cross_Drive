@@ -1,13 +1,30 @@
-
-
 https://github.com/user-attachments/assets/c7755cff-ae9e-4af9-bac5-8dbea1d96bd5
 
-# CrossDrive - Mac Drive Manager for Windows
+<div align="center">
+<h1>CrossDrive</h1>
 
-CrossDrive is a Windows desktop app for mounting, browsing, and copying files
-from APFS and HFS+ Mac-formatted drives. Supported volumes are exposed as local
-Windows drive letters through an Electron + React UI, a loopback Express API,
-WSL2 kernel filesystem drivers, and native Windows helper services.
+<p>
+  <strong>Mac drive access for Windows. Mount, browse, and copy files from APFS and HFS+ drives as real local drive letters.</strong><br>
+  <em>Built with Electron, React, WSL2 kernel filesystem drivers, and native Windows helper services.</em>
+</p>
+
+<p>
+  <a href="#release">Download</a> -
+  <a href="#features">Features</a> -
+  <a href="#requirements">Requirements</a> -
+  <a href="#development">Building</a> -
+  <a href="#license">License</a>
+</p>
+
+</div>
+
+## Features
+
+- Mount supported APFS, HFS, and HFS+ Mac-formatted volumes on Windows.
+- Expose mounted volumes through local Windows drive letters.
+- Use WSL2 kernel filesystem drivers as the primary mount path.
+- Fall back to native Windows helper services for legacy/debug workflows.
+- Keep backend communication local through loopback HTTP and named pipes.
 
 ## Status
 
