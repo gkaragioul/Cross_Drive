@@ -37,6 +37,7 @@ const validateReleaseScript = fs.existsSync(validateReleasePath) ? fs.readFileSy
 const nativeBrokerClientScript = fs.readFileSync(path.join(root, 'scripts', 'nativeBrokerClient.js'), 'utf8');
 const nativeBrokerProgram = fs.readFileSync(path.join(root, 'native', 'MacMount.NativeBroker', 'Program.cs'), 'utf8');
 const appSource = fs.readFileSync(path.join(root, 'src', 'App.jsx'), 'utf8');
+const preloadSource = fs.readFileSync(preloadPath, 'utf8');
 const licenseText = fs.readFileSync(licensePath, 'utf8');
 const noticesText = fs.readFileSync(noticesPath, 'utf8');
 const gplManifestText = fs.readFileSync(gplManifestPath, 'utf8');
@@ -166,6 +167,18 @@ if (!appSource.includes("You're running the latest version.") || !appSource.incl
   fail('App.jsx must notify manual update checks when the installed version is current');
 } else {
   pass('App.jsx notifies when manual update check is current');
+}
+
+if (!mainJs.includes("ipcMain.handle('show-update-status-notification'") || !mainJs.includes('new Notification')) {
+  fail('main.js must expose a native notification for manual update-check status');
+} else {
+  pass('main.js exposes native update-check status notification');
+}
+
+if (!preloadSource.includes('showUpdateStatusNotification') || !appSource.includes('showUpdateStatusNotification')) {
+  fail('renderer must call the native update-check status notification bridge');
+} else {
+  pass('renderer calls native update-check status notification bridge');
 }
 
 if (!mainJs.includes('preload: path.join(__dirname, \'preload.js\')')) {

@@ -3,14 +3,13 @@
 
 ## Summary
 
-Rename release: the app is now CrossDrive across the UI, installer, update feed, release artifacts, docs, and packaged helper binaries.
+Update-check feedback fix. Manual update checks now show both an in-app toast and a native Windows notification when CrossDrive is already current.
 
 ## Notable changes
 
-- **CrossDrive branding:** renames the app, installer, portable build, EULA, docs, README, release tooling, update state paths, and GitHub feed references.
-- **Update compatibility:** keeps the installer upgrade identity stable so the new CrossDrive installer can replace the pre-rename install in place.
-- **Packaged helpers:** publishes native helper executables as `CrossDrive.NativeService.exe`, `CrossDrive.NativeBroker.exe`, and `CrossDrive.UserSessionHelper.exe`.
-- **Manual update check:** keeps the visible "You're running the latest version." notification when no newer release is available.
+- **Manual update check:** shows "You're running the latest version." when no newer release is available.
+- **Native notification:** sends the same update-check status through Electron's Windows notification path.
+- **In-app toast:** pins the update-check status at the top-right of the window and auto-dismisses it after a short delay.
 
 ## Where to download
 

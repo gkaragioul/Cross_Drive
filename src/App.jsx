@@ -135,6 +135,12 @@ const App = () => {
   const [manualCheckBusy, setManualCheckBusy] = useState(false);
 
   useEffect(() => {
+    if (!updateCheckNotice) return undefined;
+    const t = setTimeout(() => setUpdateCheckNotice(null), 7000);
+    return () => clearTimeout(t);
+  }, [updateCheckNotice]);
+
+  useEffect(() => {
     let unmounted = false;
     const safe = (fn) => (...args) => { if (!unmounted) fn(...args); };
 
@@ -261,6 +267,11 @@ const App = () => {
     setUpdate(null);
   };
   const onUpdateNow = () => setUpdateModalOpen(true);
+  const notifyUpdateStatus = (notice) => {
+    setUpdateCheckNotice(notice);
+    const nativeNotification = window.crossdrive?.showUpdateStatusNotification?.(notice.message, notice.type);
+    nativeNotification?.catch?.(() => {});
+  };
   const runManualUpdateCheck = async () => {
     setManualCheckBusy(true);
     setUpdateCheckNotice(null);
@@ -269,12 +280,12 @@ const App = () => {
       setUpdate(u);
       setLastCheckedAt(new Date());
       if (u?.available) {
-        setUpdateCheckNotice({ type: 'success', message: `Update ${u.version} is available.` });
+        notifyUpdateStatus({ type: 'success', message: `Update ${u.version} is available.` });
       } else {
-        setUpdateCheckNotice({ type: 'success', message: "You're running the latest version." });
+        notifyUpdateStatus({ type: 'success', message: "You're running the latest version." });
       }
     } catch {
-      setUpdateCheckNotice({ type: 'error', message: 'Update check failed. Try again later.' });
+      notifyUpdateStatus({ type: 'error', message: 'Update check failed. Try again later.' });
     }
     finally { setManualCheckBusy(false); }
   };

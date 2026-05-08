@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, Menu, shell, ipcMain } = require('electron');
+const { app, BrowserWindow, dialog, Menu, shell, ipcMain, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { execSync, execFile } = require('child_process');
@@ -212,6 +212,29 @@ function startBackend() {
 ipcMain.handle('quit-for-update', () => {
     console.log(`[${APP_NAME}] Quit-for-update requested by renderer.`);
     setTimeout(() => app.quit(), 250); // give the renderer time to settle the response
+    return true;
+});
+
+ipcMain.handle('show-update-status-notification', (_event, payload = {}) => {
+    const message = String(payload.message || '').trim();
+    if (!message) return false;
+
+    const iconPath = resolveAppIconPath();
+    if (!Notification.isSupported()) {
+        if (mainWindow) {
+            mainWindow.flashFrame(true);
+            setTimeout(() => mainWindow?.flashFrame(false), 4000);
+        }
+        return false;
+    }
+
+    const notification = new Notification({
+        title: `${APP_NAME} Updates`,
+        body: message,
+        silent: true,
+        ...(iconPath ? { icon: iconPath } : {})
+    });
+    notification.show();
     return true;
 });
 
