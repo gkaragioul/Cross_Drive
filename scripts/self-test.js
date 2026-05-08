@@ -269,10 +269,16 @@ for (const key of ['STATE_DIR', 'ETAG_FILE', 'DISMISSED_FILE', 'PENDING_FILE', '
   }
 }
 
-if (updateRoutes.RELEASES_API !== 'https://api.github.com/repos/georgekgr12/GK_Mac_Opener_Releases/releases/latest') {
-  fail(`updateRoutes.RELEASES_API does not point to GK_Mac_Opener_Releases`);
+if (updateRoutes.RELEASES_API !== 'https://api.github.com/repos/georgekgr12/GK_Mac_Opener/releases/latest') {
+  fail(`updateRoutes.RELEASES_API does not point to GK_Mac_Opener`);
 } else {
-  pass('updateRoutes.RELEASES_API points to GK_Mac_Opener_Releases');
+  pass('updateRoutes.RELEASES_API points to GK_Mac_Opener');
+}
+
+if (!updateRoutes.ETAG_FILE.endsWith('github_etag_GK_Mac_Opener.txt')) {
+  fail(`updateRoutes.ETAG_FILE must be feed-specific for GK_Mac_Opener (got: ${updateRoutes.ETAG_FILE})`);
+} else {
+  pass('updateRoutes.ETAG_FILE is feed-specific');
 }
 
 try {

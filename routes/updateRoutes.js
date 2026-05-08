@@ -11,14 +11,14 @@ const STATE_DIR = path.join(
   'GKMacOpener',
   'updates'
 );
-const ETAG_FILE = path.join(STATE_DIR, 'github_etag.txt');
 const DISMISSED_FILE = path.join(STATE_DIR, 'dismissed_update.txt');
 const PENDING_FILE = path.join(STATE_DIR, 'pending_update.txt');
 const PREVIOUS_FILE = path.join(STATE_DIR, 'previous_version.txt');
 
 const RELEASES_OWNER = 'georgekgr12';
-const RELEASES_REPO = 'GK_Mac_Opener_Releases';
+const RELEASES_REPO = 'GK_Mac_Opener';
 const RELEASES_API = `https://api.github.com/repos/${RELEASES_OWNER}/${RELEASES_REPO}/releases/latest`;
+const ETAG_FILE = path.join(STATE_DIR, `github_etag_${RELEASES_REPO}.txt`);
 const INSTALLER_ASSET = 'GKMacOpenerSetup.exe';
 
 function ensureStateDir() {

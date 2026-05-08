@@ -285,8 +285,8 @@ $checks += [pscustomobject]@{
 $updateRoutesPath = Join-Path $root "routes\updateRoutes.js"
 $updateRoutesText = if (Test-Path $updateRoutesPath) { Get-Content $updateRoutesPath -Raw } else { "" }
 $checks += [pscustomobject]@{
-    Check = "updateRoutes targets GK_Mac_Opener_Releases"
-    Passed = (Test-Path $updateRoutesPath) -and ($updateRoutesText -match "GK_Mac_Opener_Releases")
+    Check = "updateRoutes targets GK_Mac_Opener"
+    Passed = (Test-Path $updateRoutesPath) -and ($updateRoutesText -match "GK_Mac_Opener") -and ($updateRoutesText -notmatch "GK_Mac_Opener_Releases")
     Detail = $updateRoutesPath
 }
 

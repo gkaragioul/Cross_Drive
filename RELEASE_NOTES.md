@@ -12,4 +12,4 @@ Fix for "Could not mount" failures right after a Windows reboot or WSL `--shutdo
 
 ## Where to download
 
-Permanent installer link: https://github.com/georgekgr12/GK_Mac_Opener_Releases/releases/latest/download/GKMacOpenerSetup.exe
+Permanent installer link: https://github.com/georgekgr12/GK_Mac_Opener/releases/latest/download/GKMacOpenerSetup.exe

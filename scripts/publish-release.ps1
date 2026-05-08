@@ -1,11 +1,13 @@
 #!/usr/bin/env pwsh
-# Publish a GKMacOpener release to GK_Mac_Opener_Releases on GitHub.
-# Usage: .\scripts\publish-release.ps1 -Version 1.5.3 [-Manual]
+# Publish a GKMacOpener release to GK_Mac_Opener on GitHub.
+# Usage: .\scripts\publish-release.ps1 -Version 1.5.3 [-Manual] [-LegacyFeedBridge]
 #   -Manual: skip the gh release create step; print the SHA256 line for manual upload.
+#   -LegacyFeedBridge: publish this one bridge release to the old updater feed.
 
 param(
   [Parameter(Mandatory=$true)][string]$Version,
-  [switch]$Manual
+  [switch]$Manual,
+  [switch]$LegacyFeedBridge
 )
 
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {
@@ -18,6 +20,8 @@ Push-Location $root
 
 try {
   Write-Host "=== GKMacOpener Release v$Version ===" -ForegroundColor Cyan
+  $targetRepo = if ($LegacyFeedBridge) { "GK_Mac_Opener_Releases" } else { "GK_Mac_Opener" }
+  $targetFullName = "georgekgr12/$targetRepo"
 
   # 1. Verify clean tree on main
   $branch = (& git rev-parse --abbrev-ref HEAD).Trim()
@@ -78,7 +82,7 @@ try {
   if ($Manual) {
     Write-Host ""
     Write-Host "=== Manual upload ===" -ForegroundColor Green
-    Write-Host "Upload these two files to a new release v$Version on georgekgr12/GK_Mac_Opener_Releases:"
+    Write-Host "Upload these two files to a new release v$Version on ${targetFullName}:"
     Write-Host "  $setupExe"
     Write-Host "  $portableExe"
     Write-Host ""
@@ -90,10 +94,10 @@ try {
     return
   }
 
-  # 7. gh release create on the releases repo
-  Write-Host "[6/6] Creating GitHub release on GK_Mac_Opener_Releases..." -ForegroundColor Yellow
+  # 7. gh release create on the selected release feed
+  Write-Host "[6/6] Creating GitHub release on $targetRepo..." -ForegroundColor Yellow
   & gh release create "v$Version" `
-      --repo georgekgr12/GK_Mac_Opener_Releases `
+      --repo $targetFullName `
       --title "v$Version" `
       --notes-file $tmpNotes `
       $setupExe $portableExe
@@ -101,7 +105,7 @@ try {
 
   Write-Host ""
   Write-Host "=== Release v$Version published ===" -ForegroundColor Green
-  Write-Host "URL: https://github.com/georgekgr12/GK_Mac_Opener_Releases/releases/tag/v$Version"
+  Write-Host "URL: https://github.com/$targetFullName/releases/tag/v$Version"
 }
 finally {
   Pop-Location
