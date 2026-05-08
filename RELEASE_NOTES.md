@@ -3,13 +3,13 @@
 
 ## Summary
 
-Installer startup performance fix. The previous build packaged the native .NET runtime payload more than once, making the installer much larger than necessary and giving Windows/NSIS more data to scan before the setup wizard appeared.
+Update-check feedback improvement. Manual update checks now show a visible notification when GKMacOpener is already on the latest version.
 
 ## Notable changes
 
-- **Installer size/startup:** package native binaries only once under `resources/native-bin`.
-- **Release audit:** add a gate that fails if `native/bin` is duplicated into `app.asar.unpacked`.
-- **Self-test:** add config checks to prevent future native payload duplication.
+- **Manual update check:** shows "You're running the latest version." when no newer release is available.
+- **Update errors:** shows a visible failure notification instead of silently ignoring the check.
+- **Self-test:** adds a guard so the manual update-check notification remains wired.
 
 ## Where to download
 

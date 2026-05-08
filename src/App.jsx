@@ -130,6 +130,7 @@ const App = () => {
   const [fixingPreflight, setFixingPreflight] = useState(false);
   const [update, setUpdate] = useState(null);
   const [updateModalOpen, setUpdateModalOpen] = useState(false);
+  const [updateCheckNotice, setUpdateCheckNotice] = useState(null);
   const [lastCheckedAt, setLastCheckedAt] = useState(null);
   const [manualCheckBusy, setManualCheckBusy] = useState(false);
 
@@ -262,11 +263,19 @@ const App = () => {
   const onUpdateNow = () => setUpdateModalOpen(true);
   const runManualUpdateCheck = async () => {
     setManualCheckBusy(true);
+    setUpdateCheckNotice(null);
     try {
       const u = await checkForUpdate(false);
       setUpdate(u);
       setLastCheckedAt(new Date());
-    } catch { /* ignore */ }
+      if (u?.available) {
+        setUpdateCheckNotice({ type: 'success', message: `Update ${u.version} is available.` });
+      } else {
+        setUpdateCheckNotice({ type: 'success', message: "You're running the latest version." });
+      }
+    } catch {
+      setUpdateCheckNotice({ type: 'error', message: 'Update check failed. Try again later.' });
+    }
     finally { setManualCheckBusy(false); }
   };
 
@@ -607,6 +616,12 @@ const App = () => {
       </aside>
 
       <main className="main-content">
+        {updateCheckNotice && (
+          <div className={`update-check-notice ${updateCheckNotice.type}`} role="status">
+            <span>{updateCheckNotice.message}</span>
+            <button type="button" aria-label="Dismiss update status" onClick={() => setUpdateCheckNotice(null)}>x</button>
+          </div>
+        )}
         {renderContent()}
       </main>
 

@@ -158,6 +158,47 @@ body::after {
   position: relative;
 }
 
+.update-check-notice {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  margin: 0 0 18px auto;
+  width: min(420px, 100%);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(74, 156, 45, 0.45);
+  background: rgba(12, 20, 10, 0.94);
+  color: var(--success);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.3px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+}
+
+.update-check-notice.error {
+  border-color: rgba(192, 57, 43, 0.55);
+  background: rgba(28, 9, 8, 0.94);
+  color: var(--danger);
+}
+
+.update-check-notice button {
+  width: 24px;
+  height: 24px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  line-height: 1;
+  flex: 0 0 24px;
+}
+
+.update-check-notice button:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
 /* Subtle grid pattern */
 .main-content::before {
   content: "";

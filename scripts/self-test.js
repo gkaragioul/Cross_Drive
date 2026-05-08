@@ -36,6 +36,7 @@ const auditScript = fs.readFileSync(auditPath, 'utf8');
 const validateReleaseScript = fs.existsSync(validateReleasePath) ? fs.readFileSync(validateReleasePath, 'utf8') : '';
 const nativeBrokerClientScript = fs.readFileSync(path.join(root, 'scripts', 'nativeBrokerClient.js'), 'utf8');
 const nativeBrokerProgram = fs.readFileSync(path.join(root, 'native', 'MacMount.NativeBroker', 'Program.cs'), 'utf8');
+const appSource = fs.readFileSync(path.join(root, 'src', 'App.jsx'), 'utf8');
 const licenseText = fs.readFileSync(licensePath, 'utf8');
 const noticesText = fs.readFileSync(noticesPath, 'utf8');
 const gplManifestText = fs.readFileSync(gplManifestPath, 'utf8');
@@ -148,6 +149,12 @@ else pass('nodeIntegration disabled');
 
 if (!mainJs.includes('sandbox: true')) fail('main.js missing sandbox: true');
 else pass('sandbox enabled');
+
+if (!appSource.includes("You're running the latest version.") || !appSource.includes('update-check-notice')) {
+  fail('App.jsx must notify manual update checks when the installed version is current');
+} else {
+  pass('App.jsx notifies when manual update check is current');
+}
 
 if (!mainJs.includes('preload: path.join(__dirname, \'preload.js\')')) {
   fail('main.js missing preload path');
