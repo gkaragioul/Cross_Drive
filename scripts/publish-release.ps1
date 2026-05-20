@@ -1,5 +1,5 @@
 #!/usr/bin/env pwsh
-# Publish a CrossDrive release to CrossDrive on GitHub.
+# Publish a CrossDrive release to Cross_Drive on GitHub.
 # Usage: .\scripts\publish-release.ps1 -Version 1.5.3 [-Manual]
 #   -Manual: skip the gh release create step; print the SHA256 line for manual upload.
 
@@ -18,7 +18,7 @@ Push-Location $root
 
 try {
   Write-Host "=== CrossDrive Release v$Version ===" -ForegroundColor Cyan
-  $targetFullName = "georgekgr12/CrossDrive"
+  $targetFullName = "georgekgr12/Cross_Drive"
 
   # 1. Verify clean tree on main
   $branch = (& git rev-parse --abbrev-ref HEAD).Trim()
@@ -91,8 +91,8 @@ try {
     return
   }
 
-  # 7. gh release create on the CrossDrive release feed
-  Write-Host "[6/6] Creating GitHub release on CrossDrive..." -ForegroundColor Yellow
+  # 7. gh release create on the Cross_Drive release feed
+  Write-Host "[6/6] Creating GitHub release on Cross_Drive..." -ForegroundColor Yellow
   & gh release create "v$Version" `
       --repo $targetFullName `
       --title "v$Version" `

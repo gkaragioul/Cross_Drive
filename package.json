@@ -4,13 +4,13 @@
   "description": "Mac-formatted drive manager for Windows with local drive-letter mounting.",
   "author": "CrossDrive contributors",
   "license": "MIT",
-  "homepage": "https://github.com/georgekgr12/CrossDrive",
+  "homepage": "https://github.com/georgekgr12/Cross_Drive",
   "repository": {
     "type": "git",
-    "url": "https://github.com/georgekgr12/CrossDrive.git"
+    "url": "https://github.com/georgekgr12/Cross_Drive.git"
   },
   "bugs": {
-    "url": "https://github.com/georgekgr12/CrossDrive/issues"
+    "url": "https://github.com/georgekgr12/Cross_Drive/issues"
   },
   "main": "main.js",
   "scripts": {

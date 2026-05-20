@@ -16,10 +16,11 @@ const PENDING_FILE = path.join(STATE_DIR, 'pending_update.txt');
 const PREVIOUS_FILE = path.join(STATE_DIR, 'previous_version.txt');
 
 const RELEASES_OWNER = 'georgekgr12';
-const RELEASES_REPO = 'CrossDrive';
+const RELEASES_REPO = 'Cross_Drive';
 const RELEASES_API = `https://api.github.com/repos/${RELEASES_OWNER}/${RELEASES_REPO}/releases/latest`;
 const ETAG_FILE = path.join(STATE_DIR, `github_etag_${RELEASES_REPO}.txt`);
 const INSTALLER_ASSET = 'CrossDriveSetup.exe';
+const MAX_REDIRECTS = 5;
 
 function ensureStateDir() {
   try { fs.mkdirSync(STATE_DIR, { recursive: true }); } catch { /* ignore */ }
@@ -60,6 +61,20 @@ module.exports = function mountUpdateRoutes(app, ctx) {
     return 0;
   }
 
+  function requestLatestRelease(url, headers, redirectsLeft, callback) {
+    const req = https.request(url, { method: 'GET', headers, timeout: 15000 }, (res) => {
+      if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && redirectsLeft > 0) {
+        res.resume();
+        requestLatestRelease(new URL(res.headers.location, url).toString(), headers, redirectsLeft - 1, callback);
+        return;
+      }
+      callback(null, res);
+    });
+    req.on('timeout', () => { req.destroy(new Error('timeout')); });
+    req.on('error', err => callback(err, null));
+    req.end();
+  }
+
   function fetchLatestRelease(callback) {
     ensureStateDir();
     const cached = readState(ETAG_FILE) || '';
@@ -72,7 +87,11 @@ module.exports = function mountUpdateRoutes(app, ctx) {
     };
     if (cachedEtag) headers['If-None-Match'] = cachedEtag;
 
-    const req = https.request(RELEASES_API, { method: 'GET', headers, timeout: 15000 }, (res) => {
+    requestLatestRelease(RELEASES_API, headers, MAX_REDIRECTS, (err, res) => {
+      if (err) {
+        callback(err, null);
+        return;
+      }
       const chunks = [];
       res.on('data', c => chunks.push(c));
       res.on('end', () => {
@@ -90,9 +109,6 @@ module.exports = function mountUpdateRoutes(app, ctx) {
         callback(new Error(`GitHub returned ${res.statusCode}`), null);
       });
     });
-    req.on('timeout', () => { req.destroy(new Error('timeout')); });
-    req.on('error', err => callback(err, null));
-    req.end();
   }
 
   function parseSha256FromBody(body) {

@@ -52,9 +52,9 @@ Contact
 
 CrossDrive is developed at:
 
-    https://github.com/georgekgr12/CrossDrive
+    https://github.com/georgekgr12/Cross_Drive
 
 For licensing inquiries, GPL source-code requests, or other legal questions,
 open an issue at:
 
-    https://github.com/georgekgr12/CrossDrive/issues
+    https://github.com/georgekgr12/Cross_Drive/issues
