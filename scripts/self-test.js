@@ -332,14 +332,14 @@ for (const key of ['STATE_DIR', 'ETAG_FILE', 'DISMISSED_FILE', 'PENDING_FILE', '
   }
 }
 
-if (updateRoutes.RELEASES_API !== 'https://api.github.com/repos/georgekgr12/CrossDrive/releases/latest') {
-  fail(`updateRoutes.RELEASES_API does not point to CrossDrive`);
+if (updateRoutes.RELEASES_API !== 'https://api.github.com/repos/georgekgr12/Cross_Drive/releases/latest') {
+  fail(`updateRoutes.RELEASES_API does not point to Cross_Drive`);
 } else {
-  pass('updateRoutes.RELEASES_API points to CrossDrive');
+  pass('updateRoutes.RELEASES_API points to Cross_Drive');
 }
 
-if (!updateRoutes.ETAG_FILE.endsWith('github_etag_CrossDrive.txt')) {
-  fail(`updateRoutes.ETAG_FILE must be feed-specific for CrossDrive (got: ${updateRoutes.ETAG_FILE})`);
+if (!updateRoutes.ETAG_FILE.endsWith('github_etag_Cross_Drive.txt')) {
+  fail(`updateRoutes.ETAG_FILE must be feed-specific for Cross_Drive (got: ${updateRoutes.ETAG_FILE})`);
 } else {
   pass('updateRoutes.ETAG_FILE is feed-specific');
 }
