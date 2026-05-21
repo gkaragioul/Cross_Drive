@@ -268,7 +268,7 @@ $gplOfferText = if (Test-Path (Join-Path $root "build\GPL_SOURCE_OFFER.txt")) {
 } else { "" }
 $checks += [pscustomobject]@{
     Check = "GPL written offer names a real source channel"
-    Passed = ($gplOfferText -match "github\.com/georgekgr12/Cross_Drive")
+    Passed = ($gplOfferText -match "github\.com/gkaragioul/Cross_Drive")
     Detail = "build\GPL_SOURCE_OFFER.txt"
 }
 
@@ -301,8 +301,12 @@ $checks += [pscustomobject]@{
 $updateRoutesPath = Join-Path $root "routes\updateRoutes.js"
 $updateRoutesText = if (Test-Path $updateRoutesPath) { Get-Content $updateRoutesPath -Raw } else { "" }
 $checks += [pscustomobject]@{
-    Check = "updateRoutes targets Cross_Drive"
-    Passed = (Test-Path $updateRoutesPath) -and ($updateRoutesText -match "Cross_Drive") -and ($updateRoutesText -notmatch "CrossDrive_Releases")
+    Check = "updateRoutes targets gkaragioul/Cross_Drive"
+    Passed = (Test-Path $updateRoutesPath) -and
+             ($updateRoutesText -match "gkaragioul") -and
+             ($updateRoutesText -match "Cross_Drive") -and
+             ($updateRoutesText -notmatch "CrossDrive_Releases") -and
+             ($updateRoutesText -notmatch "georgekgr12")
     Detail = $updateRoutesPath
 }
 

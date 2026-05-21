@@ -9,7 +9,7 @@ Remove-Item Env:CSC_KEY_PASSWORD -ErrorAction SilentlyContinue
 Remove-Item Env:WIN_CSC_LINK -ErrorAction SilentlyContinue
 Remove-Item Env:WIN_CSC_KEY_PASSWORD -ErrorAction SilentlyContinue
 
-npx electron-builder --win nsis portable --publish never
+npx electron-builder --win nsis portable --publish never --config.win.signAndEditExecutable=false
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }

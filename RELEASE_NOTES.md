@@ -13,4 +13,4 @@ Update-check feedback fix. Manual update checks now show both an in-app toast an
 
 ## Where to download
 
-Permanent installer link: https://github.com/georgekgr12/Cross_Drive/releases/latest/download/CrossDriveSetup.exe
+Permanent installer link: https://github.com/gkaragioul/Cross_Drive/releases/latest/download/CrossDriveSetup.exe
