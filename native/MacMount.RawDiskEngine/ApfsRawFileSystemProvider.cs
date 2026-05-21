@@ -59,10 +59,21 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
         _infoBytes = Encoding.UTF8.GetBytes(infoText);
 
         var root = new RawFsEntry("\\", "ROOT", true, 0, now, FileAttributes.Directory);
+        _entries[root.Path] = root;
+
+        var primaryVolume = SelectPrimaryVolumePreview(summary);
+        if (primaryVolume is not null)
+        {
+            if (!PopulateVolumeCatalog("\\", primaryVolume, now))
+            {
+                AddPreviewEntries("\\", primaryVolume, now);
+            }
+            return;
+        }
+
         var volumesDir = new RawFsEntry("\\Volumes", "Volumes", true, 0, now, FileAttributes.Directory);
         var infoFile = new RawFsEntry("\\APFS_CONTAINER_INFO.txt", "APFS_CONTAINER_INFO.txt", false, _infoBytes.Length, now, FileAttributes.ReadOnly);
 
-        _entries[root.Path] = root;
         _entries[volumesDir.Path] = volumesDir;
         _entries[infoFile.Path] = infoFile;
 
@@ -671,7 +682,7 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
             {
                 if (IsMacMetadata(item.Name)) continue;
 
-                var childPath = $"{currentPath}\\{item.Name}";
+                var childPath = JoinPath(currentPath, item.Name);
                 long size = 0;
                 if (!item.IsDirectory &&
                     item.ChildId.HasValue &&
@@ -706,7 +717,7 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
         {
             if (IsMacMetadata(item.Name)) continue;
 
-            var childPath = $"{volumePath}\\{item.Name}";
+            var childPath = JoinPath(volumePath, item.Name);
             var attrs = item.IsDirectory ? FileAttributes.Directory : FileAttributes.ReadOnly;
             long size = 0;
             if (!item.IsDirectory &&
@@ -720,6 +731,59 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
             previewChildren.Add(child);
         }
         _dirChildren[volumePath] = previewChildren;
+    }
+
+    private static ApfsVolumePreview? SelectPrimaryVolumePreview(ApfsContainerSummary summary)
+    {
+        var previews = summary.VolumeObjectIds
+            .Select(oid => summary.VolumePreviewsByOid.TryGetValue(oid, out var preview) ? preview : null)
+            .Where(preview => preview is not null && HasUserVisibleEntries(preview))
+            .Cast<ApfsVolumePreview>()
+            .ToList();
+
+        if (previews.Count == 0)
+        {
+            return null;
+        }
+
+        if (previews.Count == 1)
+        {
+            return previews[0];
+        }
+
+        return previews
+            .OrderByDescending(ScorePrimaryVolume)
+            .FirstOrDefault();
+    }
+
+    private static bool HasUserVisibleEntries(ApfsVolumePreview preview)
+    {
+        return preview.RootEntries.Any(entry => !IsMacMetadata(entry.Name)) ||
+               preview.DirectoryEntriesByParentId.Values.Any(entries => entries.Any(entry => !IsMacMetadata(entry.Name)));
+    }
+
+    private static int ScorePrimaryVolume(ApfsVolumePreview preview)
+    {
+        var score = 0;
+        if (preview.RoleName.Contains("Data", StringComparison.OrdinalIgnoreCase)) score += 100;
+        if (preview.RoleName.Contains("User", StringComparison.OrdinalIgnoreCase)) score += 80;
+        if (preview.RoleName.Equals("None", StringComparison.OrdinalIgnoreCase)) score += 50;
+        if (preview.RoleName.Contains("System", StringComparison.OrdinalIgnoreCase)) score -= 20;
+        if (preview.RoleName.Contains("Recovery", StringComparison.OrdinalIgnoreCase)) score -= 100;
+        if (preview.RoleName.Contains("Preboot", StringComparison.OrdinalIgnoreCase)) score -= 100;
+        if (preview.RoleName.Contains("VM", StringComparison.OrdinalIgnoreCase)) score -= 100;
+        score += Math.Min(30, preview.RootEntries.Count(entry => !IsMacMetadata(entry.Name)));
+        return score;
+    }
+
+    private static string JoinPath(string parent, string name)
+    {
+        var safeName = name.Replace('\\', '_').Replace('/', '_');
+        if (string.IsNullOrWhiteSpace(parent) || parent == "\\")
+        {
+            return "\\" + safeName;
+        }
+        return parent.TrimEnd('\\') + "\\" + safeName;
     }
 
     private static string BuildVolumeFolderName(ApfsVolumePreview? preview, ulong oid, ISet<string> usedVolumeNames)
