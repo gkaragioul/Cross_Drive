@@ -28,6 +28,10 @@ function getNativeServiceExecutable() {
   return resolveExistingPath(candidates);
 }
 
+function isPackagedRuntime() {
+  return Boolean(process.resourcesPath && __dirname.toLowerCase().includes('app.asar'));
+}
+
 function startNativeService() {
   if (nativeProcess && !nativeProcess.killed) return;
 
@@ -38,6 +42,8 @@ function startNativeService() {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe']
     });
+  } else if (isPackagedRuntime()) {
+    return;
   } else {
     const projectPath = path.join(__dirname, '..', 'native', 'MacMount.NativeService', 'MacMount.NativeService.csproj');
     nativeProcess = spawn('dotnet', ['run', '--project', projectPath], {
@@ -49,6 +55,9 @@ function startNativeService() {
 
   nativeProcess.stdout.on('data', () => {});
   nativeProcess.stderr.on('data', () => {});
+  nativeProcess.on('error', () => {
+    nativeProcess = null;
+  });
   nativeProcess.on('exit', () => {
     nativeProcess = null;
   });
@@ -124,4 +133,5 @@ module.exports = {
   stopNativeService,
   sendNativeRequest,
   getNativeStatus,
+  getNativeServiceExecutable,
 };
