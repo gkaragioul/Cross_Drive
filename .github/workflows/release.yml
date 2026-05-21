@@ -1,4 +1,7 @@
-name: macmount-release
+name: crossdrive-release
+
+permissions:
+  contents: write
 
 on:
   push:
@@ -53,6 +56,31 @@ jobs:
       - name: Upload signed artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: macmount-signed-release
+          name: crossdrive-signed-release
           path: dist/*
           retention-days: 30
+
+      - name: Publish GitHub release for updater
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag.TrimStart("v")
+          $setupExe = "dist\CrossDriveSetup.exe"
+          $portableExe = "dist\CrossDrive-$version.exe"
+          if (-not (Test-Path $setupExe)) { throw "Missing updater installer asset: $setupExe" }
+          if (-not (Test-Path $portableExe)) { throw "Missing portable asset: $portableExe" }
+
+          $hash = (Get-FileHash $setupExe -Algorithm SHA256).Hash.ToLower()
+          $notesSource = if (Test-Path "RELEASE_NOTES.md") { Get-Content "RELEASE_NOTES.md" -Raw } else { "CrossDrive $tag" }
+          $notesPath = Join-Path $env:RUNNER_TEMP "crossdrive-release-notes.md"
+          Set-Content -Path $notesPath -Value "$notesSource`n`nSHA256: $hash`n" -Encoding UTF8
+
+          if (gh release view $tag --repo "${{ github.repository }}" *> $null) {
+            gh release edit $tag --repo "${{ github.repository }}" --title $tag --notes-file $notesPath --latest
+            gh release upload $tag --repo "${{ github.repository }}" $setupExe $portableExe --clobber
+          } else {
+            gh release create $tag --repo "${{ github.repository }}" --title $tag --notes-file $notesPath --latest $setupExe $portableExe
+          }

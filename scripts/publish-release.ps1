@@ -18,7 +18,7 @@ Push-Location $root
 
 try {
   Write-Host "=== CrossDrive Release v$Version ===" -ForegroundColor Cyan
-  $targetFullName = "georgekgr12/Cross_Drive"
+  $targetFullName = "gkaragioul/Cross_Drive"
 
   # 1. Verify clean tree on main
   $branch = (& git rev-parse --abbrev-ref HEAD).Trim()

@@ -18,7 +18,7 @@ How to Obtain Source
 
 1. The official CrossDrive source repository is:
 
-       https://github.com/georgekgr12/Cross_Drive
+       https://github.com/gkaragioul/Cross_Drive
 
    It contains a GPL source manifest at:
 
@@ -31,7 +31,7 @@ How to Obtain Source
 2. If the corresponding source for a GPL-covered binary you received is not
    already present in the repository above, request it by opening an issue at:
 
-       https://github.com/georgekgr12/Cross_Drive/issues
+       https://github.com/gkaragioul/Cross_Drive/issues
 
    The request will be fulfilled by providing a durable download link, a
    source archive, or a public repository containing the complete

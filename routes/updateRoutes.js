@@ -15,7 +15,7 @@ const DISMISSED_FILE = path.join(STATE_DIR, 'dismissed_update.txt');
 const PENDING_FILE = path.join(STATE_DIR, 'pending_update.txt');
 const PREVIOUS_FILE = path.join(STATE_DIR, 'previous_version.txt');
 
-const RELEASES_OWNER = 'georgekgr12';
+const RELEASES_OWNER = 'gkaragioul';
 const RELEASES_REPO = 'Cross_Drive';
 const RELEASES_API = `https://api.github.com/repos/${RELEASES_OWNER}/${RELEASES_REPO}/releases/latest`;
 const ETAG_FILE = path.join(STATE_DIR, `github_etag_${RELEASES_REPO}.txt`);
@@ -37,6 +37,12 @@ function writeState(file, text) {
 
 function deleteState(file) {
   try { fs.unlinkSync(file); } catch { /* ignore */ }
+}
+
+function parseSha256FromBody(body) {
+  if (!body) return null;
+  const m = body.match(/SHA-?256(?:\s+checksum)?\s*[:=]\s*([a-fA-F0-9]{64})/i);
+  return m ? m[1].toLowerCase() : null;
 }
 
 module.exports = function mountUpdateRoutes(app, ctx) {
@@ -109,12 +115,6 @@ module.exports = function mountUpdateRoutes(app, ctx) {
         callback(new Error(`GitHub returned ${res.statusCode}`), null);
       });
     });
-  }
-
-  function parseSha256FromBody(body) {
-    if (!body) return null;
-    const m = body.match(/SHA256:\s*([a-fA-F0-9]{64})/);
-    return m ? m[1].toLowerCase() : null;
   }
 
   app.get('/api/update/check', (req, res) => {
@@ -316,3 +316,4 @@ module.exports.PENDING_FILE = PENDING_FILE;
 module.exports.PREVIOUS_FILE = PREVIOUS_FILE;
 module.exports.RELEASES_API = RELEASES_API;
 module.exports.INSTALLER_ASSET = INSTALLER_ASSET;
+module.exports.parseSha256FromBody = parseSha256FromBody;
