@@ -34,7 +34,9 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
         _writable = writable && device.CanWrite;
         FileSystemType = "APFS";
         TotalBytes = summary.EstimatedTotalBytes > 0 ? summary.EstimatedTotalBytes : Math.Max(1, plan.TotalBytes);
-        FreeBytes = spaceman is not null ? (long)(spaceman.FreeBlockCount * _blockSize) : 0;
+        FreeBytes = spaceman is not null
+            ? (long)Math.Min((decimal)long.MaxValue, (decimal)spaceman.FreeBlockCount * _blockSize)
+            : TotalBytes;
 
         // Initialize write support if writable
         if (_writable)
@@ -143,7 +145,7 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
             var summary = await reader.ReadSummaryAsync(cancellationToken).ConfigureAwait(false);
 
             ApfsSpacemanReader? spaceman = null;
-            if (plan.Writable && summary.SpacemanPhysicalBlock.HasValue)
+            if (summary.SpacemanPhysicalBlock.HasValue)
             {
                 try
                 {
@@ -155,8 +157,8 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
                 }
                 catch (Exception ex)
                 {
-                    // Non-fatal: fall back to fake allocator; writes will still work
-                    // but free-space reporting will be inaccurate.
+                    // Non-fatal: fall back to an optimistic read-only capacity hint
+                    // so Explorer does not present APFS as a full drive.
                     System.Diagnostics.Debug.WriteLine($"[ApfsRawFileSystemProvider] Spaceman load failed: {ex.Message}");
                 }
             }

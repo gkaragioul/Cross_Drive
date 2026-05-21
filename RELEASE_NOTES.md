@@ -3,14 +3,13 @@
 
 ## Summary
 
-Zero-dependency customer runtime release.
+APFS native mount free-space fix.
 
 ## Notable changes
 
-- **Native runtime by default:** CrossDrive now starts in the bundled native mount path instead of requiring WSL2.
-- **No WSL setup blocker:** missing WSL2/Ubuntu is treated as an optional advanced-mode warning and no longer disables Mount buttons.
-- **Explicit WSL mode only:** the WSL kernel path is used only when `CROSSDRIVE_MOUNT_MODE=wsl_kernel` is set.
-- **Release guardrails:** self-test now verifies the default native runtime, optional WSL handling, and UI mount gating.
+- **APFS free-space reporting:** read-only APFS mounts now load APFS spaceman metadata for capacity reporting instead of returning `0 bytes free` to Explorer.
+- **Safer fallback:** if APFS free-space metadata cannot be read, CrossDrive reports an optimistic capacity hint instead of making the drive look completely full.
+- **Release guardrail:** self-test now verifies APFS read-only mounts do not regress to zero-free-space reporting.
 
 ## Where to download
 

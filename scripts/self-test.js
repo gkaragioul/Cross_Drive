@@ -38,6 +38,7 @@ const validateReleaseScript = fs.existsSync(validateReleasePath) ? fs.readFileSy
 const nativeBrokerClientScript = fs.readFileSync(path.join(root, 'scripts', 'nativeBrokerClient.js'), 'utf8');
 const nativeServiceClientScript = fs.readFileSync(path.join(root, 'scripts', 'nativeServiceClient.js'), 'utf8');
 const nativeBrokerProgram = fs.readFileSync(path.join(root, 'native', 'MacMount.NativeBroker', 'Program.cs'), 'utf8');
+const apfsProviderSource = fs.readFileSync(path.join(root, 'native', 'MacMount.RawDiskEngine', 'ApfsRawFileSystemProvider.cs'), 'utf8');
 const appSource = fs.readFileSync(path.join(root, 'src', 'App.jsx'), 'utf8');
 const preloadSource = fs.readFileSync(preloadPath, 'utf8');
 const licenseText = fs.readFileSync(licensePath, 'utf8');
@@ -254,6 +255,15 @@ if (!appSource.includes("runtimeConfig?.mode !== 'wsl_kernel'") ||
   fail('App.jsx must not block default native mounting on optional WSL setup state');
 } else {
   pass('App.jsx does not block default native mounting on optional WSL setup state');
+}
+
+if (apfsProviderSource.includes('if (plan.Writable && summary.SpacemanPhysicalBlock.HasValue)')) {
+  fail('APFS free-space metadata must be loaded for read-only mounts too');
+} else if (!apfsProviderSource.includes('FreeBytes = spaceman is not null') ||
+           !apfsProviderSource.includes(': TotalBytes')) {
+  fail('APFS provider must avoid reporting zero free space when spaceman metadata is unavailable');
+} else {
+  pass('APFS provider reports non-zero capacity for normal read-only mounts');
 }
 
 if (!nativeBrokerProgram.includes('DeletePathWithRetry') || !nativeBrokerProgram.includes('Passthrough delete failed')) {
