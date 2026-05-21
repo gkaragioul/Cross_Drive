@@ -29,6 +29,10 @@ function getBrokerExecutable() {
   return resolveExistingPath(candidates);
 }
 
+function isPackagedRuntime() {
+  return Boolean(process.resourcesPath && __dirname.toLowerCase().includes('app.asar'));
+}
+
 function sendBrokerRequest(payload, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(PIPE_PATH);
@@ -117,6 +121,9 @@ function startBrokerInInteractiveSessionInner() {
           stdio: 'ignore',
           windowsHide: true,
         });
+      } else if (isPackagedRuntime()) {
+        reject(new Error('CrossDrive.NativeBroker.exe is missing from native-bin/broker.'));
+        return;
       } else {
         // Fallback: dotnet run the project directly (dev environments without a
         // published broker.exe). Same hidden+detached treatment.

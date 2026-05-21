@@ -35,6 +35,7 @@ const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
 const auditScript = fs.readFileSync(auditPath, 'utf8');
 const validateReleaseScript = fs.existsSync(validateReleasePath) ? fs.readFileSync(validateReleasePath, 'utf8') : '';
 const nativeBrokerClientScript = fs.readFileSync(path.join(root, 'scripts', 'nativeBrokerClient.js'), 'utf8');
+const nativeServiceClientScript = fs.readFileSync(path.join(root, 'scripts', 'nativeServiceClient.js'), 'utf8');
 const nativeBrokerProgram = fs.readFileSync(path.join(root, 'native', 'MacMount.NativeBroker', 'Program.cs'), 'utf8');
 const appSource = fs.readFileSync(path.join(root, 'src', 'App.jsx'), 'utf8');
 const preloadSource = fs.readFileSync(preloadPath, 'utf8');
@@ -209,6 +210,14 @@ if (!nativeBrokerClientScript.includes('brokerStartPromise') || !nativeBrokerCli
   fail('nativeBrokerClient missing broker start coalescing');
 } else {
   pass('nativeBrokerClient coalesces broker starts');
+}
+
+if (!nativeServiceClientScript.includes('isPackagedRuntime') ||
+    !nativeServiceClientScript.includes("nativeProcess.on('error'") ||
+    !nativeBrokerClientScript.includes('CrossDrive.NativeBroker.exe is missing from native-bin/broker')) {
+  fail('packaged native helpers must not fall back to dotnet or crash on spawn errors');
+} else {
+  pass('packaged native helpers avoid dotnet fallback and handle spawn errors');
 }
 
 if (!nativeBrokerProgram.includes('DeletePathWithRetry') || !nativeBrokerProgram.includes('Passthrough delete failed')) {
