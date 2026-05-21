@@ -266,6 +266,14 @@ if (apfsProviderSource.includes('if (plan.Writable && summary.SpacemanPhysicalBl
   pass('APFS provider reports non-zero capacity for normal read-only mounts');
 }
 
+if (!apfsProviderSource.includes('SelectPrimaryVolumePreview') ||
+    !apfsProviderSource.includes('PopulateVolumeCatalog("\\\\", primaryVolume, now)') ||
+    !apfsProviderSource.includes('JoinPath(currentPath, item.Name)')) {
+  fail('APFS provider must expose the primary user volume at the drive root');
+} else {
+  pass('APFS provider exposes the primary user volume at the drive root');
+}
+
 if (!nativeBrokerProgram.includes('DeletePathWithRetry') || !nativeBrokerProgram.includes('Passthrough delete failed')) {
   fail('NativeBroker passthrough delete cleanup can silently fail');
 } else {

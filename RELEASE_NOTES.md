@@ -3,13 +3,13 @@
 
 ## Summary
 
-APFS native mount free-space fix.
+APFS native mount root presentation fix.
 
 ## Notable changes
 
-- **APFS free-space reporting:** read-only APFS mounts now load APFS spaceman metadata for capacity reporting instead of returning `0 bytes free` to Explorer.
-- **Safer fallback:** if APFS free-space metadata cannot be read, CrossDrive reports an optimistic capacity hint instead of making the drive look completely full.
-- **Release guardrail:** self-test now verifies APFS read-only mounts do not regress to zero-free-space reporting.
+- **Normal Explorer root:** APFS mounts now expose the primary user volume at the drive root instead of showing a container wrapper with `Volumes` and `APFS_CONTAINER_INFO`.
+- **Primary volume selection:** CrossDrive prefers APFS Data/User volumes and avoids Recovery/Preboot/VM volumes for the root view.
+- **Release guardrail:** self-test now verifies APFS mounts expose the primary user volume at the drive root.
 
 ## Where to download
 
