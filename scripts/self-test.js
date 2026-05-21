@@ -33,6 +33,7 @@ for (const p of [pkgPath, mainPath, preloadPath, serverPath, auditPath, secAudit
 
 const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
 const auditScript = fs.readFileSync(auditPath, 'utf8');
+const unsignedBuildScript = fs.readFileSync(path.join(root, 'scripts', 'build-release-unsigned.ps1'), 'utf8');
 const validateReleaseScript = fs.existsSync(validateReleasePath) ? fs.readFileSync(validateReleasePath, 'utf8') : '';
 const nativeBrokerClientScript = fs.readFileSync(path.join(root, 'scripts', 'nativeBrokerClient.js'), 'utf8');
 const nativeServiceClientScript = fs.readFileSync(path.join(root, 'scripts', 'nativeServiceClient.js'), 'utf8');
@@ -134,6 +135,13 @@ else pass('nsis.allowToChangeInstallationDirectory is false');
 
 if (nsisCfg.artifactName !== 'CrossDriveSetup.exe') fail(`nsis.artifactName must be 'CrossDriveSetup.exe', found '${nsisCfg.artifactName}'`);
 else pass('nsis.artifactName is CrossDriveSetup.exe');
+
+const installerNsh = fs.readFileSync(path.join(root, 'build', 'installer.nsh'), 'utf8');
+if (!installerNsh.includes('resources\\icon.ico') || !installerNsh.includes('CreateShortCut "$DESKTOP\\CrossDrive.lnk"')) {
+  fail('installer must explicitly set CrossDrive shortcut icons from resources\\icon.ico');
+} else {
+  pass('installer explicitly sets CrossDrive shortcut icons');
+}
 
 if (nsisCfg.license !== 'build/EULA.txt') fail(`nsis.license must be 'build/EULA.txt', found '${nsisCfg.license}'`);
 else pass('nsis.license points to build/EULA.txt');
