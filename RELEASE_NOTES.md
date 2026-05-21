@@ -3,13 +3,13 @@
 
 ## Summary
 
-Desktop icon and assisted updater test release.
+Workspace Git alignment release.
 
 ## Notable changes
 
-- **Updater feed:** confirms updates are received from `gkaragioul/Cross_Drive`.
-- **Assisted install path:** keeps the same `CrossDriveSetup.exe` asset name and release-note checksum format expected by the app.
-- **Desktop shortcut icon:** installer-created shortcuts now point directly at the packaged CrossDrive icon so Windows does not show the generic Electron fallback icon.
+- **Workspace Git:** `E:\Cross_Drive` is now attached directly to `gkaragioul/Cross_Drive` on `main`.
+- **Release bookkeeping:** version bumped to 1.5.26 from this workspace to confirm local Git, push, and tag flow.
+- **No installer asset:** this tag is source-only and does not supersede the published assisted-updater test release `v1.5.25`.
 
 ## Where to download
 
