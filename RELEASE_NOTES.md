@@ -3,13 +3,14 @@
 
 ## Summary
 
-APFS native mount root presentation fix.
+APFS Time Machine resolution and taskbar icon fix.
 
 ## Notable changes
 
-- **Normal Explorer root:** APFS mounts now expose the primary user volume at the drive root instead of showing a container wrapper with `Volumes` and `APFS_CONTAINER_INFO`.
-- **Primary volume selection:** CrossDrive prefers APFS Data/User volumes and avoids Recovery/Preboot/VM volumes for the root view.
-- **Release guardrail:** self-test now verifies APFS mounts expose the primary user volume at the drive root.
+- **APFS checkpoint parsing:** fixed NX checkpoint field offsets so CrossDrive can scan the APFS checkpoint data area instead of showing empty placeholder volumes.
+- **Time Machine visibility:** this should let the native APFS path resolve the real backup volume/catalog instead of only `Volumes` and `APFS_CONTAINER_INFO`.
+- **Taskbar icon:** unsigned builds now stamp `CrossDrive.exe` with the CrossDrive icon during packaging, so the running app should not show Electron's generic taskbar icon.
+- **Release guardrails:** self-test now verifies APFS checkpoint offsets, APFS root presentation, and unsigned exe icon stamping.
 
 ## Where to download
 

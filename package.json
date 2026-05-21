@@ -1,6 +1,6 @@
 {
   "name": "crossdrive",
-  "version": "1.5.29",
+  "version": "1.5.30",
   "description": "Mac-formatted drive manager for Windows with local drive-letter mounting.",
   "author": "CrossDrive contributors",
   "license": "MIT",
@@ -67,6 +67,7 @@
   "build": {
     "appId": "com.crossdrive.app",
     "productName": "CrossDrive",
+    "afterPack": "scripts/after-pack-icon.js",
     "files": [
       "dist/renderer/**/*",
       "main.js",
