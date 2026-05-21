@@ -317,7 +317,8 @@ const App = () => {
   };
 
   const renderDrives = () => {
-    const environmentReady = setup.ready;
+    const environmentReady = setup.ready || runtimeConfig?.mode !== 'wsl_kernel';
+    const showSetupBanner = setup.status !== 'ready' && runtimeConfig?.mode === 'wsl_kernel';
     return (
       <>
         <section className="header-section fade-in">
@@ -326,7 +327,7 @@ const App = () => {
         </section>
 
         <UpdateBanner update={update} onUpdateNow={onUpdateNow} onLater={onUpdateLater} onSkip={onUpdateSkip} />
-        <SetupBanner setup={setup} />
+        {showSetupBanner && <SetupBanner setup={setup} />}
 
         {preflight && !preflight.ready && (
           <div style={{
@@ -366,14 +367,14 @@ const App = () => {
             {drives.map((drive, index) => {
               const mountBlocked = !drive.mounted && drive.supported === false;
               const mountTitle = !drive.mounted && !environmentReady
-                ? 'Finish setup first.'
+                ? 'Runtime setup is still finishing.'
                 : mountBlocked
                   ? (drive.mountHint || 'This drive type is not supported yet.')
                   : '';
               const mountLabel = isMounting === drive.id
                 ? (drive.mounted ? 'Unmounting...' : 'Mounting...')
                 : !environmentReady && !drive.mounted
-                  ? '\u23F3 Preparing...'
+                  ? 'Preparing...'
                   : mountBlocked
                     ? 'Unsupported'
                     : drive.mounted

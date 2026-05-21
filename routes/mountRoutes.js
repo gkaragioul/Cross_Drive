@@ -239,9 +239,9 @@ module.exports = function mountMountRoutes(app, ctx) {
         inFlightOps.add(opKey);
         addLog(`USER ACTION: Requesting mount for Physical Drive ${driveId}`);
         try {
-            // Primary path: WSL2-backed mount via Linux kernel hfsplus / apfs-rw drivers.
-            // Skipped if the caller explicitly forces the native engine.
-            if (forceNative !== true) {
+            // Optional WSL2-backed mount via Linux kernel hfsplus / apfs-rw drivers.
+            // The bundled native engine is the default customer path.
+            if (forceNative !== true && RUNTIME_MOUNT_MODE === 'wsl_kernel') {
                 if (!hasRawDiskAccess?.()) {
                     return res.status(403).json({
                         error: 'Administrator privileges are required to attach a physical drive to WSL2.',
@@ -388,16 +388,11 @@ module.exports = function mountMountRoutes(app, ctx) {
                         mode: 'wsl_kernel'
                     });
                 }
-                if (RUNTIME_MOUNT_MODE === 'wsl_kernel') {
-                    return res.status(502).json({
-                        error: wslResult.error || 'WSL2 kernel mount failed.',
-                        suggestion: 'CrossDrive uses the WSL2 kernel path for writable Mac drives. Native HFS+ write fallback is disabled by default because it is not reliable for real-world copies.',
-                        mode: 'wsl_kernel'
-                    });
-                }
-
-                // Debug fallback only. The legacy native writer is not the commercial path.
-                addLog(`Falling back to native engine for drive ${driveId} because runtime mode is ${RUNTIME_MOUNT_MODE}.`, 'warning');
+                return res.status(502).json({
+                    error: wslResult.error || 'WSL2 kernel mount failed.',
+                    suggestion: 'Switch back to the default native runtime or install WSL2 to use WSL kernel mode.',
+                    mode: 'wsl_kernel'
+                });
             }
 
             const attemptNative = shouldAttemptNativeMountForDrive(driveId, forceNative === true);

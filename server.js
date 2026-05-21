@@ -25,7 +25,7 @@ function readCrossDriveEnv(name, fallbackName = null) {
 }
 const RUNTIME_MOUNT_MODE = (() => {
     const raw = String(readCrossDriveEnv('CROSSDRIVE_MOUNT_MODE', 'MACMOUNT_MOUNT_MODE') || '').trim().toLowerCase();
-    if (!raw) return 'wsl_kernel';
+    if (!raw) return 'native_first';
     if (raw === 'experimental_raw') return 'native_only';
     if (raw === 'wsl_unc' || raw === 'hybrid_canary') return 'wsl_kernel';
     return VALID_RUNTIME_MOUNT_MODES.has(raw) ? raw : 'wsl_kernel';
@@ -48,7 +48,7 @@ const ALLOWED_CORS_ORIGINS = new Set([
 // Driver installation state
 let setupState = {
     status: 'checking',
-    message: 'Checking WSL2 kernel runtime.',
+    message: 'Checking bundled native runtime.',
     ready: false,
     wslSetup: {
         wslAvailable: false,
@@ -614,33 +614,46 @@ addLog("Native service started for raw-disk analysis endpoints.");
         const summary = await ensureWslMountPathReady(addLog);
         setupState.wslSetup = {
             ...summary,
-            requiresAction: Boolean(summary.error)
+            requiresAction: RUNTIME_MOUNT_MODE === 'wsl_kernel' && Boolean(summary.error)
         };
         if (summary.error) {
-            setupState.status = 'failed';
-            setupState.ready = false;
-            setupState.message = summary.error;
-            addLog(`WSL mount path setup incomplete: ${summary.error}. Mounting is blocked until setup is repaired.`, 'warning');
+            if (RUNTIME_MOUNT_MODE === 'wsl_kernel') {
+                setupState.status = 'failed';
+                setupState.ready = false;
+                setupState.message = summary.error;
+                addLog(`WSL mount path setup incomplete: ${summary.error}. WSL kernel mode is blocked until setup is repaired.`, 'warning');
+            } else {
+                setupState.status = 'ready';
+                setupState.ready = true;
+                setupState.message = 'Native runtime ready. Optional WSL2 kernel runtime is not installed.';
+                addLog(`Optional WSL mount path unavailable: ${summary.error}. Continuing with bundled native engine.`, 'warning');
+            }
         } else if (summary.modulesLoaded?.length) {
             setupState.status = 'ready';
             setupState.ready = true;
-            setupState.message = 'WSL2 kernel runtime ready.';
+            setupState.message = RUNTIME_MOUNT_MODE === 'wsl_kernel'
+                ? 'WSL2 kernel runtime ready.'
+                : 'Native runtime ready. Optional WSL2 kernel runtime is also available.';
             addLog(`WSL mount path ready: kernel modules loaded [${summary.modulesLoaded.join(', ')}].`, 'success');
         } else {
-            setupState.status = 'failed';
-            setupState.ready = false;
-            setupState.message = 'WSL2 kernel runtime did not report loaded Mac filesystem modules.';
-            setupState.wslSetup.requiresAction = true;
+            setupState.status = RUNTIME_MOUNT_MODE === 'wsl_kernel' ? 'failed' : 'ready';
+            setupState.ready = RUNTIME_MOUNT_MODE !== 'wsl_kernel';
+            setupState.message = RUNTIME_MOUNT_MODE === 'wsl_kernel'
+                ? 'WSL2 kernel runtime did not report loaded Mac filesystem modules.'
+                : 'Native runtime ready. Optional WSL2 kernel modules are not loaded.';
+            setupState.wslSetup.requiresAction = RUNTIME_MOUNT_MODE === 'wsl_kernel';
             addLog(setupState.message, 'warning');
         }
     } catch (e) {
-        setupState.status = 'failed';
-        setupState.ready = false;
-        setupState.message = `WSL setup failed: ${e.message}`;
+        setupState.status = RUNTIME_MOUNT_MODE === 'wsl_kernel' ? 'failed' : 'ready';
+        setupState.ready = RUNTIME_MOUNT_MODE !== 'wsl_kernel';
+        setupState.message = RUNTIME_MOUNT_MODE === 'wsl_kernel'
+            ? `WSL setup failed: ${e.message}`
+            : 'Native runtime ready. Optional WSL2 kernel setup failed.';
         setupState.wslSetup = {
             ...setupState.wslSetup,
             error: e.message,
-            requiresAction: true
+            requiresAction: RUNTIME_MOUNT_MODE === 'wsl_kernel'
         };
         addLog(setupState.message, 'warning');
     }
