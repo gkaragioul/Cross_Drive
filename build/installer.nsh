@@ -46,4 +46,13 @@
 
   ; Wait a moment for the WinFsp service to register
   Sleep 2000
+
+  ; Unsigned staging builds can skip executable resource editing, which means
+  ; Windows shortcuts may fall back to Electron's generic icon. Point the
+  ; shortcuts directly at the packaged icon resource so the desktop tile stays
+  ; branded even before code signing is configured.
+  Delete "$DESKTOP\CrossDrive.lnk"
+  CreateShortCut "$DESKTOP\CrossDrive.lnk" "$INSTDIR\CrossDrive.exe" "" "$INSTDIR\resources\icon.ico" 0
+  Delete "$SMPROGRAMS\CrossDrive.lnk"
+  CreateShortCut "$SMPROGRAMS\CrossDrive.lnk" "$INSTDIR\CrossDrive.exe" "" "$INSTDIR\resources\icon.ico" 0
 !macroend
