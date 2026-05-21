@@ -3,13 +3,14 @@
 
 ## Summary
 
-Workspace Git alignment release.
+Zero-dependency customer runtime release.
 
 ## Notable changes
 
-- **Workspace Git:** `E:\Cross_Drive` is now attached directly to `gkaragioul/Cross_Drive` on `main`.
-- **Release bookkeeping:** version bumped to 1.5.26 from this workspace to confirm local Git, push, and tag flow.
-- **No installer asset:** this tag is source-only and does not supersede the published assisted-updater test release `v1.5.25`.
+- **Native runtime by default:** CrossDrive now starts in the bundled native mount path instead of requiring WSL2.
+- **No WSL setup blocker:** missing WSL2/Ubuntu is treated as an optional advanced-mode warning and no longer disables Mount buttons.
+- **Explicit WSL mode only:** the WSL kernel path is used only when `CROSSDRIVE_MOUNT_MODE=wsl_kernel` is set.
+- **Release guardrails:** self-test now verifies the default native runtime, optional WSL handling, and UI mount gating.
 
 ## Where to download
 

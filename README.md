@@ -5,7 +5,7 @@ https://github.com/user-attachments/assets/c7755cff-ae9e-4af9-bac5-8dbea1d96bd5
 
 <p>
   <strong>Mac drive access for Windows. Mount, browse, and copy files from APFS and HFS+ drives as real local drive letters.</strong><br>
-  <em>Built with Electron, React, WSL2 kernel filesystem drivers, and native Windows helper services.</em>
+  <em>Built with Electron, React, bundled native Windows helper services, and optional WSL2 kernel filesystem drivers.</em>
 </p>
 
 <p>
@@ -22,8 +22,8 @@ https://github.com/user-attachments/assets/c7755cff-ae9e-4af9-bac5-8dbea1d96bd5
 
 - Mount supported APFS, HFS, and HFS+ Mac-formatted volumes on Windows.
 - Expose mounted volumes through local Windows drive letters.
-- Use WSL2 kernel filesystem drivers as the primary mount path.
-- Fall back to native Windows helper services for legacy/debug workflows.
+- Use bundled native Windows helper services as the default mount path.
+- Keep WSL2 kernel filesystem drivers available as an optional advanced path.
 - Keep backend communication local through loopback HTTP and named pipes.
 
 ## Status
@@ -64,23 +64,23 @@ commercial WinFsp license.
 ```text
 Electron main process -> Express API on 127.0.0.1:3001
 React UI              -> polls local API for drive state
-WSL2 kernel path      -> primary APFS/HFS/HFS+ mount path
-.NET native helpers   -> broker, service, and user-session drive mapping
-WinFsp                -> Windows presentation/fallback support
+.NET native helpers   -> default broker, service, and user-session drive mapping
+WinFsp                -> bundled Windows filesystem presentation support
+WSL2 kernel path      -> optional APFS/HFS/HFS+ mount path
 ```
 
 Mount modes are controlled by `CROSSDRIVE_MOUNT_MODE`:
 
-- `wsl_kernel` - default production path.
-- `native_first` - debug fallback, native raw provider first.
-- `native_only` - debug fallback, disables WSL/native bridge fallback.
+- `native_first` - default customer path, using bundled native helpers first.
+- `native_only` - native helpers only, with WSL disabled.
+- `wsl_kernel` - optional WSL2 kernel path for advanced/testing installs.
 
 ## Requirements
 
 - Windows 10/11 64-bit
 - Administrator privileges
-- WSL2 with Ubuntu for the primary kernel mount path
 - WinFsp runtime, bundled as `prereqs/winfsp.msi` for installers
+- WSL2 with Ubuntu only if using the optional `wsl_kernel` mount mode
 - Node.js 20+ for development
 - .NET 9 SDK for native builds
 

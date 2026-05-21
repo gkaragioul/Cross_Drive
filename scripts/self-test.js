@@ -151,6 +151,8 @@ if (portableCfg.artifactName !== 'CrossDrive-${version}.exe') fail(`portable.art
 else pass('portable.artifactName is versioned');
 
 const mainJs = fs.readFileSync(mainPath, 'utf8');
+const serverSource = fs.readFileSync(serverPath, 'utf8');
+const mountRoutesSource = fs.readFileSync(path.join(routesDir, 'mountRoutes.js'), 'utf8');
 if (!mainJs.includes('contextIsolation: true')) fail('main.js missing contextIsolation: true');
 else pass('contextIsolation enabled');
 
@@ -226,6 +228,32 @@ if (!nativeServiceClientScript.includes('isPackagedRuntime') ||
   fail('packaged native helpers must not fall back to dotnet or crash on spawn errors');
 } else {
   pass('packaged native helpers avoid dotnet fallback and handle spawn errors');
+}
+
+if (!serverSource.includes("if (!raw) return 'native_first'")) {
+  fail('server.js must default to the bundled native runtime');
+} else {
+  pass('server.js defaults to the bundled native runtime');
+}
+
+if (!serverSource.includes('Optional WSL2 kernel runtime is not installed') ||
+    !serverSource.includes('Continuing with bundled native engine')) {
+  fail('server.js must treat missing WSL as optional outside wsl_kernel mode');
+} else {
+  pass('server.js treats missing WSL as optional outside wsl_kernel mode');
+}
+
+if (!mountRoutesSource.includes("forceNative !== true && RUNTIME_MOUNT_MODE === 'wsl_kernel'")) {
+  fail('mountRoutes.js must only attempt WSL mounts in explicit wsl_kernel mode');
+} else {
+  pass('mountRoutes.js only attempts WSL mounts in explicit wsl_kernel mode');
+}
+
+if (!appSource.includes("runtimeConfig?.mode !== 'wsl_kernel'") ||
+    !appSource.includes('showSetupBanner')) {
+  fail('App.jsx must not block default native mounting on optional WSL setup state');
+} else {
+  pass('App.jsx does not block default native mounting on optional WSL setup state');
 }
 
 if (!nativeBrokerProgram.includes('DeletePathWithRetry') || !nativeBrokerProgram.includes('Passthrough delete failed')) {
