@@ -270,6 +270,13 @@ if (!apfsProviderSource.includes('ReadUInt32LittleEndian(buffer.AsSpan(104, 4))'
   pass('APFS NX checkpoint fields use the correct offsets');
 }
 
+if (!apfsProviderSource.includes('MaxCheckpointScanBlocks = 65536') ||
+    !apfsProviderSource.includes('nx.CheckpointDataBlocks, (ulong)MaxCheckpointScanBlocks')) {
+  fail('APFS checkpoint data scan must cover large Time Machine checkpoint windows');
+} else {
+  pass('APFS checkpoint data scan covers large Time Machine checkpoint windows');
+}
+
 if (apfsProviderSource.includes('if (plan.Writable && summary.SpacemanPhysicalBlock.HasValue)')) {
   fail('APFS free-space metadata must be loaded for read-only mounts too');
 } else if (!apfsProviderSource.includes('FreeBytes = spaceman is not null') ||

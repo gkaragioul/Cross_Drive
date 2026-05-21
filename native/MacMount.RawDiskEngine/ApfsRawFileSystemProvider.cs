@@ -1049,7 +1049,8 @@ internal sealed class ApfsMetadataReader
     private const int ApfsVolumeNameOffset = 704;
     private const int ApfsVolumeNameLength = 256;
     private const int ApfsRoleOffset = 964;
-    private const int MaxHintScanBlocks = 8192;
+    private const int MaxContainerFrontScanBlocks = 8192;
+    private const int MaxCheckpointScanBlocks = 65536;
     private const int MaxHintResults = 128;
     private const int MaxOmapCandidateBlocks = 96;
     private const int MaxOmapTraversalDepth = 2;
@@ -1327,14 +1328,14 @@ internal sealed class ApfsMetadataReader
 
     private IEnumerable<(ulong Start, ulong Count)> GetScanRanges(NxSuperblock nx)
     {
-        yield return (0, (ulong)Math.Min((ulong)MaxHintScanBlocks, nx.BlockCount));
+        yield return (0, (ulong)Math.Min((ulong)MaxContainerFrontScanBlocks, nx.BlockCount));
         if (nx.CheckpointDescriptorBlocks > 0)
         {
-            yield return (nx.CheckpointDescriptorBase, Math.Min((ulong)nx.CheckpointDescriptorBlocks, (ulong)MaxHintScanBlocks));
+            yield return (nx.CheckpointDescriptorBase, Math.Min((ulong)nx.CheckpointDescriptorBlocks, (ulong)MaxCheckpointScanBlocks));
         }
         if (nx.CheckpointDataBlocks > 0)
         {
-            yield return (nx.CheckpointDataBase, Math.Min((ulong)nx.CheckpointDataBlocks, (ulong)MaxHintScanBlocks));
+            yield return (nx.CheckpointDataBase, Math.Min((ulong)nx.CheckpointDataBlocks, (ulong)MaxCheckpointScanBlocks));
         }
     }
 
