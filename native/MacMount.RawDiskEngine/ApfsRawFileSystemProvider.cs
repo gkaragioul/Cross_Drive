@@ -1201,10 +1201,10 @@ internal sealed class ApfsMetadataReader
             return null;
         }
 
-        var descBase = BinaryPrimitives.ReadUInt64LittleEndian(buffer.AsSpan(112, 8));
-        var descBlocks = BinaryPrimitives.ReadUInt32LittleEndian(buffer.AsSpan(120, 4));
-        var dataBase = BinaryPrimitives.ReadUInt64LittleEndian(buffer.AsSpan(128, 8));
-        var dataBlocks = BinaryPrimitives.ReadUInt32LittleEndian(buffer.AsSpan(136, 4));
+        var descBlocks = BinaryPrimitives.ReadUInt32LittleEndian(buffer.AsSpan(104, 4)); // nx_xp_desc_blocks
+        var dataBlocks = BinaryPrimitives.ReadUInt32LittleEndian(buffer.AsSpan(108, 4)); // nx_xp_data_blocks
+        var descBase = BinaryPrimitives.ReadUInt64LittleEndian(buffer.AsSpan(112, 8));   // nx_xp_desc_base
+        var dataBase = BinaryPrimitives.ReadUInt64LittleEndian(buffer.AsSpan(120, 8));   // nx_xp_data_base
         var spacemanOid = BinaryPrimitives.ReadUInt64LittleEndian(buffer.AsSpan(152, 8)); // nx_spaceman_oid
         var omapOid = BinaryPrimitives.ReadUInt64LittleEndian(buffer.AsSpan(160, 8));     // nx_omap_oid
 

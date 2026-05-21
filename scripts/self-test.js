@@ -88,6 +88,11 @@ if (!(pkg.build && Array.isArray(pkg.build.files) && pkg.build.files.includes('p
 } else {
   pass('electron build includes preload.js');
 }
+if (pkg.build.afterPack !== 'scripts/after-pack-icon.js' || !fs.existsSync(path.join(root, 'scripts', 'after-pack-icon.js'))) {
+  fail('electron build must stamp the Windows exe icon in unsigned release builds');
+} else {
+  pass('electron build stamps the Windows exe icon in unsigned release builds');
+}
 if (pkg.build.files.includes('dist/**/*')) {
   fail('electron build files must not include broad dist/**/* because release output lives under dist');
 } else {
@@ -255,6 +260,14 @@ if (!appSource.includes("runtimeConfig?.mode !== 'wsl_kernel'") ||
   fail('App.jsx must not block default native mounting on optional WSL setup state');
 } else {
   pass('App.jsx does not block default native mounting on optional WSL setup state');
+}
+
+if (!apfsProviderSource.includes('ReadUInt32LittleEndian(buffer.AsSpan(104, 4))') ||
+    !apfsProviderSource.includes('ReadUInt32LittleEndian(buffer.AsSpan(108, 4))') ||
+    !apfsProviderSource.includes('ReadUInt64LittleEndian(buffer.AsSpan(120, 8))')) {
+  fail('APFS NX checkpoint fields must use the correct offsets');
+} else {
+  pass('APFS NX checkpoint fields use the correct offsets');
 }
 
 if (apfsProviderSource.includes('if (plan.Writable && summary.SpacemanPhysicalBlock.HasValue)')) {
