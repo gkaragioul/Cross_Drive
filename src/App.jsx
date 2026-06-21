@@ -14,12 +14,8 @@ import {
   unmountDrive as apiUnmountDrive,
   openInExplorer as apiOpenInExplorer,
   generateSupportBundle,
-  checkForUpdate,
-  dismissUpdate,
 } from './api';
 import { POLL_INTERVALS } from './config';
-import UpdateBanner from './UpdateBanner';
-import UpdateModal from './UpdateModal';
 
 const DriveIcon = () => (
   <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -87,7 +83,8 @@ const SettingsRow = ({ label, value }) => (
   </div>
 );
 
-const APP_VERSION_FALLBACK = '1.5.2';
+const APP_VERSION_FALLBACK = '1.5.32';
+const RELEASES_URL = 'https://github.com/gkaragioul/Cross_Drive/releases/latest';
 const COPYRIGHT_NOTICE = 'Copyright (c) 2026 CrossDrive contributors';
 const WINFSP_NOTICE = 'WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos';
 
@@ -128,17 +125,6 @@ const App = () => {
   const [bundleStatus, setBundleStatus] = useState(null);
   const [preflight, setPreflight] = useState(null);
   const [fixingPreflight, setFixingPreflight] = useState(false);
-  const [update, setUpdate] = useState(null);
-  const [updateModalOpen, setUpdateModalOpen] = useState(false);
-  const [updateCheckNotice, setUpdateCheckNotice] = useState(null);
-  const [lastCheckedAt, setLastCheckedAt] = useState(null);
-  const [manualCheckBusy, setManualCheckBusy] = useState(false);
-
-  useEffect(() => {
-    if (!updateCheckNotice) return undefined;
-    const t = setTimeout(() => setUpdateCheckNotice(null), 7000);
-    return () => clearTimeout(t);
-  }, [updateCheckNotice]);
 
   useEffect(() => {
     let unmounted = false;
@@ -157,7 +143,6 @@ const App = () => {
     };
 
     loadDrives();
-    checkForUpdate(true).then(safe(setUpdate)).then(() => safe(setLastCheckedAt)(new Date())).catch(() => {});
     const logInterval = setInterval(() => fetchLogs().then(safe(setLogs)).catch(() => {}), POLL_INTERVALS.logs);
     const statusInterval = setInterval(() => fetchStatus().then(safe(setSetup)).catch(() => {}), POLL_INTERVALS.status);
     const nativeInterval = setInterval(() => fetchNativeStatus().then(safe(setNativeStatus)).catch(() => {}), POLL_INTERVALS.nativeStatus);
@@ -260,34 +245,13 @@ const App = () => {
     }
   };
 
-  const onUpdateLater = () => setUpdate(null);
-  const onUpdateSkip = async () => {
-    if (!update?.version) return;
-    try { await dismissUpdate(update.version); } catch {}
-    setUpdate(null);
-  };
-  const onUpdateNow = () => setUpdateModalOpen(true);
-  const notifyUpdateStatus = (notice) => {
-    setUpdateCheckNotice(notice);
-    const nativeNotification = window.crossdrive?.showUpdateStatusNotification?.(notice.message, notice.type);
-    nativeNotification?.catch?.(() => {});
-  };
-  const runManualUpdateCheck = async () => {
-    setManualCheckBusy(true);
-    setUpdateCheckNotice(null);
-    try {
-      const u = await checkForUpdate(false);
-      setUpdate(u);
-      setLastCheckedAt(new Date());
-      if (u?.available) {
-        notifyUpdateStatus({ type: 'success', message: `Update ${u.version} is available.` });
-      } else {
-        notifyUpdateStatus({ type: 'success', message: "You're running the latest version." });
-      }
-    } catch {
-      notifyUpdateStatus({ type: 'error', message: 'Update check failed. Try again later.' });
+  const openGitHubReleases = () => {
+    const request = window.crossdrive?.openGitHubReleases?.();
+    if (request?.catch) {
+      request.catch(() => window.open(RELEASES_URL, '_blank', 'noopener,noreferrer'));
+      return;
     }
-    finally { setManualCheckBusy(false); }
+    window.open(RELEASES_URL, '_blank', 'noopener,noreferrer');
   };
 
   const openInExplorer = async (p) => {
@@ -326,7 +290,6 @@ const App = () => {
           <p>Select a Mac-formatted drive to mount it as a Windows volume.</p>
         </section>
 
-        <UpdateBanner update={update} onUpdateNow={onUpdateNow} onLater={onUpdateLater} onSkip={onUpdateSkip} />
         {showSetupBanner && <SetupBanner setup={setup} />}
 
         {preflight && !preflight.ready && (
@@ -503,17 +466,11 @@ const App = () => {
       <h3 style={{ marginTop: '24px', marginBottom: '12px', opacity: 0.5, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '2.5px', fontFamily: 'var(--font-heading)', color: 'var(--primary)' }}>Updates</h3>
       <div style={{ background: '#0e0e0e', border: '1px solid var(--border)', padding: '16px' }}>
         <SettingsRow label="Installed Version" value={setup?.version || APP_VERSION_FALLBACK} />
-        <SettingsRow label="Latest Available" value={update?.available ? update.version : (update ? 'Up to date' : 'Unknown')} />
-        <SettingsRow label="Last Check" value={lastCheckedAt ? lastCheckedAt.toLocaleString() : '—'} />
+        <SettingsRow label="Update Channel" value="GitHub Releases" />
         <div style={{ marginTop: '12px', display: 'flex', gap: '8px' }}>
-          <button className="btn btn-outline" style={{ width: 'auto', padding: '8px 16px' }} onClick={runManualUpdateCheck} disabled={manualCheckBusy}>
-            {manualCheckBusy ? 'Checking...' : 'Check for updates'}
+          <button className="btn btn-outline" style={{ width: 'auto', padding: '8px 16px' }} onClick={openGitHubReleases}>
+            GitHub Releases
           </button>
-          {update?.available && (
-            <button className="btn btn-primary" style={{ width: 'auto', padding: '8px 16px' }} onClick={onUpdateNow}>
-              Update now ({update.version})
-            </button>
-          )}
         </div>
       </div>
 
@@ -596,24 +553,13 @@ const App = () => {
           borderTop: '1px solid var(--border)',
           background: '#050505'
         }}>
-          {update?.available ? (
-            <button
-              className="btn btn-primary"
-              style={{ width: '100%', padding: '8px 10px', fontSize: '11px', letterSpacing: '0.5px' }}
-              onClick={onUpdateNow}
-            >
-              Update to {update.version}
-            </button>
-          ) : (
-            <button
-              className="btn btn-outline"
-              style={{ width: '100%', padding: '8px 10px', fontSize: '11px', letterSpacing: '0.5px' }}
-              onClick={runManualUpdateCheck}
-              disabled={manualCheckBusy}
-            >
-              {manualCheckBusy ? 'Checking...' : 'Check for updates'}
-            </button>
-          )}
+          <button
+            className="btn btn-outline"
+            style={{ width: '100%', padding: '8px 10px', fontSize: '11px', letterSpacing: '0.5px' }}
+            onClick={openGitHubReleases}
+          >
+            GitHub Releases
+          </button>
           <div style={{
             marginTop: '8px',
             textAlign: 'center',
@@ -628,18 +574,8 @@ const App = () => {
       </aside>
 
       <main className="main-content">
-        {updateCheckNotice && (
-          <div className={`update-check-notice ${updateCheckNotice.type}`} role="status">
-            <span>{updateCheckNotice.message}</span>
-            <button type="button" aria-label="Dismiss update status" onClick={() => setUpdateCheckNotice(null)}>x</button>
-          </div>
-        )}
         {renderContent()}
       </main>
-
-      {updateModalOpen && update && (
-        <UpdateModal update={update} onClose={() => setUpdateModalOpen(false)} />
-      )}
 
       {passwordPrompt && (
         <div className="modal-overlay fade-in">
