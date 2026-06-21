@@ -1,10 +1,11 @@
-const { app, BrowserWindow, dialog, Menu, shell, ipcMain, Notification } = require('electron');
+const { app, BrowserWindow, dialog, Menu, shell, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { execSync, execFile } = require('child_process');
 
 const APP_NAME = 'CrossDrive';
 const APP_ID = 'com.crossdrive.app';
+const RELEASES_URL = 'https://github.com/gkaragioul/Cross_Drive/releases/latest';
 const COPYRIGHT_NOTICE = 'Copyright (c) 2026 CrossDrive contributors';
 const WINFSP_NOTICE = 'WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos';
 
@@ -209,32 +210,8 @@ function startBackend() {
     backendModule.startServer();
 }
 
-ipcMain.handle('quit-for-update', () => {
-    console.log(`[${APP_NAME}] Quit-for-update requested by renderer.`);
-    setTimeout(() => app.quit(), 250); // give the renderer time to settle the response
-    return true;
-});
-
-ipcMain.handle('show-update-status-notification', (_event, payload = {}) => {
-    const message = String(payload.message || '').trim();
-    if (!message) return false;
-
-    const iconPath = resolveAppIconPath();
-    if (!Notification.isSupported()) {
-        if (mainWindow) {
-            mainWindow.flashFrame(true);
-            setTimeout(() => mainWindow?.flashFrame(false), 4000);
-        }
-        return false;
-    }
-
-    const notification = new Notification({
-        title: `${APP_NAME} Updates`,
-        body: message,
-        silent: true,
-        ...(iconPath ? { icon: iconPath } : {})
-    });
-    notification.show();
+ipcMain.handle('open-github-releases', async () => {
+    await shell.openExternal(RELEASES_URL);
     return true;
 });
 

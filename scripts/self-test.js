@@ -180,22 +180,25 @@ if (!appSource.includes('<h2>CrossDrive</h2>') || !appSource.includes('value="Cr
   pass('App.jsx shows CrossDrive in the UI');
 }
 
-if (!appSource.includes("You're running the latest version.") || !appSource.includes('update-check-notice')) {
-  fail('App.jsx must notify manual update checks when the installed version is current');
+if (!mainJs.includes("ipcMain.handle('open-github-releases'") || !preloadSource.includes('openGitHubReleases')) {
+  fail('main/preload must expose a safe GitHub Releases opener');
 } else {
-  pass('App.jsx notifies when manual update check is current');
+  pass('main/preload expose GitHub Releases opener');
 }
 
-if (!mainJs.includes("ipcMain.handle('show-update-status-notification'") || !mainJs.includes('new Notification')) {
-  fail('main.js must expose a native notification for manual update-check status');
+if (!appSource.includes('GitHub Releases') || !appSource.includes('openGitHubReleases')) {
+  fail('App.jsx must direct users to GitHub Releases for updates');
 } else {
-  pass('main.js exposes native update-check status notification');
+  pass('App.jsx directs users to GitHub Releases for updates');
 }
 
-if (!preloadSource.includes('showUpdateStatusNotification') || !appSource.includes('showUpdateStatusNotification')) {
-  fail('renderer must call the native update-check status notification bridge');
-} else {
-  pass('renderer calls native update-check status notification bridge');
+for (const forbidden of ['checkForUpdate', 'UpdateBanner', 'UpdateModal', 'update-check-notice', 'show-update-status-notification', 'quit-for-update', '/api/update']) {
+  const haystack = `${appSource}\n${mainJs}\n${preloadSource}\n${serverSource}`;
+  if (haystack.includes(forbidden)) {
+    fail(`assisted updater reference remains: ${forbidden}`);
+  } else {
+    pass(`assisted updater reference removed: ${forbidden}`);
+  }
 }
 
 if (!mainJs.includes('preload: path.join(__dirname, \'preload.js\')')) {
@@ -402,37 +405,10 @@ for (const routeFile of routeModules) {
   }
 }
 
-const updateRoutes = require(path.join(routesDir, 'updateRoutes.js'));
-if (typeof updateRoutes !== 'function') fail('updateRoutes.js does not export a register function');
-else pass('updateRoutes.js exports a register function');
-
-for (const key of ['STATE_DIR', 'ETAG_FILE', 'DISMISSED_FILE', 'PENDING_FILE', 'PREVIOUS_FILE']) {
-  const value = updateRoutes[key];
-  if (typeof value !== 'string' || !path.isAbsolute(value) || !value.includes('CrossDrive')) {
-    fail(`updateRoutes.${key} must be an absolute path under CrossDrive (got: ${value})`);
-  } else {
-    pass(`updateRoutes.${key} is absolute and namespaced`);
-  }
-}
-
-if (updateRoutes.RELEASES_API !== 'https://api.github.com/repos/gkaragioul/Cross_Drive/releases/latest') {
-  fail(`updateRoutes.RELEASES_API does not point to Cross_Drive`);
+if (fs.existsSync(path.join(routesDir, 'updateRoutes.js'))) {
+  fail('routes/updateRoutes.js must be removed with the assisted updater');
 } else {
-  pass('updateRoutes.RELEASES_API points to Cross_Drive');
-}
-
-if (!updateRoutes.ETAG_FILE.endsWith('github_etag_Cross_Drive.txt')) {
-  fail(`updateRoutes.ETAG_FILE must be feed-specific for Cross_Drive (got: ${updateRoutes.ETAG_FILE})`);
-} else {
-  pass('updateRoutes.ETAG_FILE is feed-specific');
-}
-
-const sampleHash = 'aa286994b88b6c6d4c3acd59f9a3d3416433a6601b92a4a9ad6fec032a4d9c6e';
-if (updateRoutes.parseSha256FromBody(`SHA-256:\n${sampleHash}`) !== sampleHash ||
-    updateRoutes.parseSha256FromBody(`SHA256: ${sampleHash.toUpperCase()}`) !== sampleHash) {
-  fail('updateRoutes must parse SHA-256 and SHA256 release-note checksums');
-} else {
-  pass('updateRoutes parses supported release-note checksum formats');
+  pass('routes/updateRoutes.js removed with the assisted updater');
 }
 
 try {

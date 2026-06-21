@@ -299,15 +299,20 @@ $checks += [pscustomobject]@{
 }
 
 $updateRoutesPath = Join-Path $root "routes\updateRoutes.js"
-$updateRoutesText = if (Test-Path $updateRoutesPath) { Get-Content $updateRoutesPath -Raw } else { "" }
+$appText = if (Test-Path (Join-Path $root "src\App.jsx")) { Get-Content (Join-Path $root "src\App.jsx") -Raw } else { "" }
+$apiText = if (Test-Path (Join-Path $root "src\api.js")) { Get-Content (Join-Path $root "src\api.js") -Raw } else { "" }
+$serverText = if (Test-Path (Join-Path $root "server.js")) { Get-Content (Join-Path $root "server.js") -Raw } else { "" }
+$preloadText = if (Test-Path (Join-Path $root "preload.js")) { Get-Content (Join-Path $root "preload.js") -Raw } else { "" }
 $checks += [pscustomobject]@{
-    Check = "updateRoutes targets gkaragioul/Cross_Drive"
-    Passed = (Test-Path $updateRoutesPath) -and
-             ($updateRoutesText -match "gkaragioul") -and
-             ($updateRoutesText -match "Cross_Drive") -and
-             ($updateRoutesText -notmatch "CrossDrive_Releases") -and
-             ($updateRoutesText -notmatch "georgekgr12")
-    Detail = $updateRoutesPath
+    Check = "Assisted updater removed"
+    Passed = (-not (Test-Path $updateRoutesPath)) -and
+             ($appText -match "GitHub Releases") -and
+             ($appText -match "openGitHubReleases") -and
+             ($appText -notmatch "checkForUpdate|UpdateBanner|UpdateModal|update-check-notice") -and
+             ($apiText -notmatch "/api/update|launchUpdateInstaller|startUpdateDownload") -and
+             ($serverText -notmatch "updateRoutes") -and
+             ($preloadText -notmatch "quit-for-update|show-update-status-notification")
+    Detail = "Updates are delivered through GitHub Releases"
 }
 
 $setupExePath = Join-Path $root "dist\CrossDriveSetup.exe"

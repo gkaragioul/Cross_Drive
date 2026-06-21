@@ -11,7 +11,6 @@ const mountSystemRoutes = require('./routes/systemRoutes');
 const mountDriveRoutes = require('./routes/driveRoutes');
 const mountMountRoutes = require('./routes/mountRoutes');
 const mountNativeRoutes = require('./routes/nativeRoutes');
-const mountUpdateRoutes = require('./routes/updateRoutes');
 
 const app = express();
 const port = 3001;
@@ -838,7 +837,6 @@ mountSystemRoutes(app, ctx);
 mountDriveRoutes(app, ctx);
 mountMountRoutes(app, ctx);
 mountNativeRoutes(app, ctx);
-mountUpdateRoutes(app, ctx);
 
 // ─── Server lifecycle ───────────────────────────────────────────────────────
 function startServer() {

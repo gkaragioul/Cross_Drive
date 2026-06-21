@@ -7,15 +7,14 @@ contextBridge.exposeInMainWorld('crossdrive', {
   backendUrl: BACKEND_URL,
 
   invoke: (channel, ...args) => {
-    const allowed = ['open-explorer', 'get-app-paths', 'quit-for-update', 'show-update-status-notification'];
+    const allowed = ['open-explorer', 'get-app-paths', 'open-github-releases'];
     if (allowed.includes(channel)) {
       return ipcRenderer.invoke(channel, ...args);
     }
     return Promise.reject(new Error(`Blocked IPC channel: ${channel}`));
   },
 
-  showUpdateStatusNotification: (message, type = 'info') =>
-    ipcRenderer.invoke('show-update-status-notification', { message, type }),
+  openGitHubReleases: () => ipcRenderer.invoke('open-github-releases'),
 
   on: (channel, callback) => {
     const allowed = ['mount-complete', 'unmount-complete'];
