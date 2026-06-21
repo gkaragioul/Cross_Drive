@@ -37,12 +37,20 @@
 !macroend
 
 !macro customInstall
-  ; Install WinFsp from bundled MSI. /i is install-or-update, so this is a
-  ; no-op when the same WinFsp is already present (msiexec returns 1638 in
-  ; that case which we don't treat as fatal).
+  ; Install WinFsp from the bundled MSI only when it is missing. Re-running
+  ; the MSI during app upgrades can make the installer appear stuck near the
+  ; end while Windows Installer performs a silent repair/reconfigure pass.
+  IfFileExists "$PROGRAMFILES32\WinFsp\bin\launchctl-x64.exe" crossdrive_winfsp_installed 0
+  IfFileExists "$PROGRAMFILES64\WinFsp\bin\launchctl-x64.exe" crossdrive_winfsp_installed 0
   DetailPrint "Installing WinFsp runtime..."
   ExecWait 'msiexec /i "$INSTDIR\resources\prereqs\winfsp.msi" /quiet /norestart' $0
   DetailPrint "WinFsp install exit code: $0"
+  Goto crossdrive_winfsp_done
+
+  crossdrive_winfsp_installed:
+  DetailPrint "Skipping bundled WinFsp runtime; already installed."
+
+  crossdrive_winfsp_done:
 
   ; Wait a moment for the WinFsp service to register
   Sleep 2000

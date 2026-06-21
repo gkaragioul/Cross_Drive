@@ -149,6 +149,14 @@ if (!installerNsh.includes('resources\\icon.ico') || !installerNsh.includes('Cre
   pass('installer explicitly sets CrossDrive shortcut icons');
 }
 
+if (!installerNsh.includes('IfFileExists "$PROGRAMFILES32\\WinFsp\\bin\\launchctl-x64.exe"') ||
+    !installerNsh.includes('Skipping bundled WinFsp runtime; already installed') ||
+    installerNsh.indexOf('IfFileExists "$PROGRAMFILES32\\WinFsp\\bin\\launchctl-x64.exe"') > installerNsh.indexOf('ExecWait \'msiexec /i "$INSTDIR\\resources\\prereqs\\winfsp.msi"')) {
+  fail('installer must skip the bundled WinFsp MSI when WinFsp is already installed');
+} else {
+  pass('installer skips bundled WinFsp MSI when WinFsp is already installed');
+}
+
 if (nsisCfg.license !== 'build/EULA.txt') fail(`nsis.license must be 'build/EULA.txt', found '${nsisCfg.license}'`);
 else pass('nsis.license points to build/EULA.txt');
 
