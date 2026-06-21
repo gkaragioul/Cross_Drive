@@ -298,6 +298,20 @@ $checks += [pscustomobject]@{
     Detail = "package.json build.nsis.artifactName = $($nsisCfg.artifactName)"
 }
 
+$installerNshPath = Join-Path $root "build\installer.nsh"
+$installerNshText = if (Test-Path $installerNshPath) { Get-Content $installerNshPath -Raw } else { "" }
+$winFspProbe = 'IfFileExists "$PROGRAMFILES32\WinFsp\bin\launchctl-x64.exe"'
+$winFspInstall = 'ExecWait ''msiexec /i "$INSTDIR\resources\prereqs\winfsp.msi"'
+$checks += [pscustomobject]@{
+    Check = "WinFsp reinstall skipped when present"
+    Passed = ($installerNshText -match [regex]::Escape($winFspProbe)) -and
+             ($installerNshText -match "Skipping bundled WinFsp runtime; already installed") -and
+             ($installerNshText.IndexOf($winFspProbe) -ge 0) -and
+             ($installerNshText.IndexOf($winFspInstall) -ge 0) -and
+             ($installerNshText.IndexOf($winFspProbe) -lt $installerNshText.IndexOf($winFspInstall))
+    Detail = "Installer skips bundled WinFsp MSI on upgrades"
+}
+
 $updateRoutesPath = Join-Path $root "routes\updateRoutes.js"
 $appText = if (Test-Path (Join-Path $root "src\App.jsx")) { Get-Content (Join-Path $root "src\App.jsx") -Raw } else { "" }
 $apiText = if (Test-Path (Join-Path $root "src\api.js")) { Get-Content (Join-Path $root "src\api.js") -Raw } else { "" }
