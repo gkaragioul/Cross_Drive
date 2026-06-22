@@ -3,7 +3,8 @@ CrossDrive License and Notices
 
 Copyright (c) 2026 CrossDrive contributors
 
-CrossDrive is distributed under the MIT License.
+CrossDrive is distributed under the MIT License for its application source code.
+Third-party components are distributed under their own license terms.
 
 By installing or using CrossDrive, you acknowledge that the software mounts
 physical disks and performs privileged local operations. You are responsible
@@ -34,7 +35,8 @@ SOFTWARE.
 Third-Party Components
 ----------------------
 
-CrossDrive includes third-party components under their own license terms.
+CrossDrive binary distributions include third-party components, bundled
+prerequisites, and GPL-covered kernel/module binaries under their own terms.
 See THIRD_PARTY_NOTICES.txt installed with the application.
 
 WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos:
@@ -45,7 +47,7 @@ GPLv3/FLOSS exception path. Commercial proprietary redistribution requires a
 separate WinFsp commercial license.
 
 CrossDrive also bundles a custom WSL2 kernel and filesystem modules. GPL
-source information is provided in GPL_SOURCE_OFFER.txt.
+source information is provided in GPL_SOURCE_OFFER.txt and GPL_SOURCE_MANIFEST.md.
 
 Contact
 -------

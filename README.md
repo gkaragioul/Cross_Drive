@@ -35,8 +35,12 @@ FileVault 1 is detected but explicitly unsupported.
 
 ## License
 
-CrossDrive is Free/Libre/Open Source Software distributed under the MIT
-License. See [LICENSE](LICENSE).
+CrossDrive application source code is Free/Libre/Open Source Software
+distributed under the MIT License. See [LICENSE](LICENSE).
+
+Third-party dependencies, bundled prerequisites, and GPL-covered kernel/module
+binaries remain under their own license terms. See the third-party and GPL
+source notices below for the full binary-distribution license picture.
 
 Copyright (c) 2026 CrossDrive contributors.
 
@@ -47,6 +51,7 @@ Binary distributions include third-party components under their own terms. See:
 - `build/THIRD_PARTY_NOTICES.txt`
 - `build/GPL_SOURCE_OFFER.txt`
 - `docs/GPL_SOURCE_MANIFEST.md`
+- `build/LICENSE.GPL-2.0.txt`
 
 Required WinFsp attribution:
 
@@ -145,6 +150,7 @@ The installer should ship:
 - `LICENSE.txt`
 - `THIRD_PARTY_NOTICES.txt`
 - `GPL_SOURCE_OFFER.txt`
+- `GPL_SOURCE_MANIFEST.md`
 
 The installer should not ship extracted WinFsp SDK/runtime folders such as
 `prereqs/winfsp-extract`.
