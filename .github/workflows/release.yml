@@ -12,7 +12,7 @@ on:
 jobs:
   signed-release:
     runs-on: windows-latest
-    if: ${{ secrets.MACMOUNT_PFX_BASE64 != '' && secrets.MACMOUNT_PFX_PASSWORD != '' }}
+    if: ${{ secrets.CROSSDRIVE_PFX_BASE64 != '' && secrets.CROSSDRIVE_PFX_PASSWORD != '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,12 +35,12 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path build/certs | Out-Null
-          [IO.File]::WriteAllBytes("build/certs/macmount-release.pfx", [Convert]::FromBase64String("${{ secrets.MACMOUNT_PFX_BASE64 }}"))
+          [IO.File]::WriteAllBytes("build/certs/crossdrive-release.pfx", [Convert]::FromBase64String("${{ secrets.CROSSDRIVE_PFX_BASE64 }}"))
 
       - name: Configure signing env
         shell: pwsh
         run: |
-          npm run signing:setup:real -- -PfxPath "build/certs/macmount-release.pfx" -PfxPassword "${{ secrets.MACMOUNT_PFX_PASSWORD }}"
+          npm run signing:setup:real -- -PfxPath "build/certs/crossdrive-release.pfx" -PfxPassword "${{ secrets.CROSSDRIVE_PFX_PASSWORD }}"
           $env:CSC_LINK = [Environment]::GetEnvironmentVariable("CSC_LINK","User")
           $env:CSC_KEY_PASSWORD = [Environment]::GetEnvironmentVariable("CSC_KEY_PASSWORD","User")
           $env:WIN_CSC_LINK = [Environment]::GetEnvironmentVariable("WIN_CSC_LINK","User")

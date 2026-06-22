@@ -10,17 +10,17 @@ New-Item -ItemType Directory -Path (Join-Path $outDir "user-session") -Force | O
 
 # Avoid shipping stale helper binaries from the pre-rename output names.
 foreach ($subdir in @("service", "broker", "user-session")) {
-    Get-ChildItem -LiteralPath (Join-Path $outDir $subdir) -Filter "MacMount.*" -File -ErrorAction SilentlyContinue | ForEach-Object {
+    Get-ChildItem -LiteralPath (Join-Path $outDir $subdir) -Filter "CrossDrive.*" -File -ErrorAction SilentlyContinue | ForEach-Object {
         Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
     }
 }
 
-$serviceProj = Join-Path $root "native\MacMount.NativeService\MacMount.NativeService.csproj"
-$brokerProj = Join-Path $root "native\MacMount.NativeBroker\MacMount.NativeBroker.csproj"
-$userSessionProj = Join-Path $root "native\MacMount.UserSessionHelper\MacMount.UserSessionHelper.csproj"
+$serviceProj = Join-Path $root "native\CrossDrive.NativeService\CrossDrive.NativeService.csproj"
+$brokerProj = Join-Path $root "native\CrossDrive.NativeBroker\CrossDrive.NativeBroker.csproj"
+$userSessionProj = Join-Path $root "native\CrossDrive.UserSessionHelper\CrossDrive.UserSessionHelper.csproj"
 
 # Stop running native processes to avoid file locks during publish.
-Get-Process -Name "CrossDrive.NativeBroker","CrossDrive.NativeService","CrossDrive.UserSessionHelper","MacMount.NativeBroker","MacMount.NativeService","MacMount.UserSessionHelper" -ErrorAction SilentlyContinue | ForEach-Object {
+Get-Process -Name "CrossDrive.NativeBroker","CrossDrive.NativeService","CrossDrive.UserSessionHelper","CrossDrive.NativeBroker","CrossDrive.NativeService","CrossDrive.UserSessionHelper" -ErrorAction SilentlyContinue | ForEach-Object {
     try { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue } catch {}
 }
 

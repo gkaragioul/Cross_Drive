@@ -11,13 +11,13 @@ CrossDrive is a Windows desktop app for mounting, browsing, and reading **and wr
 - **Frontend:** React 18 + Vite 5 (dev on port 5173)
 - **Desktop shell:** Electron 32 (requires admin/UAC elevation)
 - **Backend:** Express on `127.0.0.1:3001` (loopback only, started from `server.js`)
-- **Filesystem driver (primary):** Linux kernel `hfsplus.ko` + `apfs.ko` running inside a custom WSL2 kernel; mount exposed to Windows via `\\wsl.localhost\Ubuntu\mnt\macdrive_<id>_<rand>` UNC, then `subst <L>:` in the user's interactive session for a real drive letter
+- **Filesystem driver (primary):** Linux kernel `hfsplus.ko` + `apfs.ko` running inside a custom WSL2 kernel; mount exposed to Windows via `\\wsl.localhost\Ubuntu\mnt\crossdrive_<id>_<rand>` UNC, then `subst <L>:` in the user's interactive session for a real drive letter
 - **Filesystem driver (fallback):** WinFsp + .NET native engine — kept for systems without WSL2 but has known B-tree split bugs on writes
 - **Native:** .NET 9 (four projects under `native/`)
-  - `MacMount.NativeService` — named-pipe filesystem service
-  - `MacMount.RawDiskEngine` — low-level APFS/HFS+ parser + direct disk I/O (still used for read & drive enumeration)
-  - `MacMount.NativeBroker` — privileged broker for UAC-separated ops
-  - `MacMount.HfsFormatTool` — one-off HFS+ format dev tool
+  - `CrossDrive.NativeService` — named-pipe filesystem service
+  - `CrossDrive.RawDiskEngine` — low-level APFS/HFS+ parser + direct disk I/O (still used for read & drive enumeration)
+  - `CrossDrive.NativeBroker` — privileged broker for UAC-separated ops
+  - `CrossDrive.HfsFormatTool` — one-off HFS+ format dev tool
 
 ## Architecture (v1.4.0+)
 
@@ -80,11 +80,11 @@ scripts/
   wsl_format_and_mount.sh   Recovery tool: mkfs.hfsplus + mount via WSL2
   mount_drive.sh            Legacy WSL FUSE mount helper (apfs-fuse / hfsfuse)
 native/
-  MacMount.NativeService/   .NET named-pipe service
-  MacMount.RawDiskEngine/   .NET raw disk parser (read paths still active; write paths bypassed by WSL2)
-  MacMount.NativeBroker/    .NET privileged broker
-  MacMount.HfsWriteTest/    .NET HFS+ write test harness (file-backed, no real disk)
-  MacMount.HfsFormatTool/   One-off HFS+ format tool (dev diagnostic; not shipped to users)
+  CrossDrive.NativeService/   .NET named-pipe service
+  CrossDrive.RawDiskEngine/   .NET raw disk parser (read paths still active; write paths bypassed by WSL2)
+  CrossDrive.NativeBroker/    .NET privileged broker
+  CrossDrive.HfsWriteTest/    .NET HFS+ write test harness (file-backed, no real disk)
+  CrossDrive.HfsFormatTool/   One-off HFS+ format tool (dev diagnostic; not shipped to users)
 native-bridge/       WinFsp port roadmap (future)
 docs/                Commercial readiness docs (GO_NO_GO, RISK_REGISTER, etc.)
 .github/workflows/   CI (crossdrive-ci) + release (crossdrive-release)
@@ -104,9 +104,9 @@ npm run security:audit       # Dependency vulnerability scan
 ### .NET builds
 
 ```bash
-npm run native:build         # Build MacMount.NativeService
-npm run raw:build            # Build MacMount.RawDiskEngine
-npm run broker:build         # Build MacMount.NativeBroker
+npm run native:build         # Build CrossDrive.NativeService
+npm run raw:build            # Build CrossDrive.RawDiskEngine
+npm run broker:build         # Build CrossDrive.NativeBroker
 npm run native:publish       # Publish all .NET binaries to native/bin/
 npm run hfs:test             # HFS+ write test harness (10 tests, file-backed image)
 ```
@@ -131,7 +131,7 @@ npm run release:candidate    # Full production release pipeline
 - **Admin required:** App uses `\\.\PHYSICALDRIVE#` raw disk access. Electron main process checks admin and relaunches with UAC if needed.
 - **Security:** Electron uses `contextIsolation: true`, `sandbox: true`, `nodeIntegration: false`. CORS is restricted to `localhost:5173` and `127.0.0.1:5173`. Express binds to loopback only.
 - **No external network calls:** Backend communicates only with local .NET services via named pipes and local WSL.
-- **Env vars:** `CROSSDRIVE_MOUNT_MODE` defaults to `wsl_kernel`; `CROSSDRIVE_CANARY_PERCENT` is legacy telemetry/config only. Legacy `MACMOUNT_*` aliases are accepted for compatibility.
+- **Env vars:** `CROSSDRIVE_MOUNT_MODE` defaults to `wsl_kernel`; `CROSSDRIVE_CANARY_PERCENT` is legacy telemetry/config only. Legacy `CROSSDRIVE_*` aliases are accepted for compatibility.
 - **Secrets never committed:** `.gitignore` excludes `.env*`, `*.pfx`, `*.p12`, `signing-env.ps1`.
 
 ## Testing
@@ -157,11 +157,11 @@ The native engine supports password-based APFS encrypted volume unlock:
 
 **Primary path (v1.4.0+):** Linux kernel `hfsplus.ko` inside WSL2.
 - Mount script [`scripts/wsl_mount.sh`](scripts/wsl_mount.sh) runs `fsck.hfsplus -f -y` to clear the dirty flag, then `mount -t hfsplus -o rw,umask=000,uid=1000,gid=1000,force`. Without the fsck step the kernel auto-mounts read-only.
-- Mount target: `/mnt/macdrive_<id>_<rand>` — random suffix avoids Windows' 9P client cache pinning the first-seen state of a path.
-- Exposed to Windows at `\\wsl.localhost\Ubuntu\mnt\macdrive_<id>_<rand>`, then `subst <L>:` from the user's interactive session for a real drive letter.
+- Mount target: `/mnt/crossdrive_<id>_<rand>` — random suffix avoids Windows' 9P client cache pinning the first-seen state of a path.
+- Exposed to Windows at `\\wsl.localhost\Ubuntu\mnt\crossdrive_<id>_<rand>`, then `subst <L>:` from the user's interactive session for a real drive letter.
 - Throughput: ~300 MB/s for sequential writes via Explorer.
 
-**Fallback path (legacy):** The native .NET engine in `MacMount.RawDiskEngine` still has full HFS+ R/W code (catalog B-tree insert/delete/split, allocator, extents, journal disable on mount) but **the catalog B-tree split has unresolved bugs** that surface on real-world bulk copies. v1.4.0 routes around it via WSL2; the native engine is only invoked if WSL2 is unavailable AND `forceNative: true` is set.
+**Fallback path (legacy):** The native .NET engine in `CrossDrive.RawDiskEngine` still has full HFS+ R/W code (catalog B-tree insert/delete/split, allocator, extents, journal disable on mount) but **the catalog B-tree split has unresolved bugs** that surface on real-world bulk copies. v1.4.0 routes around it via WSL2; the native engine is only invoked if WSL2 is unavailable AND `forceNative: true` is set.
 
 **Not supported (either path):** Extents overflow file write, hard links on write, resource forks on write, T2/hardware-bound volumes, FileVault.
 

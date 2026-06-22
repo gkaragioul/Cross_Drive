@@ -13,9 +13,9 @@ CrossDrive is a Windows desktop app for mounting, browsing, and reading/writing 
 - **Backend:** Express on `127.0.0.1:3001` (loopback only, started from `server.js`)
 - **Filesystem driver (primary):** Custom WSL2 kernel with `hfsplus.ko`, `hfs.ko`, and `apfs.ko`, exposed to Windows through `\\wsl.localhost\Ubuntu\...` and mapped with `subst`.
 - **Native fallback:** .NET 9 (projects under `native/`)
-  - `MacMount.NativeService` — named-pipe filesystem service
-  - `MacMount.RawDiskEngine` — low-level APFS/HFS+ parser + direct disk I/O
-  - `MacMount.NativeBroker` — privileged broker for UAC-separated ops
+  - `CrossDrive.NativeService` — named-pipe filesystem service
+  - `CrossDrive.RawDiskEngine` — low-level APFS/HFS+ parser + direct disk I/O
+  - `CrossDrive.NativeBroker` — privileged broker for UAC-separated ops
 - **Filesystem layer:** WSL2 kernel mount + Windows drive-letter mapping; WinFsp is legacy fallback only
 
 ## Architecture
@@ -25,7 +25,7 @@ Electron (main.js) → Express API (server.js :3001) ─┬─ WSL2 kernel mount
 React UI (src/)    ← polls Express for drive state   └─ .NET/WinFsp fallback
 ```
 
-**Mount modes** (set via `CROSSDRIVE_MOUNT_MODE` env var; legacy `MACMOUNT_MOUNT_MODE` is accepted):
+**Mount modes** (set via `CROSSDRIVE_MOUNT_MODE` env var; legacy `CROSSDRIVE_MOUNT_MODE` is accepted):
 - `wsl_kernel` — default, mounts through WSL2 kernel drivers and maps a local drive letter
 - `native_first` — debug fallback, tries the legacy native raw provider first
 - `native_only` — debug fallback, disables the native bridge fallback path
@@ -58,10 +58,10 @@ scripts/
   commercial-gate.js Release documentation gate
   mount_drive.sh     WSL mount helper
 native/
-  MacMount.NativeService/   .NET named-pipe service
-  MacMount.RawDiskEngine/   .NET raw disk parser
-  MacMount.NativeBroker/    .NET privileged broker
-  MacMount.HfsWriteTest/    .NET HFS+ write test harness (file-backed, no real disk)
+  CrossDrive.NativeService/   .NET named-pipe service
+  CrossDrive.RawDiskEngine/   .NET raw disk parser
+  CrossDrive.NativeBroker/    .NET privileged broker
+  CrossDrive.HfsWriteTest/    .NET HFS+ write test harness (file-backed, no real disk)
 native-bridge/       WinFsp port roadmap (future)
 docs/                Commercial readiness docs (GO_NO_GO, RISK_REGISTER, etc.)
 .github/workflows/   CI (crossdrive-ci) + release (crossdrive-release)
@@ -81,9 +81,9 @@ npm run security:audit       # Dependency vulnerability scan
 ### .NET builds
 
 ```bash
-npm run native:build         # Build MacMount.NativeService
-npm run raw:build            # Build MacMount.RawDiskEngine
-npm run broker:build         # Build MacMount.NativeBroker
+npm run native:build         # Build CrossDrive.NativeService
+npm run raw:build            # Build CrossDrive.RawDiskEngine
+npm run broker:build         # Build CrossDrive.NativeBroker
 npm run native:publish       # Publish all .NET binaries to native/bin/
 npm run hfs:test             # HFS+ write test harness (10 tests, file-backed image)
 ```
@@ -108,7 +108,7 @@ npm run release:candidate    # Full production release pipeline
 - **Admin required:** App uses `\\.\PHYSICALDRIVE#` raw disk access. Electron main process checks admin and relaunches with UAC if needed.
 - **Security:** Electron uses `contextIsolation: true`, `sandbox: true`, `nodeIntegration: false`. CORS is restricted to `localhost:5173` and `127.0.0.1:5173`. Express binds to loopback only.
 - **No external network calls:** Backend communicates only with local .NET services via named pipes and local WSL.
-- **Env vars:** `CROSSDRIVE_MOUNT_MODE`, `CROSSDRIVE_CANARY_PERCENT` control mount behavior. Legacy `MACMOUNT_*` aliases are accepted for compatibility.
+- **Env vars:** `CROSSDRIVE_MOUNT_MODE`, `CROSSDRIVE_CANARY_PERCENT` control mount behavior. Legacy `CROSSDRIVE_*` aliases are accepted for compatibility.
 - **Secrets never committed:** `.gitignore` excludes `.env*`, `*.pfx`, `*.p12`, `signing-env.ps1`.
 
 ## Testing

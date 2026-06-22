@@ -27,9 +27,9 @@ const WSL_DISTRO = 'Ubuntu';
 const KERNEL_LANDING = path.join(process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || '', 'AppData', 'Local'), 'CrossDrive-Kernel');
 const WSLCONFIG_PATH = path.join(process.env.USERPROFILE || '', '.wslconfig');
 const readCrossDriveEnv = (name, fallbackName) => process.env[name] ?? process.env[fallbackName];
-const DEFAULT_WSL_MEMORY = readCrossDriveEnv('CROSSDRIVE_WSL_MEMORY', 'MACMOUNT_WSL_MEMORY') || '4GB';
-const DEFAULT_WSL_PROCESSORS = readCrossDriveEnv('CROSSDRIVE_WSL_PROCESSORS', 'MACMOUNT_WSL_PROCESSORS') || '2';
-const DEFAULT_WSL_SWAP = readCrossDriveEnv('CROSSDRIVE_WSL_SWAP', 'MACMOUNT_WSL_SWAP') || '1GB';
+const DEFAULT_WSL_MEMORY = readCrossDriveEnv('CROSSDRIVE_WSL_MEMORY', 'CROSSDRIVE_WSL_MEMORY') || '4GB';
+const DEFAULT_WSL_PROCESSORS = readCrossDriveEnv('CROSSDRIVE_WSL_PROCESSORS', 'CROSSDRIVE_WSL_PROCESSORS') || '2';
+const DEFAULT_WSL_SWAP = readCrossDriveEnv('CROSSDRIVE_WSL_SWAP', 'CROSSDRIVE_WSL_SWAP') || '1GB';
 
 function resolveBundleRoot() {
     // Packaged: extraResources land at process.resourcesPath/crossdrive-kernel
@@ -162,7 +162,7 @@ vmIdleTimeout=2147483647
     let existing = null;
     try { existing = fs.readFileSync(WSLCONFIG_PATH, 'utf8'); } catch { /* not present */ }
 
-    if (existing && (existing.includes('CrossDrive custom kernel') || existing.includes('GKMacOpener custom kernel') || existing.includes('MacMount custom kernel')) && existing.includes(kernelPath)) {
+    if (existing && (existing.includes('CrossDrive custom kernel') || existing.includes('CrossDrive custom kernel') || existing.includes('CrossDrive custom kernel')) && existing.includes(kernelPath)) {
         let updated = existing;
         const upsertWsl2Key = (text, key, value) => {
             const pattern = new RegExp(`(^\\s*${key}\\s*=\\s*).*$`, 'mi');

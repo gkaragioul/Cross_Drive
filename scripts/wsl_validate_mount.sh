@@ -29,7 +29,7 @@ if [ "$ACTUAL_DEVICE" != "$EXPECTED_DEVICE" ]; then
 fi
 
 case "$EXPECTED_FS:$ACTUAL_FS" in
-    hfsplus:hfsplus|hfsplus:hfs|hfs:hfs|hfs:hfsplus|apfs:apfs) ;;
+    hfsplus:hfsplus|hfs:hfs|apfs:apfs) ;;
     *) fail "filesystem mismatch: expected $EXPECTED_FS got ${ACTUAL_FS:-unknown}" ;;
 esac
 
