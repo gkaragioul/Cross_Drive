@@ -59,12 +59,13 @@ function showAboutDialog() {
             `Version ${app.getVersion()}`,
             'Developed by George Karagioules',
             COPYRIGHT_NOTICE,
-            'License: MIT',
+            'License: MIT for CrossDrive application source',
+            'Third-party components keep their own license terms.',
             '',
             WINFSP_NOTICE,
             'https://github.com/winfsp/winfsp',
             '',
-            'See Help > License, Third-Party Notices, and GPL Source Offer for full legal notices.'
+            'See Help > License, Third-Party Notices, GPL Source Offer, and GPL Source Manifest for full legal notices.'
         ].join('\n'),
         buttons: ['OK']
     });
@@ -97,6 +98,10 @@ function installAppMenu() {
             {
                 label: 'GPL Source Offer',
                 click: () => openLegalFile('GPL_SOURCE_OFFER.txt', 'GPL Source Offer')
+            },
+            {
+                label: 'GPL Source Manifest',
+                click: () => openLegalFile('GPL_SOURCE_MANIFEST.md', 'GPL Source Manifest')
             },
             {
                 label: 'GNU GPL v2 (kernel + modules)',
