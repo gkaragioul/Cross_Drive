@@ -15,18 +15,18 @@ function Resolve-ApfsFuseExe {
     # Optional override for CI, portable installs, or custom layouts.
     $envPath = $env:CROSSDRIVE_APFS_FUSE_EXE
     if ([string]::IsNullOrWhiteSpace($envPath)) {
-        $envPath = $env:MACMOUNT_APFS_FUSE_EXE
+        $envPath = $env:CROSSDRIVE_APFS_FUSE_EXE
     }
     if ([string]::IsNullOrWhiteSpace($envPath)) {
         $envPath = [Environment]::GetEnvironmentVariable("CROSSDRIVE_APFS_FUSE_EXE", "User")
         if ([string]::IsNullOrWhiteSpace($envPath)) {
-            $envPath = [Environment]::GetEnvironmentVariable("MACMOUNT_APFS_FUSE_EXE", "User")
+            $envPath = [Environment]::GetEnvironmentVariable("CROSSDRIVE_APFS_FUSE_EXE", "User")
         }
     }
     if ([string]::IsNullOrWhiteSpace($envPath)) {
         $envPath = [Environment]::GetEnvironmentVariable("CROSSDRIVE_APFS_FUSE_EXE", "Machine")
         if ([string]::IsNullOrWhiteSpace($envPath)) {
-            $envPath = [Environment]::GetEnvironmentVariable("MACMOUNT_APFS_FUSE_EXE", "Machine")
+            $envPath = [Environment]::GetEnvironmentVariable("CROSSDRIVE_APFS_FUSE_EXE", "Machine")
         }
     }
     if (-not [string]::IsNullOrWhiteSpace($envPath) -and (Test-Path -LiteralPath $envPath)) {
@@ -540,7 +540,7 @@ public class CrossDriveDosDevice {
         # Set a friendly drive label in registry
         $iconRegPath = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\DriveIcons\$freeLetter"
         New-Item -Path "$iconRegPath\DefaultLabel" -Force | Out-Null
-        Set-ItemProperty -Path "$iconRegPath\DefaultLabel" -Name "(Default)" -Value "Mac Drive ($id)"
+        Set-ItemProperty -Path "$iconRegPath\DefaultLabel" -Name "(Default)" -Value "CrossDrive Volume ($id)"
 
         # Try to set icon
         $iconFile = Join-Path $PSScriptRoot "..\public\favicon.ico"
@@ -673,6 +673,66 @@ function Repair-Drivers {
     } | ConvertTo-Json
 }
 
+function Convert-WslOutputText($value) {
+    $text = ($value | Out-String).Replace([string][char]0, "")
+    return (($text -replace '\s+', ' ').Trim())
+}
+
+function Test-WslRuntimeReady {
+    $wslExe = Get-Command "wsl.exe" -ErrorAction SilentlyContinue
+    $wslInstalled = $false
+    $ubuntuInstalled = $false
+    $wslDetail = "WSL2 runtime missing"
+    $ubuntuDetail = "Ubuntu distro missing"
+
+    if ($wslExe) {
+        try {
+            $statusOutput = cmd.exe /d /c "wsl.exe --status 2>&1" | Out-String
+            $statusText = Convert-WslOutputText $statusOutput
+            if ($LASTEXITCODE -eq 0) {
+                $wslInstalled = $true
+                $wslDetail = "Installed"
+            }
+            elseif ($statusText -match "not installed|not enabled|required feature is not installed") {
+                $wslDetail = "WSL2 runtime missing"
+            }
+            else {
+                $wslDetail = $statusText
+                if ([string]::IsNullOrWhiteSpace($wslDetail)) { $wslDetail = "WSL2 status check failed" }
+            }
+        }
+        catch {
+            $wslDetail = "WSL2 status check failed: $($_.Exception.Message)"
+        }
+    }
+
+    if ($wslInstalled) {
+        try {
+            $distros = Convert-WslOutputText (cmd.exe /d /c "wsl.exe -l -q 2>&1" | Out-String)
+            if ($distros -match "(?im)^\s*Ubuntu\s*$" -or $distros -match "\bUbuntu\b") {
+                $ubuntuInstalled = $true
+                $ubuntuDetail = "Installed"
+            }
+            else {
+                $ubuntuDetail = "Ubuntu distro missing"
+            }
+        }
+        catch {
+            $ubuntuDetail = "Ubuntu distro check failed: $($_.Exception.Message)"
+        }
+    }
+    elseif (-not $wslExe) {
+        $wslDetail = "wsl.exe not found"
+    }
+
+    return @{
+        wslInstalled = $wslInstalled
+        ubuntuInstalled = $ubuntuInstalled
+        wslDetail = $wslDetail
+        ubuntuDetail = $ubuntuDetail
+    }
+}
+
 function Get-PreflightCheck {
     $winFspInstalled = $false
     try {
@@ -686,6 +746,7 @@ function Get-PreflightCheck {
 
     $nativeBridgePath = Resolve-ApfsFuseExe
     $nativeBridgeReady = -not [string]::IsNullOrWhiteSpace($nativeBridgePath)
+    $wsl = Test-WslRuntimeReady
 
     $items = @()
     $items += @{
@@ -696,21 +757,85 @@ function Get-PreflightCheck {
         id = "nativeBridge"; title = "Native APFS Bridge (optional fallback)"; ok = $true
         detail = $(if ($nativeBridgeReady) { $nativeBridgePath } else { "Not installed (optional). Native broker handles APFS directly." })
     }
+    $items += @{
+        id = "wslRuntime"; title = "WSL2 Fallback Runtime"; ok = [bool]$wsl.wslInstalled
+        detail = $wsl.wslDetail
+    }
+    $items += @{
+        id = "ubuntuDistro"; title = "Ubuntu WSL Distro"; ok = [bool]$wsl.ubuntuInstalled
+        detail = $wsl.ubuntuDetail
+    }
 
     $ready = ($items | Where-Object { -not $_.ok }).Count -eq 0
     return @{
         success = $true
         ready   = $ready
         items   = $items
-        note    = "WSL-based checks have been removed. CrossDrive now validates only native Windows components."
+        note    = "WSL fallback runtime is required for APFS and classic HFS fallback parity. Installing it may require a Windows reboot."
     } | ConvertTo-Json -Depth 5
+}
+
+function Test-IsAdmin {
+    return ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).
+        IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Start-ElevatedPreflightFix {
+    param([object[]]$Items, [string[]]$Actions)
+
+    $scriptPath = $PSCommandPath
+    if ([string]::IsNullOrWhiteSpace($scriptPath)) {
+        $scriptPath = $MyInvocation.MyCommand.Path
+    }
+
+    if ([string]::IsNullOrWhiteSpace($scriptPath) -or -not (Test-Path $scriptPath)) {
+        return @{
+            success        = $false
+            ready          = $false
+            rebootRequired = $false
+            actions        = $Actions
+            items          = $Items
+            message        = "CrossDrive could not locate its setup helper for elevation."
+        } | ConvertTo-Json -Depth 6
+    }
+
+    try {
+        $argList = @(
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            "`"$scriptPath`"",
+            "-Action",
+            "PreflightFix"
+        )
+        Start-Process -FilePath "powershell.exe" -ArgumentList $argList -Verb RunAs -WindowStyle Hidden | Out-Null
+        return @{
+            success         = $true
+            ready           = $false
+            rebootRequired  = $true
+            elevatedStarted = $true
+            actions         = @($Actions + "Started elevated runtime setup")
+            items           = $Items
+            message         = "CrossDrive is completing runtime setup with Windows administrator permission. Approve the Windows prompt if shown; reboot if Windows requests it."
+        } | ConvertTo-Json -Depth 6
+    }
+    catch {
+        return @{
+            success        = $false
+            ready          = $false
+            rebootRequired = $false
+            actions        = $Actions
+            items          = $Items
+            message        = "CrossDrive could not start elevated runtime setup: $($_.Exception.Message)"
+        } | ConvertTo-Json -Depth 6
+    }
 }
 
 function Install-WinFsp {
     # Try to install WinFsp from the bundled MSI, then fall back to winget.
-    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).
-        IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-    if (-not $isAdmin) {
+    if (-not (Test-IsAdmin)) {
         return @{ success = $false; error = "Administrator rights required to install WinFsp." } | ConvertTo-Json
     }
 
@@ -749,11 +874,48 @@ function Install-WinFsp {
     return @{ success = $false; error = "WinFsp installation failed. Please install manually from https://github.com/winfsp/winfsp/releases" } | ConvertTo-Json
 }
 
+function Install-WslRuntime {
+    if (-not (Test-IsAdmin)) {
+        return @{ success = $false; error = "Administrator rights required to install WSL2 and Ubuntu." } | ConvertTo-Json
+    }
+
+    $current = Test-WslRuntimeReady
+    if ($current.wslInstalled -and $current.ubuntuInstalled) {
+        return @{ success = $true; ready = $true; rebootRequired = $false; message = "WSL2 and Ubuntu are already installed." } | ConvertTo-Json
+    }
+
+    $wslExe = Get-Command "wsl.exe" -ErrorAction SilentlyContinue
+    if (-not $wslExe) {
+        return @{ success = $false; error = "wsl.exe was not found on this Windows installation." } | ConvertTo-Json
+    }
+
+    try {
+        Start-Process -FilePath "wsl.exe" -ArgumentList "--install -d Ubuntu" -WindowStyle Hidden | Out-Null
+        return @{
+            success = $true
+            ready = $false
+            rebootRequired = $true
+            message = "WSL2 and Ubuntu installation started. Reboot Windows if requested, then relaunch CrossDrive."
+        } | ConvertTo-Json
+    }
+    catch {
+        return @{ success = $false; error = "Could not start WSL installation: $($_.Exception.Message)" } | ConvertTo-Json
+    }
+}
+
 function Invoke-PreflightFix {
     # First, try to install WinFsp if missing
     $preflight = Get-PreflightCheck | ConvertFrom-Json
     $winFspItem = $preflight.items | Where-Object { $_.id -eq "winfsp" }
+    $wslItem = $preflight.items | Where-Object { $_.id -eq "wslRuntime" }
+    $ubuntuItem = $preflight.items | Where-Object { $_.id -eq "ubuntuDistro" }
     $actions = @()
+    $rebootRequired = $false
+
+    if (((-not $winFspItem.ok) -or (-not $wslItem.ok) -or (-not $ubuntuItem.ok)) -and -not (Test-IsAdmin)) {
+        [Console]::Error.WriteLine("[CrossDrive] Runtime setup needs administrator permission; launching elevated setup helper...")
+        return Start-ElevatedPreflightFix -Items $preflight.items -Actions $actions
+    }
 
     if (-not $winFspItem.ok) {
         [Console]::Error.WriteLine("[CrossDrive] WinFsp missing, attempting installation...")
@@ -772,16 +934,35 @@ function Invoke-PreflightFix {
         }
     }
 
+    if ((-not $wslItem.ok) -or (-not $ubuntuItem.ok)) {
+        [Console]::Error.WriteLine("[CrossDrive] WSL2/Ubuntu missing, starting Windows WSL installer...")
+        $wslInstall = Install-WslRuntime | ConvertFrom-Json
+        if ($wslInstall.success) {
+            $actions += "Started WSL2 and Ubuntu installer"
+            $rebootRequired = [bool]$wslInstall.rebootRequired
+        } else {
+            return @{
+                success        = $false
+                ready          = $false
+                rebootRequired = $false
+                actions        = $actions
+                items          = $preflight.items
+                message        = "WSL installation failed: $($wslInstall.error)"
+            } | ConvertTo-Json -Depth 6
+        }
+    }
+
     # Re-check after installation
     $finalRaw = Get-PreflightCheck
     $final = $finalRaw | ConvertFrom-Json
     return @{
-        success        = [bool]$final.ready
+        success        = $true
         ready          = [bool]$final.ready
-        rebootRequired = $false
+        rebootRequired = $rebootRequired
         actions        = $actions
         items          = $final.items
-        message        = $(if ($final.ready) { "Native runtime is ready." } else { "Native runtime is missing required Windows components." })
+        note           = $final.note
+        message        = $(if ($final.ready) { "CrossDrive runtime is ready." } elseif ($rebootRequired) { "WSL2 and Ubuntu installation started. Reboot Windows if requested, then relaunch CrossDrive." } else { "CrossDrive runtime is missing required Windows components." })
     } | ConvertTo-Json -Depth 6
 }
 
@@ -805,4 +986,3 @@ switch ($Action) {
     "PreflightCheck" { Get-PreflightCheck }
     "PreflightFix" { Invoke-PreflightFix }
 }
-

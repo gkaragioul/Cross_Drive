@@ -7,7 +7,7 @@
 #   $2 = optional APFS volume password
 #
 # Output: a single JSON object on stdout, one of:
-#   {"success":true, "target":"/mnt/macdrive_<id>_<rand>", "fsType":"hfsplus"|"apfs", "device":"/dev/sdX1"}
+#   {"success":true, "target":"/mnt/crossdrive_<id>_<rand>", "fsType":"hfs"|"hfsplus"|"apfs", "device":"/dev/sdX1"}
 #   {"success":false, "error":"...", "needsPassword":true|false}
 #
 # All diagnostics go to stderr (so stdout stays a single clean JSON line).
@@ -19,6 +19,7 @@ exec >&2    # send everything to stderr by default
 
 DRIVE_ID="${1:-0}"
 PASSWORD="${2:-}"
+EXPECTED_DISK="${3:-}"
 
 # --- Helpers ---
 emit_json() { printf '%s\n' "$1" >&3; }
@@ -43,6 +44,57 @@ emit_success() {
     case "$free_bytes" in ''|*[!0-9]*) free_bytes=0 ;; esac
     emit_json "{\"success\":true,\"target\":$(json_escape "$target"),\"fsType\":$(json_escape "$fs_type"),\"device\":$(json_escape "$device"),\"totalBytes\":$total_bytes,\"freeBytes\":$free_bytes}"
 }
+detect_fs_type() {
+    devpath="$1"
+    fs_type=$(blkid -o value -s TYPE "$devpath" 2>/dev/null || true)
+    if [ -z "$fs_type" ]; then
+        # HFS+ has 'H+' (0x482B) or HFSX 'HX' (0x4858) signature at offset 1024.
+        sig=$(dd if="$devpath" bs=2 count=1 skip=512 2>/dev/null | od -An -tx1 | tr -d ' \n')
+        case "$sig" in
+            4244) fs_type="hfs" ;;
+            482b|4858) fs_type="hfsplus" ;;
+        esac
+    fi
+    if [ -z "$fs_type" ]; then
+        # APFS NXSB magic at offset 32 of NX superblock (block 0).
+        apfs_magic=$(dd if="$devpath" bs=1 count=4 skip=32 2>/dev/null)
+        [ "$apfs_magic" = "NXSB" ] && fs_type="apfs"
+    fi
+    printf '%s' "$fs_type"
+}
+choose_mac_partition() {
+    disk="$1"
+    fallback_part=""
+    fallback_size=0
+
+    while IFS= read -r line; do
+        name=$(echo "$line" | awk '{print $1}')
+        type=$(echo "$line" | awk '{print $2}')
+        size=$(echo "$line" | awk '{print $3}')
+        [ "$type" = "part" ] || continue
+
+        fs_type=$(detect_fs_type "$name")
+        case "$fs_type" in
+            apfs|hfsplus|hfs)
+                echo "Preferring Mac-format partition $name (fs=$fs_type)" >&2
+                printf '%s' "$name"
+                return 0
+                ;;
+        esac
+
+        case "$size" in ''|*[!0-9]*) size=0 ;; esac
+        if [ "$size" -gt "$fallback_size" ]; then
+            fallback_size="$size"
+            fallback_part="$name"
+        fi
+    done < <(lsblk -nrpo NAME,TYPE,SIZE "/dev/$disk" 2>/dev/null)
+
+    if [ -n "$fallback_part" ]; then
+        printf '%s' "$fallback_part"
+    else
+        printf '/dev/%s' "$disk"
+    fi
+}
 verify_mount() {
     target="$1"
     expected_device="$2"
@@ -64,7 +116,7 @@ verify_mount() {
     fi
 
     case "$expected_fs:$actual_fs" in
-        hfsplus:hfsplus|hfsplus:hfs|hfs:hfs|hfs:hfsplus|apfs:apfs) ;;
+        hfsplus:hfsplus|hfs:hfs|apfs:apfs) ;;
         *)
             umount "$target" 2>/dev/null || true
             rmdir "$target" 2>/dev/null || true
@@ -82,18 +134,31 @@ verify_mount() {
 echo "== wsl_mount.sh drive_id=$DRIVE_ID =="
 
 # --- Find the target disk ---
-# Heuristic: pick a disk whose partition table contains a partition with
-# hfsplus or apfs fstype, AND that is NOT one of WSL's internal disks
+# Heuristic: pick a disk whose partition table contains an hfs/hfsplus/apfs partition,
+# AND that is NOT one of WSL's internal disks
 # (sda, sdb, sdc — typically system + swap + storage).
 TARGET_DEV=""
-while IFS= read -r line; do
-    name=$(echo "$line" | awk '{print $1}')
-    fstype=$(echo "$line" | awk '{print $2}')
-    if [ "$fstype" = "hfsplus" ] || [ "$fstype" = "apfs" ]; then
-        TARGET_DEV=$(echo "$name" | sed 's/[0-9]*$//')
-        break
+if [ -n "$EXPECTED_DISK" ]; then
+    case "$EXPECTED_DISK" in
+        *[!A-Za-z0-9_-]*)
+            fail "Invalid expected WSL disk name: $EXPECTED_DISK"
+            ;;
+    esac
+    if [ ! -b "/dev/$EXPECTED_DISK" ]; then
+        fail "Expected newly attached WSL disk /dev/$EXPECTED_DISK was not present. Refusing to mount a different visible disk."
     fi
-done < <(lsblk -nlo NAME,FSTYPE 2>/dev/null)
+    TARGET_DEV="$EXPECTED_DISK"
+    echo "Using expected WSL disk: /dev/$EXPECTED_DISK"
+else
+    while IFS= read -r line; do
+        name=$(echo "$line" | awk '{print $1}')
+        fstype=$(echo "$line" | awk '{print $2}')
+        if [ "$fstype" = "hfs" ] || [ "$fstype" = "hfsplus" ] || [ "$fstype" = "apfs" ]; then
+            TARGET_DEV=$(echo "$name" | sed 's/[0-9]*$//')
+            break
+        fi
+    done < <(lsblk -nlo NAME,FSTYPE 2>/dev/null)
+fi
 
 # If no FS detected (could be a freshly cleaned drive or APFS misdetection),
 # fall back: pick the latest-attached disk that is large and unmounted.
@@ -115,49 +180,39 @@ fi
 
 if [ -z "$TARGET_DEV" ]; then
     lsblk -bo NAME,SIZE,TYPE,FSTYPE
-    fail "Could not locate the attached Mac drive in WSL2 — lsblk did not surface a hfsplus/apfs partition or a large unattached disk."
+    fail "Could not locate the attached Mac drive in WSL2 — lsblk did not surface an hfs/hfsplus/apfs partition or a large unattached disk."
 fi
 echo "Target disk: /dev/$TARGET_DEV"
 
-# --- Pick the largest partition (skip EFI / recovery) ---
-PART=""; LARGEST=0
-while IFS= read -r line; do
-    name=$(echo "$line" | awk '{print $1}')
-    size=$(echo "$line" | awk '{print $2}')
-    if [ "$name" != "$TARGET_DEV" ] && [ "$size" -gt "$LARGEST" ]; then
-        LARGEST="$size"
-        PART="$name"
-    fi
-done < <(lsblk -nlbo NAME,SIZE "/dev/$TARGET_DEV" 2>/dev/null)
-[ -z "$PART" ] && PART="$TARGET_DEV"
-DEVPATH="/dev/$PART"
+# --- Pick the APFS/HFS/HFS+ partition first, then fall back to largest partition. ---
+DEVPATH=$(choose_mac_partition "$TARGET_DEV")
 echo "Target partition: $DEVPATH"
 
 # --- Detect FS type ---
-FSTYPE=$(blkid -o value -s TYPE "$DEVPATH" 2>/dev/null || true)
-if [ -z "$FSTYPE" ]; then
-    # HFS+ has 'H+' (0x482B) or HFSX 'HX' (0x4858) signature at offset 1024
-    SIG=$(dd if="$DEVPATH" bs=2 count=1 skip=512 2>/dev/null | od -An -tx1 | tr -d ' \n')
-    case "$SIG" in
-        482b|4858) FSTYPE="hfsplus" ;;
-    esac
-fi
-if [ -z "$FSTYPE" ]; then
-    # APFS NXSB magic at offset 32 of NX superblock (block 0)
-    APFS_MAGIC=$(dd if="$DEVPATH" bs=1 count=4 skip=32 2>/dev/null)
-    [ "$APFS_MAGIC" = "NXSB" ] && FSTYPE="apfs"
-fi
+FSTYPE=$(detect_fs_type "$DEVPATH")
 
 echo "Detected FS: $FSTYPE"
 
 # --- Build a unique mount path so Windows' 9P client never sees a stale cache ---
 RAND=$(printf '%s' "$RANDOM$RANDOM" | head -c 8)
-TARGET="/mnt/macdrive_${DRIVE_ID}_${RAND}"
+TARGET="/mnt/crossdrive_${DRIVE_ID}_${RAND}"
 mkdir -p "$TARGET"
 chmod 777 "$TARGET"
 
 case "$FSTYPE" in
-    hfsplus|hfs)
+    hfs)
+        modprobe hfs 2>/dev/null || true
+        if mount -t hfs -o uid=1000,gid=1000,umask=000 "$DEVPATH" "$TARGET" 2>/tmp/mm_mount_err; then
+            verify_mount "$TARGET" "$DEVPATH" "hfs"
+            chmod 777 "$TARGET" 2>/dev/null || true
+            emit_success "$TARGET" "hfs" "$DEVPATH"
+            exit 0
+        fi
+        ERR=$(cat /tmp/mm_mount_err 2>/dev/null | tr '\n' ' ' | head -c 500)
+        rmdir "$TARGET" 2>/dev/null || true
+        fail "hfs mount failed: $ERR"
+        ;;
+    hfsplus)
         modprobe hfsplus 2>/dev/null || true
 
         # The Linux kernel mounts HFS+ read-only if the volume's "unmounted clean"

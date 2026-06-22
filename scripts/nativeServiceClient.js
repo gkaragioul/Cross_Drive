@@ -45,7 +45,7 @@ function startNativeService() {
   } else if (isPackagedRuntime()) {
     return;
   } else {
-    const projectPath = path.join(__dirname, '..', 'native', 'MacMount.NativeService', 'MacMount.NativeService.csproj');
+    const projectPath = path.join(__dirname, '..', 'native', 'CrossDrive.NativeService', 'CrossDrive.NativeService.csproj');
     nativeProcess = spawn('dotnet', ['run', '--project', projectPath], {
       cwd: path.join(__dirname, '..'),
       windowsHide: true,

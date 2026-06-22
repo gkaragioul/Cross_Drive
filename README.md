@@ -30,7 +30,7 @@ https://github.com/user-attachments/assets/c7755cff-ae9e-4af9-bac5-8dbea1d96bd5
 
 CrossDrive is pre-GA. APFS write support is experimental and disabled by
 default unless `CROSSDRIVE_EXPERIMENTAL_APFS_WRITES=1` is set. The legacy
-`MACMOUNT_EXPERIMENTAL_APFS_WRITES` alias is still accepted. CoreStorage /
+`CROSSDRIVE_EXPERIMENTAL_APFS_WRITES` alias is still accepted. CoreStorage /
 FileVault 1 is detected but explicitly unsupported.
 
 ## License
@@ -111,7 +111,7 @@ npm run hfs:test
 npm run apfs:test
 ```
 
-Native source folders still use the historical `MacMount.*` namespace. Those
+Native source folders still use the historical `CrossDrive.*` namespace. Those
 names are internal implementation details; shipped app branding, helper
 processes, installer metadata, update feed paths, and user-visible state paths
 use CrossDrive.

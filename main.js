@@ -174,7 +174,7 @@ function createWindow() {
     mainWindow = new BrowserWindow({
         width: 1200,
         height: 800,
-        title: `${APP_NAME} - Mac Drive Manager`,
+        title: `${APP_NAME} - Apple-Formatted Drive Manager`,
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
             nodeIntegration: false,

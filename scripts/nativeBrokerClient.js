@@ -127,7 +127,7 @@ function startBrokerInInteractiveSessionInner() {
       } else {
         // Fallback: dotnet run the project directly (dev environments without a
         // published broker.exe). Same hidden+detached treatment.
-        const projPath = path.join(__dirname, '..', 'native', 'MacMount.NativeBroker', 'MacMount.NativeBroker.csproj');
+        const projPath = path.join(__dirname, '..', 'native', 'CrossDrive.NativeBroker', 'CrossDrive.NativeBroker.csproj');
         child = spawn('dotnet', ['run', '--project', projPath], {
           cwd: brokerDir,
           detached: true,

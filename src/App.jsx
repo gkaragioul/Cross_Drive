@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import './index.css';
 import appLogo from './assets/crossdrive-logo.png';
 import {
@@ -14,6 +14,7 @@ import {
   unmountDrive as apiUnmountDrive,
   openInExplorer as apiOpenInExplorer,
   generateSupportBundle,
+  generateRealMediaValidation,
 } from './api';
 import { POLL_INTERVALS } from './config';
 
@@ -110,6 +111,13 @@ const formatMountError = (result) => {
   return parts.join(' ');
 };
 
+const hasBlockingPreflightItems = (state) => (
+  state &&
+  state.ready !== true &&
+  Array.isArray(state.items) &&
+  state.items.some(item => item && item.ok === false && item.id !== 'nativeBridge')
+);
+
 const App = () => {
   const [drives, setDrives] = useState([]);
   const [activeTab, setActiveTab] = useState('drives');
@@ -123,8 +131,11 @@ const App = () => {
   const [passwordValue, setPasswordValue] = useState('');
   const [runtimeConfig, setRuntimeConfig] = useState(null);
   const [bundleStatus, setBundleStatus] = useState(null);
+  const [validationStatus, setValidationStatus] = useState(null);
+  const [validationPassword, setValidationPassword] = useState('');
   const [preflight, setPreflight] = useState(null);
   const [fixingPreflight, setFixingPreflight] = useState(false);
+  const autoPreflightAttempted = useRef(false);
 
   useEffect(() => {
     let unmounted = false;
@@ -166,18 +177,28 @@ const App = () => {
     try { await postLog(message, type); await fetchLogs().then(setLogs).catch(() => {}); } catch {}
   };
 
-  const doFixPreflight = async () => {
+  const doFixPreflight = async ({ automatic = false } = {}) => {
     setFixingPreflight(true);
     try {
+      if (automatic) await logRemote('Automatic runtime setup started.', 'info');
       const data = await fixPreflight();
       setPreflight(data);
+      if (data.message) await logRemote(`Automatic runtime setup: ${data.message}`, data.success ? 'success' : 'warning');
       if (data.success) {
         const { drives: d } = await apiFetchDrives();
         setDrives(d);
       }
-    } catch { /* silent */ }
+    } catch (e) {
+      await logRemote(`Automatic runtime setup failed: ${e.message}`, 'error');
+    }
     finally { setFixingPreflight(false); }
   };
+
+  useEffect(() => {
+    if (!hasBlockingPreflightItems(preflight) || fixingPreflight || autoPreflightAttempted.current) return;
+    autoPreflightAttempted.current = true;
+    doFixPreflight({ automatic: true });
+  }, [preflight, fixingPreflight]);
 
   const mountDrive = async (id, password = '') => {
     setIsMounting(id);
@@ -280,6 +301,29 @@ const App = () => {
     }
   };
 
+  const doRunRealMediaValidation = async () => {
+    setValidationStatus('generating');
+    try {
+      const passwordForRun = validationPassword;
+      setValidationPassword('');
+      const data = await generateRealMediaValidation(passwordForRun);
+      setValidationStatus(data.success ? data : { error: data.error || 'Unknown error' });
+    } catch (e) {
+      setValidationStatus({ error: e.message });
+    }
+  };
+
+  const formatValidationSummary = (result) => {
+    if (!result || result.error) return '';
+    if (result.complete) return `Complete. Saved to: ${result.path}`;
+    const parts = [];
+    if (result.missingFormats?.length) parts.push(`Missing evidence: ${result.missingFormats.join(', ')}`);
+    if (result.needsPasswordFormats?.length) parts.push(`Needs password: ${result.needsPasswordFormats.join(', ')}`);
+    if (result.failedFormats?.length) parts.push(`Open failed: ${result.failedFormats.join(', ')}`);
+    if (result.unsupportedFormats?.length) parts.push(`Unsupported: ${result.unsupportedFormats.join(', ')}`);
+    return `${parts.join(' | ') || 'Validation incomplete'}. Saved to: ${result.path}`;
+  };
+
   const renderDrives = () => {
     const environmentReady = setup.ready || runtimeConfig?.mode !== 'wsl_kernel';
     const showSetupBanner = setup.status !== 'ready' && runtimeConfig?.mode === 'wsl_kernel';
@@ -299,10 +343,10 @@ const App = () => {
             fontSize: '12px', fontFamily: 'var(--font-mono)', letterSpacing: '0.5px'
           }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
-              <strong>Prerequisites Missing</strong>
+              <strong>{fixingPreflight ? 'Runtime Setup Running' : 'Runtime Setup Needs Attention'}</strong>
               <button className="btn btn-primary" style={{ width: 'auto', padding: '6px 14px', fontSize: '11px' }}
                 onClick={doFixPreflight} disabled={fixingPreflight}>
-                {fixingPreflight ? 'Installing...' : 'Auto-Install'}
+                {fixingPreflight ? 'Installing...' : 'Retry Setup'}
               </button>
             </div>
             {preflight.items && preflight.items.map(item => (
@@ -311,6 +355,10 @@ const App = () => {
                 <span>{item.title}: {item.detail}</span>
               </div>
             ))}
+            <div style={{ marginTop: '10px', opacity: 0.85 }}>
+              {fixingPreflight ? 'CrossDrive is installing missing runtime components automatically.' : (preflight.message || 'CrossDrive attempted automatic setup. Approve any Windows prompt, then retry if Windows asks for a reboot.')}
+            </div>
+            {preflight.rebootRequired && <div style={{ marginTop: '8px', color: 'var(--warning)' }}>WSL Fallback Runtime installation may require a Windows reboot.</div>}
             {preflight.note && <div style={{ marginTop: '8px', opacity: 0.7, fontSize: '11px' }}>{preflight.note}</div>}
           </div>
         )}
@@ -436,11 +484,11 @@ const App = () => {
           <>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
               <span style={{ color: preflight.ready ? 'var(--success)' : 'var(--danger)', fontSize: '13px', fontWeight: 'bold' }}>
-                {preflight.ready ? 'All prerequisites installed' : 'Prerequisites missing'}
+                {preflight.ready ? 'Runtime ready' : (fixingPreflight ? 'Runtime setup running' : 'Runtime setup needs attention')}
               </span>
               {!preflight.ready && (
                 <button className="btn btn-primary" style={{ width: 'auto', padding: '6px 14px', fontSize: '11px' }} onClick={doFixPreflight} disabled={fixingPreflight}>
-                  {fixingPreflight ? 'Installing...' : 'Auto-Install'}
+                  {fixingPreflight ? 'Installing...' : 'Retry Setup'}
                 </button>
               )}
             </div>
@@ -501,6 +549,43 @@ const App = () => {
             {bundleStatus.error ? `Error: ${bundleStatus.error}` : `Saved to: ${bundleStatus.path}`}
           </div>
         )}
+        <div style={{ marginTop: '18px', paddingTop: '16px', borderTop: '1px solid var(--border)' }}>
+          <p style={{ fontSize: '13px', color: 'var(--text-dim)', margin: '0 0 12px' }}>
+            Save a real-media coverage report to <code>%ProgramData%\CrossDrive\Validation\</code>.
+          </p>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+            <input
+              type="password"
+              value={validationPassword}
+              onChange={(e) => setValidationPassword(e.target.value)}
+              placeholder="Validation password (optional)"
+              autoComplete="off"
+              style={{
+                background: '#050505',
+                border: '1px solid var(--border)',
+                color: 'var(--text-main)',
+                padding: '8px 10px',
+                fontFamily: 'var(--font-mono)',
+                fontSize: '12px',
+                minWidth: '220px'
+              }}
+            />
+            <button className="btn btn-outline" style={{ width: 'auto', padding: '8px 16px' }} onClick={doRunRealMediaValidation} disabled={validationStatus === 'generating'}>
+              {validationStatus === 'generating' ? 'Running...' : 'Run Real-Media Validation'}
+            </button>
+          </div>
+          {validationStatus && validationStatus !== 'generating' && (
+            <div style={{ marginTop: '12px', fontSize: '13px', color: validationStatus.error ? 'var(--danger)' : validationStatus.complete ? 'var(--success)' : 'var(--warning)' }}>
+              {validationStatus.error ? (
+                `Error: ${validationStatus.error}`
+              ) : validationStatus.complete ? (
+                `Complete. Saved to: ${validationStatus.path}`
+              ) : (
+                formatValidationSummary(validationStatus)
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       <h3 style={{ marginTop: '24px', marginBottom: '12px', opacity: 0.5, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '2.5px', fontFamily: 'var(--font-heading)', color: 'var(--primary)' }}>About</h3>
