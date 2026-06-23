@@ -23,14 +23,14 @@ function readCrossDriveEnv(name, fallbackName = null) {
     return process.env[name] ?? (fallbackName ? process.env[fallbackName] : undefined);
 }
 const RUNTIME_MOUNT_MODE = (() => {
-    const raw = String(readCrossDriveEnv('CROSSDRIVE_MOUNT_MODE', 'MACMOUNT_MOUNT_MODE') || '').trim().toLowerCase();
+    const raw = String(readCrossDriveEnv('CROSSDRIVE_MOUNT_MODE', 'CROSSDRIVE_MOUNT_MODE') || '').trim().toLowerCase();
     if (!raw) return 'native_first';
     if (raw === 'experimental_raw') return 'native_only';
     if (raw === 'wsl_unc' || raw === 'hybrid_canary') return 'wsl_kernel';
     return VALID_RUNTIME_MOUNT_MODES.has(raw) ? raw : 'wsl_kernel';
 })();
 const RUNTIME_CANARY_PERCENT = (() => {
-    const raw = Number.parseInt(String(readCrossDriveEnv('CROSSDRIVE_CANARY_PERCENT', 'MACMOUNT_CANARY_PERCENT') || '100'), 10);
+    const raw = Number.parseInt(String(readCrossDriveEnv('CROSSDRIVE_CANARY_PERCENT', 'CROSSDRIVE_CANARY_PERCENT') || '100'), 10);
     if (!Number.isFinite(raw)) return 100;
     return Math.max(0, Math.min(100, raw));
 })();
@@ -114,7 +114,7 @@ function execPsMount(driveId, password = '', skipLetter = false) {
     if (hasPassword) {
         args.push('-Password', String(password).replace(/'/g, "''"));
     }
-    const env = skipLetter ? { ...process.env, CROSSDRIVE_SKIP_LETTER: '1', MACMOUNT_SKIP_LETTER: '1' } : process.env;
+    const env = skipLetter ? { ...process.env, CROSSDRIVE_SKIP_LETTER: '1', CROSSDRIVE_SKIP_LETTER: '1' } : process.env;
 
     // Use spawn instead of exec.  exec waits for ALL pipe handles to close,
     // but apfs-fuse inherits PowerShell's pipe handles and runs indefinitely,

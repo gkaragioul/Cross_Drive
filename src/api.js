@@ -102,3 +102,7 @@ export async function openInExplorer(pathStr) {
 export async function generateSupportBundle() {
   return fetchJson(`${BACKEND_URL}/api/support/bundle`);
 }
+
+export async function generateRealMediaValidation(validationPassword = '') {
+  return postJson(`${BACKEND_URL}/api/validation/real-media`, { validationPassword });
+}

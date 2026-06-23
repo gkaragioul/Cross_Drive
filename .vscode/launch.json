@@ -10,9 +10,9 @@
             "request": "launch",
             "preLaunchTask": "build",
             // If you have changed target frameworks, make sure to update the program path.
-            "program": "${workspaceFolder}/native/MacMount.NativeService/bin/Debug/net9.0/MacMount.NativeService.dll",
+            "program": "${workspaceFolder}/native/CrossDrive.NativeService/bin/Debug/net9.0/CrossDrive.NativeService.dll",
             "args": [],
-            "cwd": "${workspaceFolder}/native/MacMount.NativeService",
+            "cwd": "${workspaceFolder}/native/CrossDrive.NativeService",
             // For more information about the 'console' field, see https://aka.ms/VSCode-CS-LaunchJson-Console
             "console": "internalConsole",
             "stopAtEntry": false

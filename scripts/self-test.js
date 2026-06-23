@@ -37,9 +37,15 @@ const unsignedBuildScript = fs.readFileSync(path.join(root, 'scripts', 'build-re
 const validateReleaseScript = fs.existsSync(validateReleasePath) ? fs.readFileSync(validateReleasePath, 'utf8') : '';
 const nativeBrokerClientScript = fs.readFileSync(path.join(root, 'scripts', 'nativeBrokerClient.js'), 'utf8');
 const nativeServiceClientScript = fs.readFileSync(path.join(root, 'scripts', 'nativeServiceClient.js'), 'utf8');
-const nativeBrokerProgram = fs.readFileSync(path.join(root, 'native', 'MacMount.NativeBroker', 'Program.cs'), 'utf8');
-const apfsProviderSource = fs.readFileSync(path.join(root, 'native', 'MacMount.RawDiskEngine', 'ApfsRawFileSystemProvider.cs'), 'utf8');
+const crossDriveScript = fs.readFileSync(path.join(root, 'scripts', 'CrossDrive.ps1'), 'utf8');
+const wslMountClientScript = fs.readFileSync(path.join(root, 'scripts', 'wslMountClient.js'), 'utf8');
+const wslMountScript = fs.readFileSync(path.join(root, 'scripts', 'wsl_mount.sh'), 'utf8');
+const wslValidateMountScript = fs.readFileSync(path.join(root, 'scripts', 'wsl_validate_mount.sh'), 'utf8');
+const userSessionHelperProgram = fs.readFileSync(path.join(root, 'native', 'CrossDrive.UserSessionHelper', 'Program.cs'), 'utf8');
+const nativeBrokerProgram = fs.readFileSync(path.join(root, 'native', 'CrossDrive.NativeBroker', 'Program.cs'), 'utf8');
+const apfsProviderSource = fs.readFileSync(path.join(root, 'native', 'CrossDrive.RawDiskEngine', 'ApfsRawFileSystemProvider.cs'), 'utf8');
 const appSource = fs.readFileSync(path.join(root, 'src', 'App.jsx'), 'utf8');
+const apiSource = fs.readFileSync(path.join(root, 'src', 'api.js'), 'utf8');
 const preloadSource = fs.readFileSync(preloadPath, 'utf8');
 const licenseText = fs.readFileSync(licensePath, 'utf8');
 const noticesText = fs.readFileSync(noticesPath, 'utf8');
@@ -130,8 +136,8 @@ if (!winTargets.includes('portable')) fail('package.json build.win.target missin
 else pass('win target includes portable');
 
 const nsisCfg = (pkg.build && pkg.build.nsis) || {};
-if (nsisCfg.guid !== 'com.gkmacopener.app') fail('nsis.guid must preserve the pre-rename installer identity for in-place upgrades');
-else pass('nsis.guid preserves pre-rename installer identity');
+if (nsisCfg.guid !== 'com.crossdrive.app') fail('nsis.guid must use the clean CrossDrive installer identity');
+else pass('nsis.guid uses the clean CrossDrive installer identity');
 
 if (nsisCfg.oneClick !== false) fail('nsis.oneClick must be false (assisted wizard with EULA gate)');
 else pass('nsis.oneClick is false');
@@ -260,10 +266,115 @@ if (!serverSource.includes('Optional WSL2 kernel runtime is not installed') ||
   pass('server.js treats missing WSL as optional outside wsl_kernel mode');
 }
 
+if (!wslMountClientScript.includes('snapshotWslDiskNames') ||
+    !wslMountClientScript.includes('detectNewWslDiskAfterAttach') ||
+    !wslMountClientScript.includes('attachedDiskName')) {
+  fail('wslMountClient.js must identify the newly attached WSL disk instead of relying on global filesystem heuristics');
+} else {
+  pass('wslMountClient.js identifies the newly attached WSL disk');
+}
+
+if (!wslMountClientScript.includes('function classifyWslRuntimeError') ||
+    !wslMountClientScript.includes('wslRuntimeMissing: true') ||
+    !wslMountClientScript.includes('wslDistroMissing: true') ||
+    !wslMountClientScript.includes('Install WSL2 and Ubuntu, reboot Windows, then relaunch CrossDrive')) {
+  fail('wslMountClient.js must classify missing WSL/Ubuntu runtime failures with setup guidance');
+} else {
+  pass('wslMountClient.js classifies missing WSL/Ubuntu runtime failures');
+}
+
+if (!crossDriveScript.includes('function Test-WslRuntimeReady') ||
+    !crossDriveScript.includes('function Convert-WslOutputText') ||
+    !crossDriveScript.includes('.Replace([string][char]0') ||
+    !crossDriveScript.includes('id = "wslRuntime"') ||
+    !crossDriveScript.includes('id = "ubuntuDistro"') ||
+    !crossDriveScript.includes('function Install-WslRuntime') ||
+    !crossDriveScript.includes('wsl.exe" -ArgumentList "--install -d Ubuntu"')) {
+  fail('CrossDrive.ps1 preflight must check and repair WSL2/Ubuntu fallback runtime');
+} else {
+  pass('CrossDrive.ps1 preflight checks and repairs WSL2/Ubuntu fallback runtime');
+}
+
+if (!appSource.includes('preflight.message') ||
+    !appSource.includes('preflight.rebootRequired') ||
+    !appSource.includes('WSL Fallback Runtime')) {
+  fail('App.jsx preflight card must surface WSL setup messages and reboot requirement');
+} else {
+  pass('App.jsx preflight card surfaces WSL setup messages and reboot requirement');
+}
+
+if (!wslMountScript.includes('EXPECTED_DISK') ||
+    !wslMountScript.includes('Using expected WSL disk') ||
+    !wslMountScript.includes('/dev/$EXPECTED_DISK')) {
+  fail('wsl_mount.sh must prefer the explicit newly attached WSL disk when provided');
+} else {
+  pass('wsl_mount.sh prefers the explicit newly attached WSL disk');
+}
+
+if (!wslMountScript.includes('choose_mac_partition') ||
+    !wslMountScript.includes('detect_fs_type') ||
+    !wslMountScript.includes('Preferring Mac-format partition')) {
+  fail('wsl_mount.sh must prefer APFS/HFS/HFS+ partitions on the selected disk before largest-partition fallback');
+} else {
+  pass('wsl_mount.sh prefers Mac-format partitions before largest fallback');
+}
+
+if (!wslMountScript.includes('4244) fs_type="hfs"') ||
+    !wslMountScript.includes('modprobe hfs') ||
+    !wslMountScript.includes('mount -t hfs ') ||
+    !wslMountScript.includes('emit_success "$TARGET" "hfs"')) {
+  fail('wsl_mount.sh must mount classic HFS volumes with the hfs kernel driver instead of the HFS+ driver');
+} else {
+  pass('wsl_mount.sh mounts classic HFS volumes with the hfs kernel driver');
+}
+
+if (!wslMountScript.includes('[ "$fstype" = "hfs" ]') ||
+    !wslMountScript.includes('hfs/hfsplus/apfs partition')) {
+  fail('wsl_mount.sh fallback disk discovery must include classic HFS partitions');
+} else {
+  pass('wsl_mount.sh fallback disk discovery includes classic HFS partitions');
+}
+
+function hasCaseArm(source, arm) {
+  return new RegExp(`(^|[|\\s])${arm.replace('+', '\\+')}(?=[|)\\s;])`).test(source);
+}
+
+if (hasCaseArm(wslMountScript, 'hfsplus:hfs') ||
+    hasCaseArm(wslMountScript, 'hfs:hfsplus') ||
+    hasCaseArm(wslValidateMountScript, 'hfsplus:hfs') ||
+    hasCaseArm(wslValidateMountScript, 'hfs:hfsplus')) {
+  fail('WSL mount validation must reject HFS/HFS+ filesystem mismatches');
+} else {
+  pass('WSL mount validation rejects HFS/HFS+ filesystem mismatches');
+}
+
+if (!userSessionHelperProgram.includes('expectedDisk') ||
+    !userSessionHelperProgram.includes('args.Length >= 7 ? args[6]')) {
+  fail('CrossDrive.UserSessionHelper must forward the explicit WSL disk argument for user-session mounts');
+} else {
+  pass('CrossDrive.UserSessionHelper forwards the explicit WSL disk argument');
+}
+
 if (!mountRoutesSource.includes("forceNative !== true && RUNTIME_MOUNT_MODE === 'wsl_kernel'")) {
   fail('mountRoutes.js must only attempt WSL mounts in explicit wsl_kernel mode');
 } else {
   pass('mountRoutes.js only attempts WSL mounts in explicit wsl_kernel mode');
+}
+
+if (!mountRoutesSource.includes('isClassicHfsPlan') ||
+    !mountRoutesSource.includes('attemptClassicHfsWslFallback') ||
+    !mountRoutesSource.includes("responseMountType: 'classic_hfs_wsl_kernel_fallback'")) {
+  fail('mountRoutes.js must route classic HFS through the WSL kernel fallback when the native provider cannot mount it');
+} else {
+  pass('mountRoutes.js routes classic HFS through the WSL kernel fallback');
+}
+
+if (!mountRoutesSource.includes('attemptApfsWslFallback') ||
+    !mountRoutesSource.includes("responseMountType: 'apfs_wsl_kernel_fallback'") ||
+    !mountRoutesSource.includes('APFS native fallback: attempting WSL kernel mount')) {
+  fail('mountRoutes.js must route APFS native fallback through the bundled WSL kernel path');
+} else {
+  pass('mountRoutes.js routes APFS native fallback through the bundled WSL kernel path');
 }
 
 if (!appSource.includes("runtimeConfig?.mode !== 'wsl_kernel'") ||
@@ -303,6 +414,14 @@ if (!apfsProviderSource.includes('SelectPrimaryVolumePreview') ||
   fail('APFS provider must expose the primary user volume at the drive root');
 } else {
   pass('APFS provider exposes the primary user volume at the drive root');
+}
+
+const compressedReadCheck = apfsProviderSource.indexOf('if (readPlan.IsCompressed)');
+const inlineReadShortcut = apfsProviderSource.indexOf('if (readPlan.InlineData is not null)');
+if (compressedReadCheck < 0 || inlineReadShortcut < 0 || compressedReadCheck > inlineReadShortcut) {
+  fail('APFS compressed inline decmpfs reads must be decompressed before the generic inline-data read path');
+} else {
+  pass('APFS compressed inline decmpfs reads are handled before generic inline data');
 }
 
 if (!nativeBrokerProgram.includes('DeletePathWithRetry') || !nativeBrokerProgram.includes('Passthrough delete failed')) {
@@ -395,10 +514,95 @@ for (const docPath of readinessDocs) {
 }
 
 const systemRoutes = fs.readFileSync(path.join(routesDir, 'systemRoutes.js'), 'utf8');
+const driveRoutesSource = fs.readFileSync(path.join(routesDir, 'driveRoutes.js'), 'utf8');
 if (!systemRoutes.includes('wslSetup')) {
   fail('/api/status does not expose WSL setup details');
 } else {
   pass('/api/status exposes WSL setup details');
+}
+
+const realMediaFormats = ['APFS', 'Encrypted APFS', 'HFS+', 'Classic HFS', 'CoreStorage'];
+if (!systemRoutes.includes('/api/validation/real-media') ||
+    !systemRoutes.includes('CrossDrive\', \'Validation') ||
+    !systemRoutes.includes('requiredFormats') ||
+    !realMediaFormats.every(format => systemRoutes.includes(format))) {
+  fail('/api/validation/real-media must create a required-format real-media validation report');
+} else {
+  pass('/api/validation/real-media creates a required-format real-media validation report');
+}
+
+if (!systemRoutes.includes('mountSmoke') ||
+    !systemRoutes.includes('/api/mount') ||
+    !systemRoutes.includes('/api/unmount') ||
+    !systemRoutes.includes("smoke.status = 'opened'") ||
+    !systemRoutes.includes("requiredFormats.every(format => coverage[format].status === 'opened')")) {
+  fail('/api/validation/real-media must prove formats by mounting, opening, and unmounting detected media');
+} else {
+  pass('/api/validation/real-media proves formats by mounting, opening, and unmounting detected media');
+}
+
+const coverageCoreStorageCheck = systemRoutes.indexOf('return \'CoreStorage\'');
+const coverageHfsPlusCheck = systemRoutes.indexOf("return 'HFS+'");
+if (coverageCoreStorageCheck < 0 || coverageHfsPlusCheck < 0 || coverageCoreStorageCheck > coverageHfsPlusCheck) {
+  fail('/api/validation/real-media must classify CoreStorage-style HFS analysis before generic HFS+ coverage');
+} else {
+  pass('/api/validation/real-media classifies CoreStorage-style HFS analysis before generic HFS+ coverage');
+}
+
+if (!systemRoutes.includes("app.post('/api/validation/real-media'") ||
+    !systemRoutes.includes('validationPassword') ||
+    !systemRoutes.includes('passwordProvided') ||
+    systemRoutes.includes('passwordValue') ||
+    systemRoutes.includes('validationPassword,') ||
+    systemRoutes.includes('validationPassword:')) {
+  fail('/api/validation/real-media must accept a temporary validation password without persisting it');
+} else {
+  pass('/api/validation/real-media accepts a temporary validation password without persisting it');
+}
+
+if (!apiSource.includes('generateRealMediaValidation') ||
+    !apiSource.includes('/api/validation/real-media')) {
+  fail('api.js must expose generateRealMediaValidation');
+} else {
+  pass('api.js exposes generateRealMediaValidation');
+}
+
+if (!appSource.includes('validationStatus') ||
+    !appSource.includes('validationPassword') ||
+    !appSource.includes('Run Real-Media Validation') ||
+    !appSource.includes('Missing evidence') ||
+    !appSource.includes('needsPasswordFormats') ||
+    !appSource.includes('failedFormats') ||
+    !appSource.includes('unsupportedFormats')) {
+  fail('App.jsx must expose real-media validation controls and missing-evidence status');
+} else {
+  pass('App.jsx exposes real-media validation controls and missing-evidence status');
+}
+
+if (!appSource.includes('autoPreflightAttempted') ||
+    !appSource.includes('hasBlockingPreflightItems') ||
+    !appSource.includes('doFixPreflight({ automatic: true })') ||
+    appSource.includes('Prerequisites Missing') ||
+    appSource.includes('Auto-Install')) {
+  fail('App.jsx must automatically repair missing runtime setup instead of requiring a manual prerequisites button');
+} else {
+  pass('App.jsx automatically repairs missing runtime setup');
+}
+
+if (!crossDriveScript.includes('Start-ElevatedPreflightFix') ||
+    !crossDriveScript.includes('-Verb RunAs') ||
+    !crossDriveScript.includes('elevatedStarted') ||
+    !crossDriveScript.includes('Test-IsAdmin')) {
+  fail('CrossDrive.ps1 must self-launch elevated runtime setup when Windows requires administrator permission');
+} else {
+  pass('CrossDrive.ps1 self-launches elevated runtime setup when required');
+}
+
+if (!driveRoutesSource.includes('/^HFS$/i.test(fsType)') ||
+    !driveRoutesSource.includes('Classic HFS requires the WSL kernel fallback')) {
+  fail('driveRoutes.js must leave classic HFS mountable so the WSL kernel fallback can open it');
+} else {
+  pass('driveRoutes.js leaves classic HFS mountable for the WSL kernel fallback');
 }
 
 const routeModules = ['systemRoutes.js', 'driveRoutes.js', 'mountRoutes.js', 'nativeRoutes.js'];

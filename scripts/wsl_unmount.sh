@@ -3,7 +3,7 @@
 # Run as root.
 #
 # Args:
-#   $1 = WSL mount target path (e.g. /mnt/macdrive_3_abc12345)
+#   $1 = WSL mount target path (e.g. /mnt/crossdrive_3_abc12345)
 #
 # Output (stdout): one JSON line: {"success":true|false, "error":"..."}
 

@@ -5,8 +5,8 @@
 - Native local-drive mounting is disabled in `server.js` while raw-disk engine work is in progress.
 
 ## Projects
-- `native/MacMount.NativeService`: WinFsp host and IPC service scaffolding.
-- `native/MacMount.RawDiskEngine`: new raw-disk APFS/HFS+ engine scaffold (source of truth for true local drive support).
+- `native/CrossDrive.NativeService`: WinFsp host and IPC service scaffolding.
+- `native/CrossDrive.RawDiskEngine`: new raw-disk APFS/HFS+ engine scaffold (source of truth for true local drive support).
 
 ## Available native actions (pipe/API)
 - `analyze_raw`: analyze `\\.\PHYSICALDRIVE*`, detect GPT APFS/HFS+ partition candidates.

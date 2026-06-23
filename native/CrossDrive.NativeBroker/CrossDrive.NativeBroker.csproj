@@ -1,0 +1,19 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <AssemblyName>CrossDrive.NativeBroker</AssemblyName>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="winfsp.net" Version="2.1.25156" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CrossDrive.RawDiskEngine\CrossDrive.RawDiskEngine.csproj" />
+  </ItemGroup>
+
+</Project>

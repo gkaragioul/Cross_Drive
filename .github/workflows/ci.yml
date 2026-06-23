@@ -1,4 +1,4 @@
-name: macmount-ci
+name: crossdrive-ci
 
 on:
   push:
@@ -29,6 +29,9 @@ jobs:
       - name: Self test
         run: npm run test
 
+      - name: Product trace audit
+        run: npm run trace:check
+
       - name: Dependency security audit
         run: npm run security:audit
 
@@ -44,6 +47,6 @@ jobs:
       - name: Upload dist artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: macmount-dist
+          name: crossdrive-dist
           path: dist/*
           retention-days: 14

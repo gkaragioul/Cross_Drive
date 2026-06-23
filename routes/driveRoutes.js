@@ -164,6 +164,7 @@ module.exports = function mountDriveRoutes(app, ctx) {
                         drive.analysisNotes = String(plan.Notes || '');
                         drive.supported =
                             /^APFS$/i.test(fsType) ||
+                            /^HFS$/i.test(fsType) ||
                             /^HFS\+$/i.test(fsType) ||
                             /^HFSX$/i.test(fsType);
 
@@ -179,6 +180,9 @@ module.exports = function mountDriveRoutes(app, ctx) {
                         } else if (/^CoreStorage$/i.test(fsType)) {
                             drive.supported = false;
                             drive.mountHint = 'CoreStorage/FileVault unlock is not implemented yet.';
+                        } else if (/^HFS$/i.test(fsType)) {
+                            drive.supported = true;
+                            drive.mountHint = 'Classic HFS requires the WSL kernel fallback.';
                         } else if (drive.needsPassword) {
                             drive.mountHint = 'Encrypted volume. Password required to unlock.';
                         } else if (drive.supported) {

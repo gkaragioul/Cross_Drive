@@ -28,6 +28,7 @@ const execFileAsync = promisify(execFile);
 
 const WSL_DISTRO = 'Ubuntu';
 const MAX_OUTPUT_BYTES = 1 * 1024 * 1024;
+const WSL_RUNTIME_SETUP_SUGGESTION = 'Install WSL2 and Ubuntu, reboot Windows, then relaunch CrossDrive. In an elevated PowerShell run: wsl.exe --install -d Ubuntu';
 
 // Translate Windows project script paths to /mnt/<drive>/... paths visible from WSL2.
 function toWslPath(winPath) {
@@ -92,6 +93,31 @@ function normalizeWslText(value) {
     return String(value || '').replace(/\u0000/g, '');
 }
 
+function classifyWslRuntimeError(rawMessage) {
+    const msg = normalizeWslText(rawMessage).trim();
+    if (!msg) return null;
+
+    if (/there is no distribution with the supplied name|wsl_e_distro_not_found|ubuntu.*not.*installed|no installed distributions/i.test(msg)) {
+        return {
+            error: 'Ubuntu WSL distro is not installed.',
+            suggestion: WSL_RUNTIME_SETUP_SUGGESTION,
+            wslDistroMissing: true,
+            requiresWslSetup: true
+        };
+    }
+
+    if (/not recognized as an internal or external command|enoent|cannot find.*wsl|wsl_e_wsl_not_installed|windows subsystem for linux.*not.*installed|windows subsystem for linux.*not.*enabled|required feature is not installed|wsl.*not.*installed/i.test(msg)) {
+        return {
+            error: 'WSL2 is not installed or not enabled.',
+            suggestion: WSL_RUNTIME_SETUP_SUGGESTION,
+            wslRuntimeMissing: true,
+            requiresWslSetup: true
+        };
+    }
+
+    return null;
+}
+
 async function runWsl(args, options = {}) {
     return await execFileAsync('wsl.exe', args, {
         timeout: options.timeout || 30000,
@@ -99,6 +125,35 @@ async function runWsl(args, options = {}) {
         maxBuffer: options.maxBuffer || MAX_OUTPUT_BYTES,
         encoding: options.encoding || 'utf8'
     });
+}
+
+async function snapshotWslDiskNames() {
+    const { stdout } = await runWsl([
+        '-d', WSL_DISTRO, '-u', 'root', '--', 'sh', '-lc',
+        `lsblk -dnlo NAME,TYPE 2>/dev/null | awk '$2 == "disk" { print $1 }'`
+    ], { timeout: 10000, maxBuffer: 65536 });
+
+    return normalizeWslText(stdout)
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((name) => /^[A-Za-z0-9_-]+$/.test(name));
+}
+
+async function detectNewWslDiskAfterAttach(beforeDiskNames, logFn = () => {}) {
+    if (!Array.isArray(beforeDiskNames)) return null;
+    try {
+        const before = new Set(beforeDiskNames);
+        const after = await snapshotWslDiskNames();
+        const added = after.filter((name) => !before.has(name));
+        if (added.length === 0) return null;
+        if (added.length > 1) {
+            logFn(`WSL attach detected multiple new disks (${added.join(', ')}); using ${added[added.length - 1]}.`, 'warning');
+        }
+        return added[added.length - 1];
+    } catch (err) {
+        logFn(`WSL attach disk detection failed: ${String(err.message || err).slice(0, 200)}`, 'warning');
+        return null;
+    }
 }
 
 async function waitForPathAccessible(targetPath, timeoutMs = 10000) {
@@ -362,6 +417,10 @@ async function attachPhysicalDriveToWsl(driveId) {
         return { ok: true };
     } catch (err) {
         const msg = normalizeWslText(err.stderr || err.stdout || err.message || '');
+        const runtimeFailure = classifyWslRuntimeError(msg);
+        if (runtimeFailure) {
+            return { ok: false, ...runtimeFailure };
+        }
         if (/already attached|WSL_E_DISK_ALREADY_ATTACHED/i.test(msg)) {
             return { ok: true, alreadyAttached: true };
         }
@@ -404,7 +463,21 @@ async function wslMountDrive(driveId, password = null, logFn = () => {}, options
     const mountNamespace = options.mountNamespace === 'elevated' ? 'elevated' : 'user';
     const keepAlive = await ensureWslKeepAlive(logFn, mountNamespace);
     if (!keepAlive) {
-        return { error: 'WSL keep-alive could not be started. Refusing to mount because WSL may tear down the Mac volume while Windows is still writing.' };
+        const runtimeFailure = _lastWslKeepAliveFailure || {};
+        return {
+            error: runtimeFailure.error || 'WSL keep-alive could not be started. Refusing to mount because WSL may tear down the Mac volume while Windows is still writing.',
+            suggestion: runtimeFailure.suggestion,
+            wslRuntimeMissing: runtimeFailure.wslRuntimeMissing === true,
+            wslDistroMissing: runtimeFailure.wslDistroMissing === true,
+            requiresWslSetup: runtimeFailure.requiresWslSetup === true
+        };
+    }
+
+    let beforeAttachDisks = null;
+    try {
+        beforeAttachDisks = await snapshotWslDiskNames();
+    } catch (err) {
+        logFn(`WSL disk snapshot before attach failed: ${String(err.message || err).slice(0, 200)}`, 'warning');
     }
 
     logFn(`WSL mount: attaching PhysicalDrive${id}`, 'info');
@@ -415,6 +488,12 @@ async function wslMountDrive(driveId, password = null, logFn = () => {}, options
 
     // Allow a moment for /dev/sd? to enumerate after attach.
     await new Promise((r) => setTimeout(r, 1500));
+    const attachedDiskName = attach.alreadyAttached
+        ? null
+        : await detectNewWslDiskAfterAttach(beforeAttachDisks, logFn);
+    if (attachedDiskName) {
+        logFn(`WSL mount: PhysicalDrive${id} enumerated as /dev/${attachedDiskName}`, 'info');
+    }
 
     // For direct WSL/UNC presentation, mount in the interactive user's WSL
     // namespace. For WinFsp passthrough, mount in the elevated namespace because
@@ -433,12 +512,16 @@ async function wslMountDrive(driveId, password = null, logFn = () => {}, options
             if (mountNamespace === 'elevated') {
                 const args = ['-d', WSL_DISTRO, '-u', 'root', '--', 'bash', WSL_MOUNT_SCRIPT_LINUX, id];
                 if (password) args.push(password);
+                else if (attachedDiskName) args.push('');
+                if (attachedDiskName) args.push(attachedDiskName);
                 const result = await runWsl(args, { timeout: 90000 });
                 stdout = result.stdout || '';
                 stderr = result.stderr || '';
             } else {
                 const helperArgs = ['wslmount', WSL_MOUNT_SCRIPT_LINUX, id, stdoutPath, stderrPath];
                 if (password) helperArgs.push(password);
+                else if (attachedDiskName) helperArgs.push('');
+                if (attachedDiskName) helperArgs.push(attachedDiskName);
                 await runUserSessionHelper(helperArgs, 90000);
                 stdout = fs.existsSync(stdoutPath) ? fs.readFileSync(stdoutPath, 'utf8') : '';
                 stderr = fs.existsSync(stderrPath) ? fs.readFileSync(stderrPath, 'utf8') : '';
@@ -457,6 +540,11 @@ async function wslMountDrive(driveId, password = null, logFn = () => {}, options
         logFn(`WSL mount stderr: ${normalizedStderr.trim().slice(0, 800)}`, 'info');
     }
 
+    const runtimeFailure = classifyWslRuntimeError(`${normalizedStderr}\n${stdout}`);
+    if (runtimeFailure) {
+        return runtimeFailure;
+    }
+
     const parsed = parseTrailingJson(stdout);
     if (!parsed) {
         return { error: `WSL mount script returned no JSON. stderr=${normalizedStderr.slice(0, 400)} stdout=${normalizeWslText(stdout).slice(0, 400)}` };
@@ -469,7 +557,7 @@ async function wslMountDrive(driveId, password = null, logFn = () => {}, options
     }
 
     // Translate Linux mount target into a Windows UNC path.
-    // /mnt/macdrive_3_abc12345  →  \\wsl.localhost\Ubuntu\mnt\macdrive_3_abc12345
+    // /mnt/crossdrive_3_abc12345  →  \\wsl.localhost\Ubuntu\mnt\crossdrive_3_abc12345
     const wslTarget = parsed.target;
     const validated = await validateWslMountTarget(wslTarget, parsed.device, parsed.fsType, mountNamespace);
     if (!validated.ok) {
@@ -555,6 +643,7 @@ let _wslKeepAlivePromise = null;
 let _wslElevatedKeepAliveStarted = false;
 let _wslElevatedKeepAlivePromise = null;
 let _wslKeepAliveProc = null;
+let _lastWslKeepAliveFailure = null;
 
 /**
  * Start a keep-alive loop *inside* WSL, then let wsl.exe exit immediately.
@@ -576,9 +665,14 @@ async function ensureWslKeepAlive(logFn = () => {}, mountNamespace = 'user') {
             "pgrep -f crossdrive-elevated-keepalive >/dev/null 2>&1 || { nohup bash -lc 'exec -a crossdrive-elevated-keepalive sleep 2147483647' >/dev/null 2>&1 & disown; }"
         ], { timeout: 60000, maxBuffer: 65536 }).then(() => {
             _wslElevatedKeepAliveStarted = true;
+            _lastWslKeepAliveFailure = null;
             return true;
         }).catch((err) => {
-            logFn(`Elevated WSL keep-alive failed to start: ${String(err.message || err).slice(0, 200)}`, 'warning');
+            const detail = normalizeWslText(err.stderr || err.stdout || err.message || err);
+            _lastWslKeepAliveFailure = classifyWslRuntimeError(detail) || {
+                error: 'WSL keep-alive could not be started. Refusing to mount because WSL may tear down the Mac volume while Windows is still writing.'
+            };
+            logFn(`Elevated WSL keep-alive failed to start: ${detail.slice(0, 200)}`, 'warning');
             _wslElevatedKeepAliveStarted = false;
             return false;
         }).finally(() => {
@@ -592,9 +686,14 @@ async function ensureWslKeepAlive(logFn = () => {}, mountNamespace = 'user') {
 
     _wslKeepAlivePromise = runUserSessionHelper(['wslkeepalive', 'M'], 10000).then(() => {
         _wslKeepAliveStarted = true;
+        _lastWslKeepAliveFailure = null;
         return true;
     }).catch((err) => {
-        logFn(`WSL keep-alive failed to start: ${String(err.message || err).slice(0, 200)}`, 'warning');
+        const detail = normalizeWslText(err.stderr || err.stdout || err.message || err);
+        _lastWslKeepAliveFailure = classifyWslRuntimeError(detail) || {
+            error: 'WSL keep-alive could not be started. Refusing to mount because WSL may tear down the Mac volume while Windows is still writing.'
+        };
+        logFn(`WSL keep-alive failed to start: ${detail.slice(0, 200)}`, 'warning');
         _wslKeepAliveStarted = false;
         return false;
     }).finally(() => {
@@ -619,7 +718,7 @@ function stopWslKeepAlive() {
     }
     runWsl([
         '-d', WSL_DISTRO, '-u', 'root', '--', 'sh', '-lc',
-        'pkill -f crossdrive-keepalive 2>/dev/null || true; pkill -f crossdrive-elevated-keepalive 2>/dev/null || true; pkill -f macmount-keepalive 2>/dev/null || true; pkill -f macmount-elevated-keepalive 2>/dev/null || true; rm -f /tmp/crossdrive/keepalive.pid /tmp/macmount/keepalive.pid'
+        'pkill -f crossdrive-keepalive 2>/dev/null || true; pkill -f crossdrive-elevated-keepalive 2>/dev/null || true; rm -f /tmp/crossdrive/keepalive.pid'
     ], { timeout: 5000, maxBuffer: 65536 }).catch(() => {});
 }
 
