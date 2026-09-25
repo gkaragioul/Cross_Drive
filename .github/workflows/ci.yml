@@ -29,6 +29,12 @@ jobs:
       - name: Self test
         run: npm run test
 
+      - name: GPL source provenance audit
+        run: npm run license:audit
+
+      - name: Build matching GPL source archive
+        run: npm run license:source-bundle -- --release
+
       - name: Product trace audit
         run: npm run trace:check
 

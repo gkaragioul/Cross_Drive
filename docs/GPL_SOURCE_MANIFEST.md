@@ -3,19 +3,38 @@
 This manifest records the source references for GPL-covered binary artifacts
 bundled with CrossDrive releases.
 
-## Bundled Artifacts
+## v1.5.35 source-built artifacts
 
-| Artifact | Version / ABI | Source | License |
+The binaries currently in `prereqs/crossdrive-kernel/` were rebuilt for
+v1.5.35 from the pinned upstream revisions, final kernel configuration,
+[`build-components.sh`](gpl-source/v1.5.35/build-components.sh), and one
+documented patch to the kernel's libbpf host tool. Their hashes and common
+module ABI are in the [v1.5.35 provenance record](gpl-source/v1.5.35/provenance.json).
+The release source archive is named `CrossDrive-GPL-Source-v1.5.35.zip` and
+must be offered alongside any installer containing these binaries.
+
+| Artifact | Kernel ABI / version | Source | License |
 | --- | --- | --- | --- |
-| `prereqs/crossdrive-kernel/wsl_kernel` | `6.6.87.2-microsoft-standard-WSL2+` | `microsoft/WSL2-Linux-Kernel`, tag `linux-msft-wsl-6.6.87.2` | GPL-2.0 |
-| `prereqs/crossdrive-kernel/modules/hfs.ko` | `vermagic=6.6.87.2-microsoft-standard-WSL2+ SMP preempt mod_unload modversions` | Linux kernel HFS driver from the same WSL2 Linux kernel source tree | GPL-2.0 |
-| `prereqs/crossdrive-kernel/modules/hfsplus.ko` | `vermagic=6.6.87.2-microsoft-standard-WSL2+ SMP preempt mod_unload modversions` | Linux kernel HFS+ driver from the same WSL2 Linux kernel source tree | GPL-2.0 |
-| `prereqs/crossdrive-kernel/modules/apfs.ko` | `linux-apfs-rw 0.3.20`, `vermagic=6.6.87.2-microsoft-standard-WSL2+ SMP preempt mod_unload modversions` | `linux-apfs/linux-apfs-rw`, release/tag `v0.3.20` or the corresponding `0.3.20` source revision | GPL |
+| `prereqs/crossdrive-kernel/wsl_kernel` | `6.6.87.2-microsoft-standard-WSL2` | `microsoft/WSL2-Linux-Kernel`, tag `linux-msft-wsl-6.6.87.2` plus recorded host-tool patch | GPL-2.0 |
+| `prereqs/crossdrive-kernel/modules/hfs.ko` | `6.6.87.2-microsoft-standard-WSL2` | HFS driver in the same kernel source tree | GPL-2.0 |
+| `prereqs/crossdrive-kernel/modules/hfsplus.ko` | `6.6.87.2-microsoft-standard-WSL2` | HFS+ driver in the same kernel source tree | GPL-2.0 |
+| `prereqs/crossdrive-kernel/modules/apfs.ko` | `0.3.20?`, built for the same kernel ABI | `linux-apfs/linux-apfs-rw`, tag `v0.3.20` | GPL-2.0 |
+
+## v1.5.34 provenance status
+
+The exact kernel `.config` was recovered from the shipped `wsl_kernel` and is
+stored with binary hashes and pinned upstream commits in
+[`gpl-source/v1.5.34/`](gpl-source/v1.5.34/README.md). The original build
+tree, build script, and any local patches have not been recovered, so these
+materials are **not yet verified as complete corresponding source** for the
+historical binaries. The written source offer remains in force. A source
+materials archive must not be labeled a complete source bundle until this
+provenance gap is resolved.
 
 ## Known Build Configuration
 
-The bundled WSL2 kernel is expected to use the Microsoft WSL2 kernel source
-with HFS/HFS+ built as modules:
+The final v1.5.35 configuration has HFS/HFS+ built
+as modules:
 
 ```text
 CONFIG_HFS_FS=m

@@ -2,6 +2,10 @@ $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
+$version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+foreach ($artifact in @("dist\CrossDriveSetup.exe", "dist\CrossDrive-$version.exe")) {
+    if (Test-Path -LiteralPath $artifact) { Remove-Item -LiteralPath $artifact -Force }
+}
 
 # Force unsigned build for CI/staging validation.
 Remove-Item Env:CSC_LINK -ErrorAction SilentlyContinue

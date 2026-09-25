@@ -1,0 +1,26 @@
+{
+  "release": "v1.5.34",
+  "status": "reconstructed-unverified",
+  "localPatches": null,
+  "originalBuildScript": null,
+  "kernelSource": {
+    "repository": "https://github.com/microsoft/WSL2-Linux-Kernel.git",
+    "ref": "linux-msft-wsl-6.6.87.2",
+    "commit": "427645e3db3a8896714f22a3d3fe0c3f7b317ad4"
+  },
+  "apfsSource": {
+    "repository": "https://github.com/linux-apfs/linux-apfs-rw.git",
+    "ref": "v0.3.20",
+    "commit": "628b6810e46bcdd423189d2c66295258e10090dc"
+  },
+  "kernelConfig": {
+    "path": "docs/gpl-source/v1.5.34/kernel.config",
+    "sha256": "1e4cfd4dacd67fecc73562bf3992ccb372891bf12860e0d6b0c415cabf32f30a"
+  },
+  "binaries": {
+    "prereqs/crossdrive-kernel/wsl_kernel": "a69177f7745910ea179c6e125431c48177757939206ac9863e8941d4c81f2f70",
+    "prereqs/crossdrive-kernel/modules/apfs.ko": "d5f816b7f032ad760919203e7a93e6d331f03aacd72af48a33d3712d63181211",
+    "prereqs/crossdrive-kernel/modules/hfs.ko": "60954fd46ac3a922a1fc808ece191197b30fa81cb9daf24b6c32dc262e2aa220",
+    "prereqs/crossdrive-kernel/modules/hfsplus.ko": "79f403546df7bcaebf298e8448ececab5f9ccec3d7d33f69f9b045437653c8c9"
+  }
+}

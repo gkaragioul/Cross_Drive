@@ -13,38 +13,10 @@ $pkg = Get-Content $pkgPath | ConvertFrom-Json
 $productName = if (-not [string]::IsNullOrWhiteSpace($pkg.build.productName)) { $pkg.build.productName } else { $pkg.productName }
 if ([string]::IsNullOrWhiteSpace($productName)) { $productName = "CrossDrive" }
 
-$setupPatterns = @(
-    "${productName}Setup.exe",        # current stable artifactName
-    "$productName-Setup-*.exe",       # legacy
-    "$productName Setup *.exe"        # legacy
-)
-$setupExe = $null
-foreach ($pattern in $setupPatterns) {
-    $candidate = Get-ChildItem -Path $distDir -Filter $pattern -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    if ($candidate) {
-        $setupExe = $candidate
-        break
-    }
-}
-$portablePatterns = @(
-    "$productName-*.exe",             # current artifactName: CrossDrive-<version>.exe
-    "$productName *.exe"              # legacy: CrossDrive <version>.exe
-)
-$portableExe = $null
-foreach ($pattern in $portablePatterns) {
-    $candidate = Get-ChildItem -Path $distDir -Filter $pattern -ErrorAction SilentlyContinue |
-        Where-Object {
-            $_.Name -notlike "$productName Setup *" -and
-            $_.Name -notlike "$productName-Setup-*" -and
-            $_.Name -ne "${productName}Setup.exe"
-        } |
-        Sort-Object LastWriteTime -Descending |
-        Select-Object -First 1
-    if ($candidate) {
-        $portableExe = $candidate
-        break
-    }
-}
+$setupPath = Join-Path $distDir "${productName}Setup.exe"
+$portablePath = Join-Path $distDir "$productName-$($pkg.version).exe"
+$setupExe = if (Test-Path -LiteralPath $setupPath) { Get-Item -LiteralPath $setupPath } else { $null }
+$portableExe = if (Test-Path -LiteralPath $portablePath) { Get-Item -LiteralPath $portablePath } else { $null }
 $releaseExe = if ($setupExe) { $setupExe } else { $portableExe }
 
 Write-Host "$productName Release Audit"
@@ -212,6 +184,22 @@ $checks += [pscustomobject]@{
     Detail = $(if ($forbiddenFound.Count -eq 0) { "No forbidden scripts found in resources/scripts or app.asar.unpacked/scripts" } else { ($forbiddenFound -join "; ") })
 }
 
+$linuxScriptNames = @("wsl_mount.sh", "wsl_unmount.sh", "wsl_install_modules.sh", "wsl_validate_mount.sh", "wsl_format_and_mount.sh")
+$linuxScriptFailures = @()
+foreach ($scriptName in $linuxScriptNames) {
+    $scriptPath = Join-Path $root "dist\win-unpacked\resources\scripts\$scriptName"
+    if (-not (Test-Path -LiteralPath $scriptPath)) {
+        $linuxScriptFailures += "$scriptName missing"
+    } elseif ([IO.File]::ReadAllText($scriptPath).Contains("`r")) {
+        $linuxScriptFailures += "$scriptName contains CRLF"
+    }
+}
+$checks += [pscustomobject]@{
+    Check = "Bundled Linux scripts retain LF endings"
+    Passed = ($linuxScriptFailures.Count -eq 0)
+    Detail = $(if ($linuxScriptFailures.Count -eq 0) { "All five WSL shell scripts contain LF only" } else { ($linuxScriptFailures -join "; ") })
+}
+
 $nativeBinResourcePath = Join-Path $root "dist\win-unpacked\resources\native-bin"
 $duplicateNativeBinPath = Join-Path $root "dist\win-unpacked\resources\app.asar.unpacked\native\bin"
 $checks += [pscustomobject]@{
@@ -251,6 +239,15 @@ $checks += [pscustomobject]@{
              ($gplManifestText -match "0\.3\.20") -and
              ($gplManifestText -match "kernel ``\.config``|kernel `\.config`|kernel \.config")
     Detail = $gplManifestPath
+}
+
+$gplAuditArgs = @((Join-Path $root "scripts\gpl-source-audit.js"))
+if (-not $AllowUnsigned) { $gplAuditArgs += "--release" }
+& node @gplAuditArgs
+$checks += [pscustomobject]@{
+    Check = "GPL binary provenance and source bundle"
+    Passed = ($LASTEXITCODE -eq 0)
+    Detail = $(if ($AllowUnsigned) { "Binary/configuration match checked-in record" } else { "Verified provenance and source archive required" })
 }
 
 $gplLicensePath = Join-Path $root "build\LICENSE.GPL-2.0.txt"
@@ -419,7 +416,7 @@ $checks += [pscustomobject]@{
 
 $checks | Format-Table -AutoSize
 
-$failed = $checks | Where-Object { -not $_.Passed }
+$failed = @($checks | Where-Object { -not $_.Passed })
 if ($failed.Count -gt 0) {
     Write-Host ""
     Write-Host "Release audit FAILED." -ForegroundColor Red

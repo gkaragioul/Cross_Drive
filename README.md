@@ -9,7 +9,7 @@ https://github.com/user-attachments/assets/c7755cff-ae9e-4af9-bac5-8dbea1d96bd5
 </p>
 
 <p>
-  <a href="https://github.com/gkaragioul/Cross_Drive/releases">Download</a> -
+  <a href="#downloads">Downloads</a> -
   <a href="#features">Features</a> -
   <a href="#requirements">Requirements</a> -
   <a href="#development">Building</a> -
@@ -33,6 +33,14 @@ default unless `CROSSDRIVE_EXPERIMENTAL_APFS_WRITES=1` is set. The legacy
 `CROSSDRIVE_EXPERIMENTAL_APFS_WRITES` alias is still accepted. CoreStorage /
 FileVault 1 is detected but explicitly unsupported.
 
+## Downloads
+
+The v1.5.35 Windows installer and portable executable are **unsigned**. Obtain
+them and `CrossDrive-GPL-Source-v1.5.35.zip` from the same
+[GitHub release](https://github.com/gkaragioul/Cross_Drive/releases), and verify
+the SHA-256 hashes in its notes. The previously published v1.5.34 binaries have
+an unresolved GPL source provenance gap and should not be redistributed.
+
 ## License
 
 CrossDrive application source code is Free/Libre/Open Source Software
@@ -52,6 +60,11 @@ Binary distributions include third-party components under their own terms. See:
 - `build/GPL_SOURCE_OFFER.txt`
 - `docs/GPL_SOURCE_MANIFEST.md`
 - `build/LICENSE.GPL-2.0.txt`
+
+The [v1.5.35 GPL provenance record](docs/gpl-source/v1.5.35/README.md)
+documents the new source-built binaries. The
+[v1.5.34 record](docs/gpl-source/v1.5.34/README.md) retains the historical
+build-provenance gap.
 
 Required WinFsp attribution:
 
@@ -119,20 +132,26 @@ use CrossDrive.
 ## Release
 
 ```bash
-npm run release:win:full
-npm run release:audit
+npm run release:candidate
 ```
 
-Release artifacts:
+This signed path requires a real Authenticode certificate. For an explicitly
+unsigned release candidate, run `npm run release:candidate:unsigned`. Both
+paths build and audit the matching GPL source archive. The release artifacts
+are:
 
 - `dist/CrossDriveSetup.exe`
 - `dist/CrossDrive-<version>.exe`
+- `dist/CrossDrive-GPL-Source-v<version>.zip`
 
-For unsigned staging audits:
+From a clean `main` branch, run the following to publish all three assets and
+label the release unsigned:
 
-```bash
-npm run release:audit:unsigned
+```powershell
+.\scripts\publish-release.ps1 -Version 1.5.35 -AllowUnsigned
 ```
+
+Omit `-AllowUnsigned` to require signing.
 
 For production Authenticode signing, configure a real certificate with
 `CSC_LINK` / `WIN_CSC_LINK` and matching password environment variables.

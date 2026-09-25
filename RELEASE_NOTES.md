@@ -1,15 +1,19 @@
 <!-- Release notes for the next version. Edit before running scripts/publish-release.ps1. -->
-<!-- The publish script appends "SHA256: <hex>" to the bottom -- do not add it manually. -->
+<!-- The publish script appends SHA-256 hashes for all three assets. -->
 
 ## Summary
 
-License notice and installer compliance clarity.
+Source-built WSL filesystem components and matching GPL source archive.
+
+**Unsigned Windows release:** Neither the installer nor the portable executable
+has a code-signing signature. Verify the SHA-256 hashes in this release before
+installing. Download the GPL source ZIP alongside the Windows executable.
 
 ## Notable changes
 
-- **Clear MIT scope:** README and installer EULA now state that CrossDrive application source is MIT while third-party components keep their own license terms.
-- **Offline GPL manifest:** packaged installers now include the GPL source manifest alongside the GPL source offer and GPL-2.0 license text.
-- **App legal menu:** the Help menu now opens the GPL source manifest directly from the installed resources.
+- **Fresh GPL builds:** The bundled WSL kernel and APFS/HFS/HFS+ modules were rebuilt from pinned source for v1.5.35.
+- **Matching source download:** The release includes the exact source revisions, final kernel configuration, build script, and documented host-tool patch as a separate GPL source archive.
+- **Release checks:** Binary hashes, module ABI, and source archive contents are checked before publication.
 
 ## Where to download
 

@@ -1,0 +1,4 @@
+docs/gpl-source/**/kernel.config -text
+docs/gpl-source/**/*.sh text eol=lf
+docs/gpl-source/**/*.patch text eol=lf
+scripts/*.sh text eol=lf
