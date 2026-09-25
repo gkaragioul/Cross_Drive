@@ -35,11 +35,11 @@ FileVault 1 is detected but explicitly unsupported.
 
 ## Downloads
 
-The previously published v1.5.34 installers have an unresolved GPL source
-provenance gap and should not be redistributed. The v1.5.35 installer is being
-rebuilt with a matching source archive. When it is published, obtain both the
-installer and `CrossDrive-GPL-Source-v1.5.35.zip` from the same
-[GitHub release](https://github.com/gkaragioul/Cross_Drive/releases).
+The v1.5.35 Windows installer and portable executable are **unsigned**. Obtain
+them and `CrossDrive-GPL-Source-v1.5.35.zip` from the same
+[GitHub release](https://github.com/gkaragioul/Cross_Drive/releases), and verify
+the SHA-256 hashes in its notes. The previously published v1.5.34 binaries have
+an unresolved GPL source provenance gap and should not be redistributed.
 
 ## License
 
@@ -132,20 +132,26 @@ use CrossDrive.
 ## Release
 
 ```bash
-npm run release:win:full
-npm run release:audit
+npm run release:candidate
 ```
 
-Release artifacts:
+This signed path requires a real Authenticode certificate. For an explicitly
+unsigned release candidate, run `npm run release:candidate:unsigned`. Both
+paths build and audit the matching GPL source archive. The release artifacts
+are:
 
 - `dist/CrossDriveSetup.exe`
 - `dist/CrossDrive-<version>.exe`
+- `dist/CrossDrive-GPL-Source-v<version>.zip`
 
-For unsigned staging audits:
+From a clean `main` branch, run the following to publish all three assets and
+label the release unsigned:
 
-```bash
-npm run release:audit:unsigned
+```powershell
+.\scripts\publish-release.ps1 -Version 1.5.35 -AllowUnsigned
 ```
+
+Omit `-AllowUnsigned` to require signing.
 
 For production Authenticode signing, configure a real certificate with
 `CSC_LINK` / `WIN_CSC_LINK` and matching password environment variables.

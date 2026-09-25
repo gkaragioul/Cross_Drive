@@ -60,11 +60,19 @@ if (process.argv.includes('--release')) {
   assert.ok(fs.existsSync(bundle) && fs.statSync(bundle).size > 0,
     `Missing GPL source bundle: ${bundle}`);
   const entries = execFileSync('tar', ['-tf', bundle],
-    { encoding: 'utf8' }).split(/\r?\n/);
-  for (const file of ['kernel.config', 'provenance.json', 'REBUILD.md',
-    'WSL2-Linux-Kernel.tar.gz', 'linux-apfs-rw.tar.gz', 'original-build.sh',
-    'PATCHES.txt', 'install-modules.sh', 'wslSetup.js']) {
+    { encoding: 'utf8' }).split(/\r?\n/).filter(Boolean);
+  const requiredFiles = ['kernel.config', 'provenance.json', 'README.md',
+    'REBUILD.md', 'LICENSE.GPL-2.0.txt', 'WSL2-Linux-Kernel.tar.gz',
+    'linux-apfs-rw.tar.gz', 'original-build.sh', 'PATCHES.txt',
+    'install-modules.sh', 'wslSetup.js',
+    ...manifest.localPatches.map(patch => `patches/${path.basename(patch)}`)];
+  const expectedEntries = new Set(['./', './patches/',
+    ...requiredFiles.map(file => `./${file}`)]);
+  for (const file of requiredFiles) {
     assert.ok(entries.includes(`./${file}`), `GPL source bundle is missing ${file}`);
+  }
+  for (const entry of entries) {
+    assert.ok(expectedEntries.has(entry), `GPL source bundle contains unexpected entry ${entry}`);
   }
   for (const patch of manifest.localPatches) {
     assert.ok(entries.includes(`./patches/${path.basename(patch)}`),

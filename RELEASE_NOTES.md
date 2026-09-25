@@ -1,9 +1,13 @@
 <!-- Release notes for the next version. Edit before running scripts/publish-release.ps1. -->
-<!-- The publish script appends "SHA256: <hex>" to the bottom -- do not add it manually. -->
+<!-- The publish script appends SHA-256 hashes for all three assets. -->
 
 ## Summary
 
 Source-built WSL filesystem components and matching GPL source archive.
+
+**Unsigned Windows release:** Neither the installer nor the portable executable
+has a code-signing signature. Verify the SHA-256 hashes in this release before
+installing. Download the GPL source ZIP alongside the Windows executable.
 
 ## Notable changes
 

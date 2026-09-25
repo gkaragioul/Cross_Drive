@@ -1,10 +1,12 @@
 #!/usr/bin/env pwsh
 # Publish a CrossDrive release to Cross_Drive on GitHub.
-# Usage: .\scripts\publish-release.ps1 -Version 1.5.3 [-Manual]
+# Usage: .\scripts\publish-release.ps1 -Version 1.5.35 [-AllowUnsigned] [-Manual]
 #   -Manual: prepare and verify the release, then print the assets for manual upload.
+#   -AllowUnsigned: explicitly permit an unsigned installer and label the release.
 
 param(
   [Parameter(Mandatory=$true)][string]$Version,
+  [switch]$AllowUnsigned,
   [switch]$Manual
 )
 
@@ -32,8 +34,12 @@ try {
     throw "Requested v$Version does not match package.json v$packageVersion. Commit the versioned source and binaries first."
   }
 
-  Write-Host "[1/4] Building and auditing a signed release candidate..." -ForegroundColor Yellow
-  & npm run release:candidate
+  Write-Host "[1/4] Building and auditing a release candidate..." -ForegroundColor Yellow
+  if ($AllowUnsigned) {
+    & npm run release:candidate:unsigned
+  } else {
+    & npm run release:candidate
+  }
   if ($LASTEXITCODE -ne 0) { throw "release:candidate failed; no tag or release was created" }
 
   # Locate the exact three artifacts and compute their hashes.
@@ -43,6 +49,12 @@ try {
   if (-not (Test-Path $setupExe)) { throw "Missing $setupExe" }
   if (-not (Test-Path $portableExe)) { throw "Missing $portableExe" }
   if (-not (Test-Path $gplSource)) { throw "Missing $gplSource" }
+  if ($AllowUnsigned) {
+    foreach ($binary in @($setupExe, $portableExe)) {
+      $signature = Get-AuthenticodeSignature -FilePath $binary
+      if ($signature.Status -ne 'NotSigned') { throw "Expected an unsigned binary: $binary (status: $($signature.Status))" }
+    }
+  }
 
   Write-Host "[2/4] Computing artifact SHA-256 hashes..." -ForegroundColor Yellow
   $setupHash = (Get-FileHash $setupExe -Algorithm SHA256).Hash.ToLower()
@@ -52,6 +64,11 @@ try {
   $notesSource = Join-Path $root "RELEASE_NOTES.md"
   if (-not (Test-Path $notesSource)) { throw "RELEASE_NOTES.md missing. Edit it before running this script." }
   $notes = Get-Content $notesSource -Raw
+  $releaseTitle = "v$Version"
+  if ($AllowUnsigned) {
+    $releaseTitle += " (unsigned)"
+    $notes = "**Unsigned release:** The Windows executables do not have a code-signing signature. Verify their SHA-256 hashes below before installing.`n`n$notes"
+  }
   $notesFinal = "$notes`n`n## SHA-256`n- CrossDriveSetup.exe: $setupHash`n- CrossDrive-$Version.exe: $portableHash`n- CrossDrive-GPL-Source-v$Version.zip: $sourceHash`n"
   $tmpNotes = Join-Path $env:TEMP "crossdrive_release_notes_$Version.md"
   Set-Content $tmpNotes -Value $notesFinal -Encoding UTF8
@@ -59,7 +76,7 @@ try {
   if ($Manual) {
     Write-Host ""
     Write-Host "=== Ready for manual release ===" -ForegroundColor Green
-    Write-Host "After reviewing the signed artifacts, tag v$Version and upload all three files to ${targetFullName}:"
+    Write-Host "After reviewing the artifacts, tag v$Version and upload all three files to ${targetFullName}:"
     Write-Host "  $setupExe"
     Write-Host "  $portableExe"
     Write-Host "  $gplSource"
@@ -82,14 +99,14 @@ try {
   Write-Host "[4/4] Publishing GitHub release with binary and source assets..." -ForegroundColor Yellow
   & gh release view "v$Version" --repo $targetFullName *> $null
   if ($LASTEXITCODE -eq 0) {
-    & gh release edit "v$Version" --repo $targetFullName --title "v$Version" --notes-file $tmpNotes
+    & gh release edit "v$Version" --repo $targetFullName --title $releaseTitle --notes-file $tmpNotes
     if ($LASTEXITCODE -ne 0) { throw "gh release edit failed" }
     & gh release upload "v$Version" --repo $targetFullName $setupExe $portableExe $gplSource --clobber
     if ($LASTEXITCODE -ne 0) { throw "gh release upload failed" }
   } else {
     & gh release create "v$Version" `
         --repo $targetFullName `
-        --title "v$Version" `
+        --title $releaseTitle `
         --notes-file $tmpNotes `
         --verify-tag `
         $setupExe $portableExe $gplSource

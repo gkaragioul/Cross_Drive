@@ -80,7 +80,14 @@ try {
   const label = manifest.status === 'verified' ? 'GPL-Source' : 'GPL-Source-Materials';
   const output = path.join(root, 'dist', `CrossDrive-${label}-${release}.zip`);
   fs.mkdirSync(path.dirname(output), { recursive: true });
-  run('tar', ['-a', '-cf', output, '-C', stage, '.']);
+  const bundleFiles = ['WSL2-Linux-Kernel.tar.gz', 'linux-apfs-rw.tar.gz',
+    'kernel.config', 'provenance.json', 'README.md', 'REBUILD.md',
+    'LICENSE.GPL-2.0.txt', 'install-modules.sh', 'wslSetup.js', 'PATCHES.txt'];
+  if (manifest.status === 'verified') bundleFiles.push('original-build.sh', 'patches');
+  // The staging directory also holds temporary Git checkouts. Do not ship those
+  // .git packfiles alongside the pinned source archives.
+  run('tar', ['-a', '-cf', output, '-C', stage,
+    ...bundleFiles.map(file => `./${file}`)]);
   console.log(`${output} (${fs.statSync(output).size} bytes)`);
 } finally {
   const tempRoot = path.resolve(os.tmpdir()) + path.sep;
