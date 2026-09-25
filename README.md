@@ -9,7 +9,7 @@ https://github.com/user-attachments/assets/c7755cff-ae9e-4af9-bac5-8dbea1d96bd5
 </p>
 
 <p>
-  <a href="https://github.com/gkaragioul/Cross_Drive/releases">Download</a> -
+  <a href="#downloads">Downloads</a> -
   <a href="#features">Features</a> -
   <a href="#requirements">Requirements</a> -
   <a href="#development">Building</a> -
@@ -33,6 +33,14 @@ default unless `CROSSDRIVE_EXPERIMENTAL_APFS_WRITES=1` is set. The legacy
 `CROSSDRIVE_EXPERIMENTAL_APFS_WRITES` alias is still accepted. CoreStorage /
 FileVault 1 is detected but explicitly unsupported.
 
+## Downloads
+
+The previously published v1.5.34 installers have an unresolved GPL source
+provenance gap and should not be redistributed. The v1.5.35 installer is being
+rebuilt with a matching source archive. When it is published, obtain both the
+installer and `CrossDrive-GPL-Source-v1.5.35.zip` from the same
+[GitHub release](https://github.com/gkaragioul/Cross_Drive/releases).
+
 ## License
 
 CrossDrive application source code is Free/Libre/Open Source Software
@@ -53,9 +61,10 @@ Binary distributions include third-party components under their own terms. See:
 - `docs/GPL_SOURCE_MANIFEST.md`
 - `build/LICENSE.GPL-2.0.txt`
 
-The [v1.5.34 GPL provenance record](docs/gpl-source/v1.5.34/README.md)
-contains the exact configuration extracted from the shipped kernel and notes
-the remaining historical build-provenance gap.
+The [v1.5.35 GPL provenance record](docs/gpl-source/v1.5.35/README.md)
+documents the new source-built binaries. The
+[v1.5.34 record](docs/gpl-source/v1.5.34/README.md) retains the historical
+build-provenance gap.
 
 Required WinFsp attribution:
 

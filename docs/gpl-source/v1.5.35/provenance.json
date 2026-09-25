@@ -1,0 +1,35 @@
+{
+  "release": "v1.5.35",
+  "status": "verified",
+  "buildEnvironment": "Ubuntu 26.04 x86-64",
+  "compiler": "gcc-13 (Ubuntu 13.4.0-10ubuntu1) 13.4.0",
+  "binutils": "GNU ld (GNU Binutils for Ubuntu) 2.46",
+  "kernelRelease": "6.6.87.2-microsoft-standard-WSL2",
+  "apfsVersion": "0.3.20?",
+  "localPatches": [
+    "docs/gpl-source/v1.5.35/patches/0001-libbpf-const-next-path.patch"
+  ],
+  "originalBuildScript": "docs/gpl-source/v1.5.35/build-components.sh",
+  "kernelSource": {
+    "repository": "https://github.com/microsoft/WSL2-Linux-Kernel.git",
+    "ref": "linux-msft-wsl-6.6.87.2",
+    "commit": "427645e3db3a8896714f22a3d3fe0c3f7b317ad4",
+    "archiveSha256": "8fbc9e449ebd07d81557f93f4704a6290d6c0c1a2fec964c27a5e07a81c5ebd0"
+  },
+  "apfsSource": {
+    "repository": "https://github.com/linux-apfs/linux-apfs-rw.git",
+    "ref": "v0.3.20",
+    "commit": "628b6810e46bcdd423189d2c66295258e10090dc",
+    "archiveSha256": "8d8f3675fd6e446412b8a81b0b7a958d69f8ca3a35f593c97864a5cf5cb8aeea"
+  },
+  "kernelConfig": {
+    "path": "docs/gpl-source/v1.5.35/kernel.config",
+    "sha256": "3ea184d8c5b0997d006e497d32c0b75178dcc292b473bc8a923fa7a682034f2b"
+  },
+  "binaries": {
+    "prereqs/crossdrive-kernel/wsl_kernel": "71083d3c010a9c28d971ac2b2f81f8ff4019d6f8a3991a178cc94c1a53b5d7a7",
+    "prereqs/crossdrive-kernel/modules/apfs.ko": "9eb2ccb4dcb33ccf39b1d1ca593780d097e0474b459a2cb92104fb232cd77760",
+    "prereqs/crossdrive-kernel/modules/hfs.ko": "68adec922d7d3bf00d0d8b7dd1a883199bf6015aefc36e9206fd048c66ed100f",
+    "prereqs/crossdrive-kernel/modules/hfsplus.ko": "004aeda61d956a39484f56795df24cd64138e90fa223c0687fe4e9d0b441820f"
+  }
+}

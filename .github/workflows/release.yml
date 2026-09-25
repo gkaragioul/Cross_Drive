@@ -75,10 +75,13 @@ jobs:
           if (-not (Test-Path $portableExe)) { throw "Missing portable asset: $portableExe" }
           if (-not (Test-Path $gplSource)) { throw "Missing GPL source asset: $gplSource" }
 
-          $hash = (Get-FileHash $setupExe -Algorithm SHA256).Hash.ToLower()
+          $setupHash = (Get-FileHash $setupExe -Algorithm SHA256).Hash.ToLower()
+          $portableHash = (Get-FileHash $portableExe -Algorithm SHA256).Hash.ToLower()
+          $sourceHash = (Get-FileHash $gplSource -Algorithm SHA256).Hash.ToLower()
           $notesSource = if (Test-Path "RELEASE_NOTES.md") { Get-Content "RELEASE_NOTES.md" -Raw } else { "CrossDrive $tag" }
           $notesPath = Join-Path $env:RUNNER_TEMP "crossdrive-release-notes.md"
-          Set-Content -Path $notesPath -Value "$notesSource`n`nSHA256: $hash`n" -Encoding UTF8
+          $hashes = "## SHA-256`n- CrossDriveSetup.exe: $setupHash`n- CrossDrive-$version.exe: $portableHash`n- CrossDrive-GPL-Source-$tag.zip: $sourceHash`n"
+          Set-Content -Path $notesPath -Value "$notesSource`n`n$hashes" -Encoding UTF8
 
           if (gh release view $tag --repo "${{ github.repository }}" *> $null) {
             gh release edit $tag --repo "${{ github.repository }}" --title $tag --notes-file $notesPath --latest

@@ -1,7 +1,7 @@
 #!/usr/bin/env pwsh
 # Publish a CrossDrive release to Cross_Drive on GitHub.
 # Usage: .\scripts\publish-release.ps1 -Version 1.5.3 [-Manual]
-#   -Manual: skip the gh release create step; print the SHA256 line for manual upload.
+#   -Manual: prepare and verify the release, then print the assets for manual upload.
 
 param(
   [Parameter(Mandatory=$true)][string]$Version,
@@ -26,79 +26,75 @@ try {
   $dirty = & git status --porcelain
   if ($dirty) { throw "Working tree is dirty. Commit or stash first." }
 
-  # 2. Bump package.json version. Use Node so key order + indentation are
-  #    preserved and the file is written as UTF-8 without BOM.
-  #    (PowerShell's ConvertTo-Json reorders keys, and Set-Content -Encoding
-  #    UTF8 adds a BOM that Vite's PostCSS loader rejects as invalid JSON.)
-  Write-Host "[1/6] Bumping package.json version..." -ForegroundColor Yellow
-  $bumpScript = "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version='$Version';fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n');"
-  & node -e $bumpScript
-  if ($LASTEXITCODE -ne 0) { throw "package.json version bump failed" }
-  & git add package.json
-  & git commit -m "chore(release): v$Version"
+  # The GPL provenance and binaries must already be committed for this version.
+  $packageVersion = (Get-Content (Join-Path $root "package.json") -Raw | ConvertFrom-Json).version
+  if ($packageVersion -ne $Version) {
+    throw "Requested v$Version does not match package.json v$packageVersion. Commit the versioned source and binaries first."
+  }
 
-  # 3. Build + audit
-  Write-Host "[2/6] Building installer + portable..." -ForegroundColor Yellow
-  & npm run release:win:full
-  if ($LASTEXITCODE -ne 0) { throw "release:win:full failed" }
+  Write-Host "[1/4] Building and auditing a signed release candidate..." -ForegroundColor Yellow
+  & npm run release:candidate
+  if ($LASTEXITCODE -ne 0) { throw "release:candidate failed; no tag or release was created" }
 
-  Write-Host "[3/6] Running release gate (unsigned)..." -ForegroundColor Yellow
-  & npm run test
-  if ($LASTEXITCODE -ne 0) { throw "self-test failed" }
-  & npm run security:audit
-  if ($LASTEXITCODE -ne 0) { throw "security:audit failed" }
-  & npm run commercial:gate
-  if ($LASTEXITCODE -ne 0) { throw "commercial:gate failed" }
-  & npm run release:audit:unsigned
-  if ($LASTEXITCODE -ne 0) { throw "release:audit:unsigned failed" }
-
-  # 4. Locate artifacts and compute hash
+  # Locate the exact three artifacts and compute their hashes.
   $setupExe = Join-Path $root "dist\CrossDriveSetup.exe"
   $portableExe = Join-Path $root ("dist\CrossDrive-{0}.exe" -f $Version)
+  $gplSource = Join-Path $root ("dist\CrossDrive-GPL-Source-v{0}.zip" -f $Version)
   if (-not (Test-Path $setupExe)) { throw "Missing $setupExe" }
   if (-not (Test-Path $portableExe)) { throw "Missing $portableExe" }
+  if (-not (Test-Path $gplSource)) { throw "Missing $gplSource" }
 
-  Write-Host "[4/6] Computing SHA256 of installer..." -ForegroundColor Yellow
-  $hash = (Get-FileHash $setupExe -Algorithm SHA256).Hash.ToLower()
-  Write-Host "  SHA256: $hash" -ForegroundColor Cyan
+  Write-Host "[2/4] Computing artifact SHA-256 hashes..." -ForegroundColor Yellow
+  $setupHash = (Get-FileHash $setupExe -Algorithm SHA256).Hash.ToLower()
+  $portableHash = (Get-FileHash $portableExe -Algorithm SHA256).Hash.ToLower()
+  $sourceHash = (Get-FileHash $gplSource -Algorithm SHA256).Hash.ToLower()
 
-  # 5. Build release notes from RELEASE_NOTES.md + SHA256 line
   $notesSource = Join-Path $root "RELEASE_NOTES.md"
   if (-not (Test-Path $notesSource)) { throw "RELEASE_NOTES.md missing. Edit it before running this script." }
   $notes = Get-Content $notesSource -Raw
-  $notesFinal = "$notes`n`nSHA256: $hash`n"
+  $notesFinal = "$notes`n`n## SHA-256`n- CrossDriveSetup.exe: $setupHash`n- CrossDrive-$Version.exe: $portableHash`n- CrossDrive-GPL-Source-v$Version.zip: $sourceHash`n"
   $tmpNotes = Join-Path $env:TEMP "crossdrive_release_notes_$Version.md"
   Set-Content $tmpNotes -Value $notesFinal -Encoding UTF8
 
-  # 6. Tag and push
-  Write-Host "[5/6] Tagging v$Version and pushing..." -ForegroundColor Yellow
-  & git tag "v$Version"
-  & git push origin main
-  & git push origin "v$Version"
-
   if ($Manual) {
     Write-Host ""
-    Write-Host "=== Manual upload ===" -ForegroundColor Green
-    Write-Host "Upload these two files to a new release v$Version on ${targetFullName}:"
+    Write-Host "=== Ready for manual release ===" -ForegroundColor Green
+    Write-Host "After reviewing the signed artifacts, tag v$Version and upload all three files to ${targetFullName}:"
     Write-Host "  $setupExe"
     Write-Host "  $portableExe"
+    Write-Host "  $gplSource"
     Write-Host ""
-    Write-Host "Paste this into the release notes (replace the existing notes):"
+    Write-Host "Release notes:"
     Write-Host "---"
     Write-Host $notesFinal
     Write-Host "---"
-    Write-Host "SHA256 line is at the bottom." -ForegroundColor Cyan
     return
   }
 
-  # 7. gh release create on the Cross_Drive release feed
-  Write-Host "[6/6] Creating GitHub release on Cross_Drive..." -ForegroundColor Yellow
-  & gh release create "v$Version" `
-      --repo $targetFullName `
-      --title "v$Version" `
-      --notes-file $tmpNotes `
-      $setupExe $portableExe
-  if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
+  Write-Host "[3/4] Pushing main and v$Version tag..." -ForegroundColor Yellow
+  & git push origin main
+  if ($LASTEXITCODE -ne 0) { throw "Could not push main" }
+  & git tag "v$Version"
+  if ($LASTEXITCODE -ne 0) { throw "Could not create v$Version tag" }
+  & git push origin "v$Version"
+  if ($LASTEXITCODE -ne 0) { throw "Could not push v$Version tag" }
+
+  Write-Host "[4/4] Publishing GitHub release with binary and source assets..." -ForegroundColor Yellow
+  & gh release view "v$Version" --repo $targetFullName *> $null
+  if ($LASTEXITCODE -eq 0) {
+    & gh release edit "v$Version" --repo $targetFullName --title "v$Version" --notes-file $tmpNotes
+    if ($LASTEXITCODE -ne 0) { throw "gh release edit failed" }
+    & gh release upload "v$Version" --repo $targetFullName $setupExe $portableExe $gplSource --clobber
+    if ($LASTEXITCODE -ne 0) { throw "gh release upload failed" }
+  } else {
+    & gh release create "v$Version" `
+        --repo $targetFullName `
+        --title "v$Version" `
+        --notes-file $tmpNotes `
+        --verify-tag `
+        $setupExe $portableExe $gplSource
+    if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
+  }
 
   Write-Host ""
   Write-Host "=== Release v$Version published ===" -ForegroundColor Green

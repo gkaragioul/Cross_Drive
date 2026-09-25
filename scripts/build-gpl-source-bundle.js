@@ -1,4 +1,5 @@
 const { execFileSync } = require('node:child_process');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -25,12 +26,22 @@ function archiveSource(name, source) {
       'clone', '--no-checkout', '--depth', '1', '--branch', source.ref,
       source.repository, checkout]);
   }
-  const commit = run('git', ['-C', checkout, 'rev-parse', 'HEAD']);
+  // Source trees may be staged by another local account; trust only this exact path.
+  const safeDirectory = ['-c', `safe.directory=${checkout.replace(/\\/g, '/')}`];
+  const commit = run('git', [...safeDirectory, '-C', checkout, 'rev-parse', 'HEAD']);
   if (commit !== source.commit) {
     throw new Error(`${name} is at ${commit}, expected ${source.commit}`);
   }
-  run('git', ['-c', 'core.protectNTFS=false', '-C', checkout, 'archive',
+  // Git for Windows otherwise exports checkout-style CRLF into Linux build files.
+  run('git', [...safeDirectory, '-c', 'core.autocrlf=false', '-c', 'core.protectNTFS=false', '-C', checkout, 'archive',
     '--format=tar.gz', `--prefix=${name}/`, `--output=${path.join(stage, `${name}.tar.gz`)}`, 'HEAD']);
+  if (source.archiveSha256) {
+    const actual = crypto.createHash('sha256')
+      .update(fs.readFileSync(path.join(stage, `${name}.tar.gz`))).digest('hex');
+    if (actual !== source.archiveSha256) {
+      throw new Error(`${name} source archive hash mismatch: ${actual}`);
+    }
+  }
 }
 
 try {
@@ -42,6 +53,10 @@ try {
   }
   fs.copyFileSync(path.join(root, 'build', 'LICENSE.GPL-2.0.txt'),
     path.join(stage, 'LICENSE.GPL-2.0.txt'));
+  fs.copyFileSync(path.join(root, 'scripts', 'wsl_install_modules.sh'),
+    path.join(stage, 'install-modules.sh'));
+  fs.copyFileSync(path.join(root, 'scripts', 'wslSetup.js'),
+    path.join(stage, 'wslSetup.js'));
   if (manifest.status === 'verified') {
     if (!Array.isArray(manifest.localPatches) || !manifest.originalBuildScript) {
       throw new Error('Verified provenance requires an explicit patch list and original build script');
@@ -54,7 +69,9 @@ try {
       fs.copyFileSync(path.join(root, patch), path.join(patchDir, path.basename(patch)));
     }
     fs.writeFileSync(path.join(stage, 'PATCHES.txt'),
-      manifest.localPatches.length ? manifest.localPatches.join('\n') + '\n' : 'No local patches.\n');
+      manifest.localPatches.length
+        ? manifest.localPatches.map(patch => `patches/${path.basename(patch)}`).join('\n') + '\n'
+        : 'No local patches.\n');
   } else {
     fs.writeFileSync(path.join(stage, 'PATCHES.txt'),
       'Original patch history is unknown; this archive is source materials, not verified complete corresponding source.\n');
