@@ -53,6 +53,10 @@ Binary distributions include third-party components under their own terms. See:
 - `docs/GPL_SOURCE_MANIFEST.md`
 - `build/LICENSE.GPL-2.0.txt`
 
+The [v1.5.34 GPL provenance record](docs/gpl-source/v1.5.34/README.md)
+contains the exact configuration extracted from the shipped kernel and notes
+the remaining historical build-provenance gap.
+
 Required WinFsp attribution:
 
 WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos

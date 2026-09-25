@@ -253,6 +253,15 @@ $checks += [pscustomobject]@{
     Detail = $gplManifestPath
 }
 
+$gplAuditArgs = @((Join-Path $root "scripts\gpl-source-audit.js"))
+if (-not $AllowUnsigned) { $gplAuditArgs += "--release" }
+& node @gplAuditArgs
+$checks += [pscustomobject]@{
+    Check = "GPL binary provenance and source bundle"
+    Passed = ($LASTEXITCODE -eq 0)
+    Detail = $(if ($AllowUnsigned) { "Binary/configuration match checked-in record" } else { "Verified provenance and source archive required" })
+}
+
 $gplLicensePath = Join-Path $root "build\LICENSE.GPL-2.0.txt"
 $gplLicenseText = if (Test-Path $gplLicensePath) { Get-Content $gplLicensePath -Raw } else { "" }
 $checks += [pscustomobject]@{

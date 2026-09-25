@@ -3,6 +3,17 @@
 This manifest records the source references for GPL-covered binary artifacts
 bundled with CrossDrive releases.
 
+## v1.5.34 provenance status
+
+The exact kernel `.config` was recovered from the shipped `wsl_kernel` and is
+stored with binary hashes and pinned upstream commits in
+[`gpl-source/v1.5.34/`](gpl-source/v1.5.34/README.md). The original build
+tree, build script, and any local patches have not been recovered, so these
+materials are **not yet verified as complete corresponding source** for the
+historical binaries. The written source offer remains in force. A source
+materials archive must not be labeled a complete source bundle until this
+provenance gap is resolved.
+
 ## Bundled Artifacts
 
 | Artifact | Version / ABI | Source | License |
@@ -14,8 +25,8 @@ bundled with CrossDrive releases.
 
 ## Known Build Configuration
 
-The bundled WSL2 kernel is expected to use the Microsoft WSL2 kernel source
-with HFS/HFS+ built as modules:
+The recovered configuration from the bundled WSL2 kernel has HFS/HFS+ built
+as modules:
 
 ```text
 CONFIG_HFS_FS=m

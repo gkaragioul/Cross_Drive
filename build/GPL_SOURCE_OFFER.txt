@@ -24,9 +24,10 @@ How to Obtain Source
 
        docs/GPL_SOURCE_MANIFEST.md
 
-   That manifest records the exact upstream source revisions, configuration,
-   patches, and build scripts used for every GPL-covered binary included in
-   each release.
+   That manifest links to the release-specific provenance record. The record
+   states which source revisions, configuration, patches, and build scripts
+   have actually been verified. A source reference alone is not a substitute
+   for the complete corresponding source when it is requested.
 
 2. If the corresponding source for a GPL-covered binary you received is not
    already present in the repository above, request it by opening an issue at:

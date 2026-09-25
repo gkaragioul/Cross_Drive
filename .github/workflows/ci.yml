@@ -29,6 +29,9 @@ jobs:
       - name: Self test
         run: npm run test
 
+      - name: GPL source provenance audit
+        run: npm run license:audit
+
       - name: Product trace audit
         run: npm run trace:check
 

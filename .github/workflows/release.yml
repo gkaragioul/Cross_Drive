@@ -70,8 +70,10 @@ jobs:
           $version = $tag.TrimStart("v")
           $setupExe = "dist\CrossDriveSetup.exe"
           $portableExe = "dist\CrossDrive-$version.exe"
+          $gplSource = "dist\CrossDrive-GPL-Source-$tag.zip"
           if (-not (Test-Path $setupExe)) { throw "Missing updater installer asset: $setupExe" }
           if (-not (Test-Path $portableExe)) { throw "Missing portable asset: $portableExe" }
+          if (-not (Test-Path $gplSource)) { throw "Missing GPL source asset: $gplSource" }
 
           $hash = (Get-FileHash $setupExe -Algorithm SHA256).Hash.ToLower()
           $notesSource = if (Test-Path "RELEASE_NOTES.md") { Get-Content "RELEASE_NOTES.md" -Raw } else { "CrossDrive $tag" }
@@ -80,7 +82,7 @@ jobs:
 
           if (gh release view $tag --repo "${{ github.repository }}" *> $null) {
             gh release edit $tag --repo "${{ github.repository }}" --title $tag --notes-file $notesPath --latest
-            gh release upload $tag --repo "${{ github.repository }}" $setupExe $portableExe --clobber
+            gh release upload $tag --repo "${{ github.repository }}" $setupExe $portableExe $gplSource --clobber
           } else {
-            gh release create $tag --repo "${{ github.repository }}" --title $tag --notes-file $notesPath --latest $setupExe $portableExe
+            gh release create $tag --repo "${{ github.repository }}" --title $tag --notes-file $notesPath --latest $setupExe $portableExe $gplSource
           }

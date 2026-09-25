@@ -21,6 +21,10 @@ Write-Host "Building signed release artifacts..."
 npm run release:win:full
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+Write-Host "Packaging the exact GPL source for this release..."
+npm run license:source-bundle -- --release
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 Write-Host "Running strict signed release audit..."
 npm run release:audit
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

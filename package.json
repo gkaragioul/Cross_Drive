@@ -24,6 +24,8 @@
     "test": "node scripts/self-test.js",
     "trace:check": "node scripts/trace-check.js",
     "security:audit": "node scripts/security-audit.js",
+    "license:audit": "node scripts/gpl-source-audit.js",
+    "license:source-bundle": "node scripts/build-gpl-source-bundle.js",
     "commercial:gate": "node scripts/commercial-gate.js",
     "package": "npm run release:win:unsigned",
     "native:run": "dotnet run --project native/CrossDrive.NativeService/CrossDrive.NativeService.csproj",
