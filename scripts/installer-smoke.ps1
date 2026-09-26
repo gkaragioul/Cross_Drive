@@ -54,7 +54,8 @@ Write-Host "================================"
 Write-Host "Root: $Root"
 
 Require-File "NSIS installer exists" (Join-Path $dist "CrossDriveSetup.exe") 1000000
-Require-File "Portable artifact exists" (Join-Path $dist "CrossDrive-1.5.34.exe") 1000000
+$version = (Get-Content (Join-Path $Root "package.json") -Raw | ConvertFrom-Json).version
+Require-File "Portable artifact exists" (Join-Path $dist "CrossDrive-$version.exe") 1000000
 Require-File "Unpacked app executable exists" (Join-Path $unpacked "CrossDrive.exe") 1000000
 Require-File "app.asar exists" (Join-Path $resources "app.asar") 100000
 Require-Directory "native-bin resource directory exists" $nativeBin
