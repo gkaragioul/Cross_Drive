@@ -32,6 +32,25 @@ published so that others can study it, fork it and improve it under the MIT
 License. There will be no further releases, fixes or support from the original
 author. See [SUPPORT.md](SUPPORT.md).
 
+### What is on `main`
+
+The last published build is **v1.5.35**. Its exact source is the
+[`v1.5.35` tag](https://github.com/gkaragioul/Cross_Drive/tree/v1.5.35).
+
+`main` also contains later, **unreleased and untested** work from June 2026
+that was never built into a release:
+
+- The app no longer uses the WSL2 path. Mounting goes only through the bundled
+  native Windows helpers and WinFsp (`native_first` / `native_only`).
+- A native, read-only classic HFS provider.
+- More APFS read support (uncompressed decmpfs files, sparse files with holes,
+  resource forks shown as AppleDouble `._` files), HFS+ resource forks shown the
+  same way, and more APFS and HFS+ tests.
+- Installer and clean-machine smoke-test scripts and a production release gate.
+
+None of this was ever validated on real drives. It has the same dangerous HFS+
+behaviour described below.
+
 ## Known dangerous behaviour
 
 Read this before running any build of CrossDrive.
@@ -47,12 +66,13 @@ Read this before running any build of CrossDrive.
   mounting on a Mac. Most Mac external drives are formatted
   "Mac OS Extended (Journaled)" and are affected. A user reported exactly this
   in [#3](https://github.com/gkaragioul/Cross_Drive/issues/3).
-- **The optional WSL2 path repairs and force-mounts drives.**
-  `scripts/wsl_mount.sh` runs `fsck.hfsplus -f -y` (automatic repair) and then
-  mounts HFS+ with `-o rw,force`.
-- **`scripts/wsl_format_and_mount.sh` erases a drive.** It reformats the target
-  with `mkfs.hfsplus`. It ships with the app as a recovery tool. Never run it on
-  a drive that holds data.
+- **The optional WSL2 path in v1.5.35 and earlier builds repairs and
+  force-mounts drives.** Its `scripts/wsl_mount.sh` runs `fsck.hfsplus -f -y`
+  (automatic repair) and then mounts HFS+ with `-o rw,force`.
+- **v1.5.35 and earlier builds ship `scripts/wsl_format_and_mount.sh`, which
+  erases a drive.** It reformats the target with `mkfs.hfsplus` and was
+  included as a recovery tool. Never run it on a drive that holds data. (These
+  WSL scripts are no longer on `main`, but they are in every published build.)
 - APFS writes are experimental and off by default
   (`CROSSDRIVE_EXPERIMENTAL_APFS_WRITES=1` turns them on). Do not turn them on.
 
@@ -61,10 +81,12 @@ tool instead.
 
 ## What it does
 
-- Attempts to mount APFS, HFS and HFS+ Mac-formatted volumes on Windows.
+- Attempts to mount APFS, HFS and HFS+/HFSX Mac-formatted volumes on Windows
+  (on `main`, classic HFS is read-only through a native provider).
 - Exposes mounted volumes through local Windows drive letters.
-- Uses bundled native Windows helper services as the default mount path.
-- Keeps WSL2 kernel filesystem drivers as an optional advanced path.
+- Uses bundled native Windows helper services to read the disk.
+- v1.5.35 also kept WSL2 kernel filesystem drivers as an optional advanced
+  path; `main` has removed it.
 - Keeps backend communication local through loopback HTTP and named pipes.
 
 CoreStorage / FileVault 1 is detected but not supported.
@@ -120,28 +142,33 @@ commercial WinFsp license.
 
 ## Architecture
 
+On `main`:
+
 ```text
 Electron main process -> Express API on 127.0.0.1:3001
 React UI              -> polls local API for drive state
-.NET native helpers   -> default broker, service, and user-session drive mapping
+.NET native helpers   -> broker, service, and user-session drive mapping
+RawDiskEngine         -> APFS/HFS/HFS+ raw-disk parsing and providers
 WinFsp                -> bundled Windows filesystem presentation support
-WSL2 kernel path      -> optional APFS/HFS/HFS+ mount path
 ```
 
 Mount modes are controlled by `CROSSDRIVE_MOUNT_MODE`:
 
-- `native_first` - default customer path, using bundled native helpers first.
-- `native_only` - native helpers only, with WSL disabled.
-- `wsl_kernel` - optional WSL2 kernel path for advanced/testing installs.
+- `native_first` - default, using the bundled native helpers.
+- `native_only` - native helpers only.
+- Older values (including v1.5.35's `wsl_kernel`) fall back to `native_first`.
+
+v1.5.35 also had an optional `wsl_kernel` mode that mounted drives through the
+bundled WSL2 kernel and filesystem modules.
 
 ## Requirements
 
 - Windows 10/11 64-bit
 - Administrator privileges
 - WinFsp runtime, bundled as `prereqs/winfsp.msi` for installers
-- WSL2 with Ubuntu only if using the optional `wsl_kernel` mount mode
 - Node.js 20+ for development
 - .NET 9 SDK for native builds
+- v1.5.35 only: WSL2 with Ubuntu if using the optional `wsl_kernel` mount mode
 
 ## Development
 
@@ -157,6 +184,8 @@ Useful commands:
 
 ```bash
 npm run test
+npm run fs:test
+npm run installer:smoke
 npm run build
 npm run security:audit
 npm run commercial:gate
@@ -172,6 +201,9 @@ use CrossDrive.
 
 ## Release
 
+There will be no further releases. This section documents how v1.5.35 was
+built; build it from the `v1.5.35` tag, not from `main`.
+
 ```bash
 npm run release:candidate
 ```
@@ -185,7 +217,7 @@ are:
 - `dist/CrossDrive-<version>.exe`
 - `dist/CrossDrive-GPL-Source-v<version>.zip`
 
-From a clean `main` branch, run the following to publish all three assets and
+From a clean checkout, run the following to publish all three assets and
 label the release unsigned:
 
 ```powershell
@@ -199,7 +231,7 @@ For production Authenticode signing, configure a real certificate with
 
 ## Packaging Policy
 
-The installer should ship:
+The v1.5.35 installer ships:
 
 - unmodified `prereqs/winfsp.msi`
 - `prereqs/crossdrive-kernel/wsl_kernel`
@@ -211,6 +243,11 @@ The installer should ship:
 - `THIRD_PARTY_NOTICES.txt`
 - `GPL_SOURCE_OFFER.txt`
 - `GPL_SOURCE_MANIFEST.md`
+
+The unreleased native-only build on `main` no longer packages the WSL kernel,
+modules or WSL scripts. The kernel, the modules, `scripts/wsl_install_modules.sh`
+and `scripts/wslSetup.js` stay in this repository because they are part of the
+v1.5.35 GPL source record.
 
 The installer should not ship extracted WinFsp SDK/runtime folders such as
 `prereqs/winfsp-extract`.
@@ -231,9 +268,9 @@ These will not be fixed by the original author.
   [Known dangerous behaviour](#known-dangerous-behaviour)).
 - [#1](https://github.com/gkaragioul/Cross_Drive/issues/1): some drives are
   detected but show no files.
-- [#2](https://github.com/gkaragioul/Cross_Drive/issues/2): the WSL2 path looks
-  for a distro named exactly `Ubuntu` and fails when it has another name
-  (for example `Ubuntu-26.04`).
+- [#2](https://github.com/gkaragioul/Cross_Drive/issues/2): in v1.5.35, the WSL2
+  path looks for a distro named exactly `Ubuntu` and fails when it has another
+  name (for example `Ubuntu-26.04`).
 - APFS writes are experimental and hidden by default.
 - Hardware-bound APFS encryption requires the original Mac.
 - CoreStorage / FileVault 1 is unsupported.

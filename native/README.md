@@ -1,8 +1,8 @@
 # Native V2 Workstream
 
 ## Runtime behavior (current app)
-- The app runtime mount path is intentionally **WSL UNC only** for stability.
-- Native local-drive mounting is disabled in `server.js` while raw-disk engine work is in progress.
+- The app runtime mount path is Windows-native: raw-disk analysis and file projection run through the bundled CrossDrive native helpers and WinFsp.
+- Customer installs must not require external subsystem runtimes, Node.js, a separate .NET runtime, external bridge binaries, or developer tooling.
 
 ## Projects
 - `native/CrossDrive.NativeService`: WinFsp host and IPC service scaffolding.
@@ -14,8 +14,8 @@
 - `unmount`: unmount a native mounted drive by `driveId`.
 
 ## Why this split
-- WSL path based sources (`\\wsl.localhost\...`) are not a reliable basis for a true local Windows drive.
 - Real local-drive support requires reading raw disks directly in Windows and serving data through a native filesystem host.
+- External runtime fallbacks were removed so installer behavior stays predictable on clean customer machines.
 
 ## Immediate roadmap
 1. Expand APFS/HFS+ parsing from signature-only to metadata tree traversal.
