@@ -15,6 +15,8 @@ public sealed class CachedRawFileSystemProvider : IRawFileSystemProvider
 {
     private readonly IRawFileSystemProvider _inner;
     private readonly CacheOptions _options;
+    private readonly StringComparer _pathComparer;
+    private readonly StringComparison _pathComparison;
     
     // Directory entry cache: path -> cached directory listing
     private readonly ConcurrentDictionary<string, CachedDirectory> _dirCache;
@@ -42,11 +44,14 @@ public sealed class CachedRawFileSystemProvider : IRawFileSystemProvider
     {
         _inner = inner ?? throw new ArgumentNullException(nameof(inner));
         _options = options ?? CacheOptions.Default;
-        
-        _dirCache = new ConcurrentDictionary<string, CachedDirectory>(StringComparer.OrdinalIgnoreCase);
-        _entryCache = new ConcurrentDictionary<string, CachedEntry>(StringComparer.OrdinalIgnoreCase);
+        var caseSensitivePaths = IsCaseSensitiveFileSystem(_inner.FileSystemType);
+        _pathComparer = caseSensitivePaths ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase;
+        _pathComparison = caseSensitivePaths ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+
+        _dirCache = new ConcurrentDictionary<string, CachedDirectory>(_pathComparer);
+        _entryCache = new ConcurrentDictionary<string, CachedEntry>(_pathComparer);
         _blockCache = new ConcurrentDictionary<(string, long), CachedBlock>();
-        _readAheadCursor = new ConcurrentDictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        _readAheadCursor = new ConcurrentDictionary<string, long>(_pathComparer);
         
         _readAheadChannel = Channel.CreateUnbounded<ReadAheadRequest>(new UnboundedChannelOptions
         {
@@ -349,7 +354,7 @@ public sealed class CachedRawFileSystemProvider : IRawFileSystemProvider
         var normalized = NormalizePath(path);
         _entryCache.TryRemove(normalized, out _);
         // Invalidate all block cache entries for this path
-        foreach (var key in _blockCache.Keys.Where(k => string.Equals(k.Path, normalized, StringComparison.OrdinalIgnoreCase)).ToList())
+        foreach (var key in _blockCache.Keys.Where(k => string.Equals(k.Path, normalized, _pathComparison)).ToList())
             _blockCache.TryRemove(key, out _);
         return result;
     }
@@ -371,7 +376,7 @@ public sealed class CachedRawFileSystemProvider : IRawFileSystemProvider
         _inner.Delete(path);
         var normalized = NormalizePath(path);
         _entryCache.TryRemove(normalized, out _);
-        foreach (var key in _blockCache.Keys.Where(k => string.Equals(k.Path, normalized, StringComparison.OrdinalIgnoreCase)).ToList())
+        foreach (var key in _blockCache.Keys.Where(k => string.Equals(k.Path, normalized, _pathComparison)).ToList())
             _blockCache.TryRemove(key, out _);
         InvalidateDirectoryCache(path);
     }
@@ -392,7 +397,7 @@ public sealed class CachedRawFileSystemProvider : IRawFileSystemProvider
         _inner.SetFileSize(path, newSize);
         var normalized = NormalizePath(path);
         _entryCache.TryRemove(normalized, out _);
-        foreach (var key in _blockCache.Keys.Where(k => string.Equals(k.Path, normalized, StringComparison.OrdinalIgnoreCase)).ToList())
+        foreach (var key in _blockCache.Keys.Where(k => string.Equals(k.Path, normalized, _pathComparison)).ToList())
             _blockCache.TryRemove(key, out _);
     }
 
@@ -458,6 +463,9 @@ public sealed class CachedRawFileSystemProvider : IRawFileSystemProvider
         if (!p.StartsWith("\\")) p = "\\" + p.TrimStart('\\');
         return p;
     }
+
+    private static bool IsCaseSensitiveFileSystem(string fileSystemType)
+        => string.Equals(fileSystemType, "HFSX", StringComparison.OrdinalIgnoreCase);
 
     private readonly record struct CachedDirectory(RawFsEntry[] Entries, DateTimeOffset CachedAt)
     {

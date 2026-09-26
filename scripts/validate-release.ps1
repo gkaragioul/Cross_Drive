@@ -41,7 +41,7 @@ if ($winFspSvc) {
     if ($winFspPath) {
         Pass "WinFsp binaries found (service may not be started yet)"
     } else {
-        Fail "WinFsp is not installed. Run the installer or use the Auto-Install button."
+        Fail "WinFsp is not installed. Run the installer or CrossDrive runtime repair."
     }
 }
 
@@ -53,29 +53,8 @@ if (Test-Path $fsptool) {
     Fail "fsptool-x64.exe not found"
 }
 
-# .NET runtime
-try {
-    $dotnetVer = dotnet --version 2>$null
-    if ($dotnetVer) {
-        Pass ".NET runtime available: $dotnetVer"
-    } else {
-        Fail ".NET runtime not found"
-    }
-} catch {
-    Fail ".NET runtime check failed: $_"
-}
-
-# Node.js
-try {
-    $nodeVer = node --version 2>$null
-    if ($nodeVer) {
-        Pass "Node.js available: $nodeVer"
-    } else {
-        Fail "Node.js not found"
-    }
-} catch {
-    Fail "Node.js check failed: $_"
-}
+# Developer runtimes
+Pass ".NET and Node.js are not customer prerequisites; CrossDrive ships self-contained native helpers and packaged Electron runtime"
 
 # Admin rights
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).
@@ -114,21 +93,12 @@ if (Test-Path $nativeBinDir) {
     Fail "native/bin/ directory not found. Run: npm run native:publish"
 }
 
-# Legacy apfs-fuse.exe (optional compatibility artifact only)
-$apfsFuseCandidates = @(
-    (Join-Path $scriptDir "native-bridge-bin\apfs-fuse.exe"),
-    (Join-Path $scriptDir "native-bridge\apfs-fuse\build\apfs-fuse.exe")
-)
-$apfsFuseFound = $false
-foreach ($c in $apfsFuseCandidates) {
-    if (Test-Path $c) {
-        Pass "apfs-fuse.exe found at $c"
-        $apfsFuseFound = $true
-        break
-    }
-}
-if (-not $apfsFuseFound) {
-    Warn "Legacy apfs-fuse.exe not found. This is acceptable for the WSL2/native GA path; APFS unlock validation must use WSL kernel/native raw-provider flows."
+# External bridge binaries
+$externalBridgeDir = Join-Path $scriptDir "native-bridge-bin"
+if (Test-Path $externalBridgeDir) {
+    Fail "Legacy external bridge directory should not be required or packaged for the native-only runtime"
+} else {
+    Pass "No external bridge directory is required"
 }
 
 # PowerShell scripts

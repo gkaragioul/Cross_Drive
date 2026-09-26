@@ -1,7 +1,7 @@
 module.exports = function mountNativeRoutes(app, ctx) {
     const {
         addLog, getNativeStatus, sendNativeWithBoot, ensureBrokerReady,
-        RUNTIME_NATIVE_MOUNT_ENABLED, RUNTIME_MOUNT_MODE, RUNTIME_CANARY_PERCENT, RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK
+        RUNTIME_NATIVE_MOUNT_ENABLED, RUNTIME_MOUNT_MODE, RUNTIME_CANARY_PERCENT
     } = ctx;
 
     app.get('/api/native/status', async (req, res) => {
@@ -10,8 +10,7 @@ module.exports = function mountNativeRoutes(app, ctx) {
             ...native,
             runtimeNativeEnabled: RUNTIME_NATIVE_MOUNT_ENABLED,
             mode: RUNTIME_MOUNT_MODE,
-            canaryPercent: RUNTIME_CANARY_PERCENT,
-            allowBridgeFallback: RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK
+            canaryPercent: RUNTIME_CANARY_PERCENT
         });
     });
 
@@ -133,8 +132,7 @@ module.exports = function mountNativeRoutes(app, ctx) {
         res.json({
             mode: RUNTIME_MOUNT_MODE,
             nativeEnabled: RUNTIME_NATIVE_MOUNT_ENABLED,
-            canaryPercent: RUNTIME_CANARY_PERCENT,
-            allowBridgeFallback: RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK
+            canaryPercent: RUNTIME_CANARY_PERCENT
         });
     });
 

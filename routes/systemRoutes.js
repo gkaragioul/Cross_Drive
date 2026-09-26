@@ -7,7 +7,7 @@ module.exports = function mountSystemRoutes(app, ctx) {
     const {
         addLog, logs, setupState, getNativeStatus,
         RUNTIME_MOUNT_MODE, RUNTIME_NATIVE_MOUNT_ENABLED,
-        RUNTIME_CANARY_PERCENT, RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK,
+        RUNTIME_CANARY_PERCENT,
         isAdmin, hasRawDiskAccess, PS_PATH, sendNativeWithBoot
     } = ctx;
 
@@ -32,15 +32,13 @@ module.exports = function mountSystemRoutes(app, ctx) {
     app.get('/api/status', (req, res) => {
         res.json({
             ...setupState,
-            wslSetup: setupState.wslSetup || null,
             elevated: !!isAdmin?.(),
             rawDiskAccess: !!hasRawDiskAccess?.(),
             version: pkg.version,
             runtime: {
                 mountMode: RUNTIME_MOUNT_MODE,
                 nativeMountEnabled: RUNTIME_NATIVE_MOUNT_ENABLED,
-                canaryPercent: RUNTIME_CANARY_PERCENT,
-                allowNativeBridgeFallback: RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK
+                canaryPercent: RUNTIME_CANARY_PERCENT
             }
         });
     });
@@ -94,16 +92,16 @@ module.exports = function mountSystemRoutes(app, ctx) {
         return res.status(410).json({
             success: false,
             error: 'Setup endpoint disabled.',
-            suggestion: 'Installer-managed prerequisites only.'
+            suggestion: 'CrossDrive uses its bundled native runtime.'
         });
     });
 
     app.post('/api/fix-drivers', (req, res) => {
-        addLog("Driver repair endpoint is disabled in zero-setup runtime mode.");
+        addLog("Runtime repair endpoint is disabled in zero-setup runtime mode.");
         return res.status(410).json({
             success: false,
-            error: 'Driver repair endpoint disabled.',
-            suggestion: 'Use installer-based updates for prerequisites.'
+            error: 'Runtime repair endpoint disabled.',
+            suggestion: 'Use the CrossDrive installer repair option.'
         });
     });
 
@@ -151,8 +149,7 @@ module.exports = function mountSystemRoutes(app, ctx) {
                 app: {
                     runtimeNativeMountEnabled: RUNTIME_NATIVE_MOUNT_ENABLED,
                     runtimeMountMode: RUNTIME_MOUNT_MODE,
-                    runtimeCanaryPercent: RUNTIME_CANARY_PERCENT,
-                    runtimeAllowBridgeFallback: RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK
+                    runtimeCanaryPercent: RUNTIME_CANARY_PERCENT
                 },
                 setupState,
                 nativeStatus: await getNativeStatus(),
@@ -442,7 +439,10 @@ module.exports = function mountSystemRoutes(app, ctx) {
             const unsupportedFormats = requiredFormats.filter(format => coverage[format].status === 'unsupported');
             const needsPasswordFormats = requiredFormats.filter(format => coverage[format].status === 'needs_password');
             const failedFormats = requiredFormats.filter(format => ['detected', 'mount_failed'].includes(coverage[format].status));
-            const complete = requiredFormats.every(format => coverage[format].status === 'opened');
+            const complete = requiredFormats.every(format => {
+                const status = coverage[format].status;
+                return format === 'CoreStorage' ? status === 'unsupported' : status === 'opened';
+            });
             const filePath = path.join(outDir, `real-media-${Date.now()}.json`);
             const payload = {
                 createdAt: new Date().toISOString(),
@@ -463,8 +463,7 @@ module.exports = function mountSystemRoutes(app, ctx) {
                     runtime: {
                         mountMode: RUNTIME_MOUNT_MODE,
                         nativeMountEnabled: RUNTIME_NATIVE_MOUNT_ENABLED,
-                        canaryPercent: RUNTIME_CANARY_PERCENT,
-                        allowNativeBridgeFallback: RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK
+                        canaryPercent: RUNTIME_CANARY_PERCENT
                     }
                 },
                 coverage,

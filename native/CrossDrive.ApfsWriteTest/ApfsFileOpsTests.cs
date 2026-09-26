@@ -1,4 +1,6 @@
 using System.Buffers.Binary;
+using System.IO.Compression;
+using System.Reflection;
 using System.Text;
 using CrossDrive.RawDiskEngine;
 
@@ -240,6 +242,451 @@ internal static class ApfsFileOpsTests
             Assert(ApfsChecksum.Verify(vsb), "VSB checksum invalid after FlushAsync");
         });
 
+        await Run("11. APFS decmpfs zlib inline reports uncompressed size and decompresses bytes", async () =>
+        {
+            await Task.CompletedTask;
+
+            var plain = Encoding.UTF8.GetBytes(string.Concat(Enumerable.Repeat("CrossDrive compressed APFS payload. ", 128)));
+            var decmpfs = BuildInlineDecmpfs(compressionType: 3, plain, CompressDeflate(plain));
+
+            var providerType = Type.GetType("CrossDrive.RawDiskEngine.ApfsRawFileSystemProvider, CrossDrive.RawDiskEngine", throwOnError: true)!;
+            var sizeMethod = providerType.GetMethod("TryReadInlineDecmpfsUncompressedSize", BindingFlags.NonPublic | BindingFlags.Static)!;
+            var decompressMethod = providerType.GetMethod("TryDecompressInlineDecmpfs", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+            var logicalSize = (long?)sizeMethod.Invoke(null, new object[] { decmpfs });
+            var decompressed = (byte[]?)decompressMethod.Invoke(null, new object[] { decmpfs });
+
+            Assert(decmpfs.Length < plain.Length, $"test payload did not compress: compressed={decmpfs.Length} plain={plain.Length}");
+            Assert(logicalSize == plain.Length, $"expected logical size {plain.Length}, got {logicalSize}");
+            if (decompressed is null) throw new Exception("decompression returned null");
+            Assert(decompressed.SequenceEqual(plain), "decompressed bytes do not match original payload");
+        });
+
+        await Run("12. APFS decmpfs uncompressed inline size is header logical size", async () =>
+        {
+            await Task.CompletedTask;
+
+            var plain = Encoding.UTF8.GetBytes("resident APFS data");
+            var decmpfs = BuildInlineDecmpfs(compressionType: 1, plain, plain);
+
+            var providerType = Type.GetType("CrossDrive.RawDiskEngine.ApfsRawFileSystemProvider, CrossDrive.RawDiskEngine", throwOnError: true)!;
+            var logicalSizeMethod = providerType.GetMethod("GetInlineDataLogicalSize", BindingFlags.NonPublic | BindingFlags.Static)!;
+            var logicalSize = (long)logicalSizeMethod.Invoke(null, new object[] { decmpfs, true })!;
+
+            Assert(logicalSize == plain.Length, $"expected logical size {plain.Length}, got {logicalSize}");
+        });
+
+        await Run("13. APFS decmpfs uncompressed inline pads short resident payload to logical size", async () =>
+        {
+            await Task.CompletedTask;
+
+            var logical = new byte[32];
+            var resident = Encoding.ASCII.GetBytes("SHORT");
+            var decmpfs = BuildInlineDecmpfs(compressionType: 1, logical, resident);
+
+            var providerType = Type.GetType("CrossDrive.RawDiskEngine.ApfsRawFileSystemProvider, CrossDrive.RawDiskEngine", throwOnError: true)!;
+            var decompressMethod = providerType.GetMethod("TryDecompressInlineDecmpfs", BindingFlags.NonPublic | BindingFlags.Static)!;
+            var decompressed = (byte[]?)decompressMethod.Invoke(null, new object[] { decmpfs });
+
+            if (decompressed is null) throw new Exception("decompression returned null");
+            Assert(decompressed.Length == logical.Length, $"expected logical length {logical.Length}, got {decompressed.Length}");
+            Assert(decompressed.AsSpan(0, resident.Length).SequenceEqual(resident), "resident payload mismatch");
+            Assert(decompressed.AsSpan(resident.Length).SequenceEqual(new byte[logical.Length - resident.Length]), "resident payload tail was not zero-filled");
+        });
+
+        await Run("14. APFS decmpfs zlib resource-fork cmpf chunks decompress bytes", async () =>
+        {
+            await Task.CompletedTask;
+
+            var plain = Encoding.UTF8.GetBytes(string.Concat(
+                Enumerable.Repeat("CrossDrive APFS resource-fork compressed data block. ", 1800)));
+            var decmpfs = BuildInlineDecmpfs(compressionType: 4, plain, Array.Empty<byte>());
+            var chunks = plain
+                .Chunk(64 * 1024)
+                .Select(chunk => CompressDeflate(chunk))
+                .ToArray();
+            var cmpfData = BuildChunkedCmpfData(chunks);
+            var resourceFork = BuildCmpfResourceFork(cmpfData);
+
+            var providerType = Type.GetType("CrossDrive.RawDiskEngine.ApfsRawFileSystemProvider, CrossDrive.RawDiskEngine", throwOnError: true)!;
+            var decompressMethod = providerType.GetMethod("TryDecompressResourceForkDecmpfs", BindingFlags.NonPublic | BindingFlags.Static)!;
+            var decompressed = (byte[]?)decompressMethod.Invoke(null, new object[] { decmpfs, resourceFork });
+
+            if (decompressed is null) throw new Exception("resource-fork decompression returned null");
+            Assert(decompressed.SequenceEqual(plain), "resource-fork decompressed bytes do not match original payload");
+        });
+
+        await Run("15. APFS decmpfs zlib resource-fork cmpf range reads cross chunk boundaries", async () =>
+        {
+            await Task.CompletedTask;
+
+            var plain = Enumerable.Range(0, 150 * 1024)
+                .Select(i => (byte)((i * 31) & 0xFF))
+                .ToArray();
+            var decmpfs = BuildInlineDecmpfs(compressionType: 4, plain, Array.Empty<byte>());
+            var chunks = plain
+                .Chunk(64 * 1024)
+                .Select(chunk => CompressDeflate(chunk))
+                .ToArray();
+            var resourceFork = BuildCmpfResourceFork(BuildChunkedCmpfData(chunks));
+
+            var providerType = Type.GetType("CrossDrive.RawDiskEngine.ApfsRawFileSystemProvider, CrossDrive.RawDiskEngine", throwOnError: true)!;
+            var rangeMethod = providerType.GetMethod(
+                "TryDecompressResourceForkDecmpfsRange",
+                BindingFlags.NonPublic | BindingFlags.Static,
+                binder: null,
+                types: new[] { typeof(byte[]), typeof(byte[]), typeof(long), typeof(int) },
+                modifiers: null)!;
+            var offset = 64 * 1024 - 37;
+            var count = 512;
+            var range = (byte[]?)rangeMethod.Invoke(null, new object[] { decmpfs, resourceFork, (long)offset, count });
+
+            if (range is null) throw new Exception("resource-fork range decompression returned null");
+            Assert(range.Length == count, $"expected range length {count}, got {range.Length}");
+            Assert(range.SequenceEqual(plain.AsSpan(offset, count).ToArray()), "range bytes crossing cmpf chunk boundary do not match original payload");
+        });
+
+        await Run("16. APFS decmpfs zlib resource-fork cmpf streamed range reads only intersecting chunks", async () =>
+        {
+            await Task.CompletedTask;
+
+            var plain = new byte[256 * 1024];
+            new Random(12345).NextBytes(plain);
+            var decmpfs = BuildInlineDecmpfs(compressionType: 4, plain, Array.Empty<byte>());
+            var chunks = plain
+                .Chunk(64 * 1024)
+                .Select(chunk => CompressDeflate(chunk))
+                .ToArray();
+            var resourceFork = BuildCmpfResourceFork(BuildChunkedCmpfData(chunks));
+            var reads = new List<(long Offset, int Count)>();
+
+            byte[]? ReadRange(long offset, int count)
+            {
+                if (offset < 0 || count < 0 || offset > resourceFork.Length || count > resourceFork.Length - offset)
+                {
+                    return null;
+                }
+
+                reads.Add((offset, count));
+                return resourceFork.AsSpan((int)offset, count).ToArray();
+            }
+
+            var providerType = Type.GetType("CrossDrive.RawDiskEngine.ApfsRawFileSystemProvider, CrossDrive.RawDiskEngine", throwOnError: true)!;
+            var rangeMethod = providerType.GetMethod(
+                "TryDecompressResourceForkDecmpfsRange",
+                BindingFlags.NonPublic | BindingFlags.Static,
+                binder: null,
+                types: new[] { typeof(byte[]), typeof(Func<long, int, byte[]?>), typeof(long), typeof(long), typeof(int) },
+                modifiers: null)!;
+            var offset = 64 * 1024 + 1234;
+            var count = 2048;
+            var range = (byte[]?)rangeMethod.Invoke(null, new object[] { decmpfs, (Func<long, int, byte[]?>)ReadRange, (long)resourceFork.Length, (long)offset, count });
+
+            if (range is null) throw new Exception("streamed resource-fork range decompression returned null");
+            Assert(range.Length == count, $"expected streamed range length {count}, got {range.Length}");
+            Assert(range.SequenceEqual(plain.AsSpan(offset, count).ToArray()), "streamed range bytes do not match original payload");
+            Assert(!reads.Any(read => read.Offset == 0 && read.Count >= resourceFork.Length), "streamed range path read the full resource fork");
+            Assert(reads.Count(read => read.Count > 4096) == 1, $"expected exactly one compressed chunk payload read, got reads: {string.Join(", ", reads.Select(r => $"{r.Offset}+{r.Count}"))}");
+            Assert(reads.Sum(read => read.Count) < resourceFork.Length / 2, $"streamed range read too many bytes: read {reads.Sum(read => read.Count)} of {resourceFork.Length}");
+        });
+
+        await Run("14. APFS ResourceFork xattr payload is converted to AppleDouble sidecar bytes", async () =>
+        {
+            await Task.CompletedTask;
+
+            var resource = Encoding.UTF8.GetBytes("APFS resource fork payload");
+            var helperType = Type.GetType("CrossDrive.RawDiskEngine.ApfsAppleDouble, CrossDrive.RawDiskEngine", throwOnError: true)!;
+            var buildMethod = helperType.GetMethod("BuildResourceForkSidecar", BindingFlags.Public | BindingFlags.Static)!;
+            var sidecar = (byte[])buildMethod.Invoke(null, new object[] { resource })!;
+
+            Assert(BinaryPrimitives.ReadUInt32BigEndian(sidecar.AsSpan(0, 4)) == 0x00051607, "AppleDouble magic mismatch");
+            Assert(BinaryPrimitives.ReadUInt32BigEndian(sidecar.AsSpan(4, 4)) == 0x00020000, "AppleDouble version mismatch");
+            Assert(BinaryPrimitives.ReadUInt16BigEndian(sidecar.AsSpan(24, 2)) == 1, "AppleDouble entry count mismatch");
+            Assert(BinaryPrimitives.ReadUInt32BigEndian(sidecar.AsSpan(26, 4)) == 2, "AppleDouble resource fork entry id mismatch");
+            Assert(BinaryPrimitives.ReadUInt32BigEndian(sidecar.AsSpan(30, 4)) == 38, "AppleDouble resource fork offset mismatch");
+            Assert(BinaryPrimitives.ReadUInt32BigEndian(sidecar.AsSpan(34, 4)) == resource.Length, "AppleDouble resource fork length mismatch");
+            Assert(sidecar.AsSpan(38).SequenceEqual(resource), "AppleDouble resource fork payload mismatch");
+        });
+
+        await Run("15. APFS inline ResourceFork xattr parser honors xdata_len header", async () =>
+        {
+            await Task.CompletedTask;
+
+            var resource = Encoding.UTF8.GetBytes("inline APFS resource data");
+            var xattrValue = new byte[4 + resource.Length + 5];
+            BinaryPrimitives.WriteUInt16LittleEndian(xattrValue.AsSpan(0, 2), 0x0001);
+            BinaryPrimitives.WriteUInt16LittleEndian(xattrValue.AsSpan(2, 2), (ushort)resource.Length);
+            resource.CopyTo(xattrValue.AsSpan(4));
+
+            var helperType = Type.GetType("CrossDrive.RawDiskEngine.ApfsAppleDouble, CrossDrive.RawDiskEngine", throwOnError: true)!;
+            var extractMethod = helperType.GetMethod(
+                "TryExtractInlineXattrData",
+                BindingFlags.Public | BindingFlags.Static,
+                binder: null,
+                types: new[] { typeof(byte[]) },
+                modifiers: null)!;
+            var extracted = (byte[]?)extractMethod.Invoke(null, new object[] { xattrValue });
+
+            if (extracted is null) throw new Exception("xattr extraction returned null");
+            Assert(extracted.SequenceEqual(resource), "xattr extraction did not honor xdata_len");
+
+            var nonEmbedded = new byte[4 + resource.Length];
+            BinaryPrimitives.WriteUInt16LittleEndian(nonEmbedded.AsSpan(0, 2), 0x0000);
+            BinaryPrimitives.WriteUInt16LittleEndian(nonEmbedded.AsSpan(2, 2), (ushort)resource.Length);
+            resource.CopyTo(nonEmbedded.AsSpan(4));
+            var nonEmbeddedExtracted = (byte[]?)extractMethod.Invoke(null, new object[] { nonEmbedded });
+            Assert(nonEmbeddedExtracted is null, "non-embedded xattr descriptor was mistaken for inline payload");
+        });
+
+        await Run("16. APFS extent-backed ResourceFork sidecars stream AppleDouble header and payload", async () =>
+        {
+            await Task.CompletedTask;
+
+            var image = new byte[18 * BlockSize];
+            var first = Encoding.ASCII.GetBytes("RSRC-EXTENT-A");
+            var second = Encoding.ASCII.GetBytes("RSRC-EXTENT-B");
+            first.CopyTo(image.AsSpan((int)(14 * BlockSize)));
+            second.CopyTo(image.AsSpan((int)(15 * BlockSize)));
+
+            using var device = new WritableMemoryRawBlockDevice(image);
+            var resourcePlan = new ApfsFileReadPlan(
+                TotalSize: 33,
+                Extents: new[]
+                {
+                    new ApfsFileExtent(LogicalOffset: 0, Length: first.Length, PhysicalBlockNumber: 14),
+                    new ApfsFileExtent(LogicalOffset: 20, Length: second.Length, PhysicalBlockNumber: 15)
+                });
+            var sidecarPlan = ApfsAppleDouble.BuildResourceForkSidecarReadPlan(resourcePlan);
+
+            Assert(sidecarPlan.InlineData is { Length: 38 }, "AppleDouble sidecar header was not stored inline");
+            Assert(sidecarPlan.TotalSize == 71, $"expected sidecar logical size 71, got {sidecarPlan.TotalSize}");
+            Assert(sidecarPlan.Extents.Count == 2, "resource fork extents were not preserved");
+            Assert(sidecarPlan.Extents[0].LogicalOffset == 38, "first resource extent was not shifted after AppleDouble header");
+            Assert(sidecarPlan.Extents[1].LogicalOffset == 58, "second resource extent was not shifted after AppleDouble header");
+
+            var whole = Enumerable.Repeat((byte)0xCC, (int)sidecarPlan.TotalSize).ToArray();
+            var read = ApfsRawFileSystemProvider.ReadInlinePrefixedExtentBackedFile(device, 0, BlockSize, sidecarPlan, 0, whole);
+            Assert(read == whole.Length, $"expected full sidecar read count {whole.Length}, got {read}");
+            Assert(BinaryPrimitives.ReadUInt32BigEndian(whole.AsSpan(0, 4)) == 0x00051607, "AppleDouble magic mismatch");
+            Assert(BinaryPrimitives.ReadUInt32BigEndian(whole.AsSpan(34, 4)) == 33, "AppleDouble resource fork length mismatch");
+            Assert(whole.AsSpan(38, first.Length).SequenceEqual(first), "first resource fork extent mismatch");
+            Assert(whole.AsSpan(38 + first.Length, 20 - first.Length).SequenceEqual(new byte[20 - first.Length]), "resource fork sparse gap was not zero-filled");
+            Assert(whole.AsSpan(58, second.Length).SequenceEqual(second), "second resource fork extent mismatch");
+
+            var partial = Enumerable.Repeat((byte)0xCC, 24).ToArray();
+            var partialRead = ApfsRawFileSystemProvider.ReadInlinePrefixedExtentBackedFile(device, 0, BlockSize, sidecarPlan, 30, partial);
+            Assert(partialRead == partial.Length, $"expected partial sidecar read count {partial.Length}, got {partialRead}");
+            Assert(partial.AsSpan(0, 4).SequenceEqual(sidecarPlan.InlineData.AsSpan(30, 4)), "partial AppleDouble header mismatch");
+            Assert(partial.AsSpan(8, first.Length).SequenceEqual(first), "partial resource extent mismatch");
+        });
+
+        await Run("17. APFS FinderInfo xattr is preserved as AppleDouble entry 9", async () =>
+        {
+            await Task.CompletedTask;
+
+            var resource = Encoding.UTF8.GetBytes("APFS resource fork with FinderInfo");
+            var finderInfo = new byte[32];
+            Encoding.ASCII.GetBytes("TEXTttxt").CopyTo(finderInfo, 0);
+            for (var i = 8; i < finderInfo.Length; i++)
+            {
+                finderInfo[i] = (byte)(0x30 + i);
+            }
+
+            var resourcePlan = new ApfsFileReadPlan(resource.Length, Array.Empty<ApfsFileExtent>(), resource);
+            var sidecarPlan = ApfsAppleDouble.BuildAppleDoubleSidecarReadPlan(resourcePlan, finderInfo);
+
+            Assert(sidecarPlan.TotalSize == 82 + resource.Length, $"expected FinderInfo sidecar logical size {82 + resource.Length}, got {sidecarPlan.TotalSize}");
+            Assert(sidecarPlan.InlineData is { Length: > 82 }, "FinderInfo AppleDouble sidecar was not stored inline");
+            var sidecar = sidecarPlan.InlineData!;
+            Assert(BinaryPrimitives.ReadUInt32BigEndian(sidecar.AsSpan(0, 4)) == 0x00051607, "AppleDouble magic mismatch");
+            Assert(BinaryPrimitives.ReadUInt16BigEndian(sidecar.AsSpan(24, 2)) == 2, "AppleDouble entry count mismatch");
+            Assert(BinaryPrimitives.ReadUInt32BigEndian(sidecar.AsSpan(26, 4)) == 9, "FinderInfo entry id mismatch");
+            Assert(BinaryPrimitives.ReadUInt32BigEndian(sidecar.AsSpan(30, 4)) == 50, "FinderInfo entry offset mismatch");
+            Assert(BinaryPrimitives.ReadUInt32BigEndian(sidecar.AsSpan(34, 4)) == 32, "FinderInfo entry length mismatch");
+            Assert(BinaryPrimitives.ReadUInt32BigEndian(sidecar.AsSpan(38, 4)) == 2, "resource fork entry id mismatch");
+            Assert(BinaryPrimitives.ReadUInt32BigEndian(sidecar.AsSpan(42, 4)) == 82, "resource fork entry offset mismatch");
+            Assert(BinaryPrimitives.ReadUInt32BigEndian(sidecar.AsSpan(46, 4)) == resource.Length, "resource fork entry length mismatch");
+            Assert(sidecar.AsSpan(50, 32).SequenceEqual(finderInfo), "FinderInfo payload mismatch");
+            Assert(sidecar.AsSpan(82, resource.Length).SequenceEqual(resource), "resource fork payload mismatch");
+        });
+
+        await Run("18. APFS extent-backed ResourceFork sidecars shift after FinderInfo entry", async () =>
+        {
+            await Task.CompletedTask;
+
+            var image = new byte[18 * BlockSize];
+            var first = Encoding.ASCII.GetBytes("RSRC-FI-A");
+            var second = Encoding.ASCII.GetBytes("RSRC-FI-B");
+            first.CopyTo(image.AsSpan((int)(14 * BlockSize)));
+            second.CopyTo(image.AsSpan((int)(15 * BlockSize)));
+
+            var finderInfo = Enumerable.Range(0, 32).Select(i => (byte)(0x80 + i)).ToArray();
+            using var device = new WritableMemoryRawBlockDevice(image);
+            var resourcePlan = new ApfsFileReadPlan(
+                TotalSize: 33,
+                Extents: new[]
+                {
+                    new ApfsFileExtent(LogicalOffset: 0, Length: first.Length, PhysicalBlockNumber: 14),
+                    new ApfsFileExtent(LogicalOffset: 20, Length: second.Length, PhysicalBlockNumber: 15)
+                });
+            var sidecarPlan = ApfsAppleDouble.BuildAppleDoubleSidecarReadPlan(resourcePlan, finderInfo);
+
+            Assert(sidecarPlan.InlineData is { Length: 82 }, "AppleDouble FinderInfo prefix was not stored inline");
+            Assert(sidecarPlan.TotalSize == 115, $"expected sidecar logical size 115, got {sidecarPlan.TotalSize}");
+            Assert(sidecarPlan.Extents.Count == 2, "resource fork extents were not preserved");
+            Assert(sidecarPlan.Extents[0].LogicalOffset == 82, "first resource extent was not shifted after FinderInfo prefix");
+            Assert(sidecarPlan.Extents[1].LogicalOffset == 102, "second resource extent was not shifted after FinderInfo prefix");
+
+            var whole = Enumerable.Repeat((byte)0xCC, (int)sidecarPlan.TotalSize).ToArray();
+            var read = ApfsRawFileSystemProvider.ReadInlinePrefixedExtentBackedFile(device, 0, BlockSize, sidecarPlan, 0, whole);
+            Assert(read == whole.Length, $"expected full sidecar read count {whole.Length}, got {read}");
+            Assert(whole.AsSpan(50, 32).SequenceEqual(finderInfo), "FinderInfo payload mismatch");
+            Assert(whole.AsSpan(82, first.Length).SequenceEqual(first), "first resource fork extent mismatch");
+            Assert(whole.AsSpan(82 + first.Length, 20 - first.Length).SequenceEqual(new byte[20 - first.Length]), "resource fork sparse gap was not zero-filled");
+            Assert(whole.AsSpan(102, second.Length).SequenceEqual(second), "second resource fork extent mismatch");
+        });
+
+        await Run("19. APFS inline xattrs are packed into FinderInfo AppleDouble ATTR data", async () =>
+        {
+            await Task.CompletedTask;
+
+            var resource = Encoding.ASCII.GetBytes("RSRC-WITH-XATTRS");
+            var finderInfo = Enumerable.Range(0, 32).Select(i => (byte)(0x40 + i)).ToArray();
+            var whereFroms = Encoding.UTF8.GetBytes("https://example.invalid/source");
+            var userTest = new byte[] { 1, 2, 3, 4, 5 };
+            var attrs = new[]
+            {
+                new ApfsExtendedAttribute("user.test", userTest),
+                new ApfsExtendedAttribute("com.apple.metadata:kMDItemWhereFroms", whereFroms),
+                new ApfsExtendedAttribute("com.apple.decmpfs", Encoding.ASCII.GetBytes("skip-me"))
+            };
+
+            var resourcePlan = new ApfsFileReadPlan(resource.Length, Array.Empty<ApfsFileExtent>(), resource);
+            var sidecarPlan = ApfsAppleDouble.BuildAppleDoubleSidecarReadPlan(resourcePlan, finderInfo, attrs);
+
+            Assert(sidecarPlan.InlineData is { Length: > 120 }, "xattr AppleDouble sidecar was not stored inline");
+            var sidecar = sidecarPlan.InlineData!;
+            Assert(BinaryPrimitives.ReadUInt16BigEndian(sidecar.AsSpan(24, 2)) == 2, "AppleDouble entry count mismatch");
+            Assert(BinaryPrimitives.ReadUInt32BigEndian(sidecar.AsSpan(26, 4)) == 9, "FinderInfo entry id mismatch");
+            Assert(BinaryPrimitives.ReadUInt32BigEndian(sidecar.AsSpan(38, 4)) == 2, "resource fork entry id mismatch");
+
+            var finderOffset = (int)BinaryPrimitives.ReadUInt32BigEndian(sidecar.AsSpan(30, 4));
+            var finderLength = (int)BinaryPrimitives.ReadUInt32BigEndian(sidecar.AsSpan(34, 4));
+            var resourceOffset = (int)BinaryPrimitives.ReadUInt32BigEndian(sidecar.AsSpan(42, 4));
+            var resourceLength = (int)BinaryPrimitives.ReadUInt32BigEndian(sidecar.AsSpan(46, 4));
+            Assert(finderOffset == 50, $"expected FinderInfo offset 50, got {finderOffset}");
+            Assert(finderLength > 32, "FinderInfo ATTR entry length did not include xattrs");
+            Assert(resourceOffset == finderOffset + finderLength, "resource fork offset did not follow ATTR FinderInfo payload");
+            Assert(resourceLength == resource.Length, "resource fork length mismatch");
+            Assert(sidecar.AsSpan(finderOffset, 32).SequenceEqual(finderInfo), "FinderInfo bytes were not preserved");
+            Assert(sidecar.AsSpan(resourceOffset, resource.Length).SequenceEqual(resource), "resource fork payload mismatch");
+
+            var attrHeaderOffset = finderOffset + 34;
+            Assert(BinaryPrimitives.ReadUInt32BigEndian(sidecar.AsSpan(attrHeaderOffset, 4)) == 0x41545452, "ATTR magic mismatch");
+            Assert(BinaryPrimitives.ReadUInt32BigEndian(sidecar.AsSpan(attrHeaderOffset + 8, 4)) == resourceOffset, "ATTR total_size mismatch");
+            var attrDataStart = (int)BinaryPrimitives.ReadUInt32BigEndian(sidecar.AsSpan(attrHeaderOffset + 12, 4));
+            var attrDataLength = (int)BinaryPrimitives.ReadUInt32BigEndian(sidecar.AsSpan(attrHeaderOffset + 16, 4));
+            Assert(attrDataLength == whereFroms.Length + userTest.Length, "ATTR data length mismatch");
+            Assert(BinaryPrimitives.ReadUInt16BigEndian(sidecar.AsSpan(attrHeaderOffset + 34, 2)) == 2, "ATTR count mismatch");
+
+            var parsed = new Dictionary<string, (int Offset, byte[] Data)>(StringComparer.Ordinal);
+            var entryOffset = attrHeaderOffset + 36;
+            for (var i = 0; i < 2; i++)
+            {
+                var dataOffset = (int)BinaryPrimitives.ReadUInt32BigEndian(sidecar.AsSpan(entryOffset, 4));
+                var dataLength = (int)BinaryPrimitives.ReadUInt32BigEndian(sidecar.AsSpan(entryOffset + 4, 4));
+                var nameLength = sidecar[entryOffset + 10];
+                var name = Encoding.UTF8.GetString(sidecar.AsSpan(entryOffset + 11, nameLength - 1));
+                parsed[name] = (dataOffset, sidecar.AsSpan(dataOffset, dataLength).ToArray());
+                entryOffset += Align4(11 + nameLength);
+            }
+
+            Assert(attrDataStart == parsed.Values.Min(value => value.Offset), "ATTR data_start did not point at first xattr payload");
+            Assert(parsed["com.apple.metadata:kMDItemWhereFroms"].Data.SequenceEqual(whereFroms), "WhereFroms xattr payload mismatch");
+            Assert(parsed["user.test"].Data.SequenceEqual(userTest), "user.test xattr payload mismatch");
+            Assert(!parsed.ContainsKey("com.apple.decmpfs"), "decmpfs metadata should not be re-packed with decompressed APFS data");
+        });
+
+        await Run("20. APFS sparse extent reads zero-fill holes and return logical byte count", async () =>
+        {
+            await Task.CompletedTask;
+
+            var image = new byte[16 * BlockSize];
+            var first = Encoding.ASCII.GetBytes("FIRST123");
+            var second = Encoding.ASCII.GetBytes("SECOND45");
+            first.CopyTo(image.AsSpan((int)(10 * BlockSize)));
+            second.CopyTo(image.AsSpan((int)(11 * BlockSize)));
+
+            using var device = new WritableMemoryRawBlockDevice(image);
+            var plan = new ApfsFileReadPlan(
+                TotalSize: 24,
+                Extents: new[]
+                {
+                    new ApfsFileExtent(LogicalOffset: 0, Length: first.Length, PhysicalBlockNumber: 10),
+                    new ApfsFileExtent(LogicalOffset: 16, Length: second.Length, PhysicalBlockNumber: 11)
+                });
+
+            var whole = new byte[24];
+            var read = ApfsRawFileSystemProvider.ReadExtentBackedFile(device, 0, BlockSize, plan, 0, whole);
+            Assert(read == whole.Length, $"expected logical read count {whole.Length}, got {read}");
+            Assert(whole.AsSpan(0, first.Length).SequenceEqual(first), "first extent bytes mismatch");
+            Assert(whole.AsSpan(8, 8).SequenceEqual(new byte[8]), "sparse hole was not zero-filled");
+            Assert(whole.AsSpan(16, second.Length).SequenceEqual(second), "second extent bytes mismatch");
+
+            var partial = Enumerable.Repeat((byte)0xCC, 16).ToArray();
+            var partialRead = ApfsRawFileSystemProvider.ReadExtentBackedFile(device, 0, BlockSize, plan, 4, partial);
+            Assert(partialRead == partial.Length, $"expected partial logical read count {partial.Length}, got {partialRead}");
+            Assert(partial.AsSpan(0, 4).SequenceEqual(first.AsSpan(4, 4)), "partial first extent tail mismatch");
+            Assert(partial.AsSpan(4, 8).SequenceEqual(new byte[8]), "partial sparse hole was not zero-filled");
+            Assert(partial.AsSpan(12, 4).SequenceEqual(second.AsSpan(0, 4)), "partial second extent head mismatch");
+        });
+
+        await Run("21. APFS extent read plans preserve inode logical size beyond final extent", async () =>
+        {
+            await Task.CompletedTask;
+
+            var image = new byte[16 * BlockSize];
+            var payload = Encoding.ASCII.GetBytes("TAILDATA");
+            payload.CopyTo(image.AsSpan((int)(12 * BlockSize)));
+
+            using var device = new WritableMemoryRawBlockDevice(image);
+            var extents = new[]
+            {
+                new ApfsFileExtent(LogicalOffset: 0, Length: payload.Length, PhysicalBlockNumber: 12)
+            };
+            var logicalSize = ApfsRawFileSystemProvider.GetExtentBackedLogicalSize(
+                extents,
+                inodeLogicalSize: 32,
+                inlineData: null,
+                isCompressed: false);
+            Assert(logicalSize == 32, $"expected inode logical size 32, got {logicalSize}");
+
+            var plan = new ApfsFileReadPlan(logicalSize, extents);
+            var actual = Enumerable.Repeat((byte)0xCC, 32).ToArray();
+            var read = ApfsRawFileSystemProvider.ReadExtentBackedFile(device, 0, BlockSize, plan, 0, actual);
+            Assert(read == 32, $"expected logical read count 32, got {read}");
+            Assert(actual.AsSpan(0, payload.Length).SequenceEqual(payload), "extent payload mismatch");
+            Assert(actual.AsSpan(payload.Length).SequenceEqual(new byte[32 - payload.Length]), "sparse tail was not zero-filled");
+        });
+
+        await Run("22. Raw APFS symlink entries preserve target and reparse attributes", async () =>
+        {
+            await Task.CompletedTask;
+
+            var entry = new RawFsEntry(
+                "\\link",
+                "link",
+                IsDirectory: false,
+                Size: 0,
+                DateTimeOffset.UtcNow,
+                FileAttributes.ReadOnly | FileAttributes.ReparsePoint,
+                "../target.txt");
+
+            Assert(entry.IsSymbolicLink, "RawFsEntry did not classify non-empty SymlinkTarget as a symbolic link");
+            Assert(entry.SymlinkTarget == "../target.txt", "RawFsEntry symlink target was not preserved");
+            Assert((entry.Attributes & FileAttributes.ReparsePoint) != 0, "RawFsEntry symlink missing reparse attribute");
+        });
+
         Console.WriteLine($"\nResults: {passed} passed, {failed} failed out of {passed + failed} tests.");
         return failed == 0;
     }
@@ -249,6 +696,96 @@ internal static class ApfsFileOpsTests
     /// <summary>Returns a fresh copy of the fs-tree block from the image.</summary>
     private static byte[] GetFsBlock(byte[] image) =>
         image.AsSpan((int)(FsBTreeBlock * BlockSize), (int)BlockSize).ToArray();
+
+    private static byte[] BuildInlineDecmpfs(uint compressionType, byte[] uncompressed, byte[] payload)
+    {
+        const int headerLength = 16;
+        var decmpfs = new byte[headerLength + payload.Length];
+        BinaryPrimitives.WriteUInt32LittleEndian(decmpfs.AsSpan(0, 4), 0x636D7066u);
+        BinaryPrimitives.WriteUInt32LittleEndian(decmpfs.AsSpan(4, 4), compressionType);
+        BinaryPrimitives.WriteUInt64LittleEndian(decmpfs.AsSpan(8, 8), (ulong)uncompressed.Length);
+        payload.CopyTo(decmpfs.AsSpan(headerLength));
+        return decmpfs;
+    }
+
+    private static byte[] CompressDeflate(byte[] data)
+    {
+        using var output = new MemoryStream();
+        using (var deflate = new DeflateStream(output, CompressionLevel.SmallestSize, leaveOpen: true))
+        {
+            deflate.Write(data, 0, data.Length);
+        }
+        return output.ToArray();
+    }
+
+    private static byte[] BuildChunkedCmpfData(IReadOnlyList<byte[]> compressedChunks)
+    {
+        var chunkTableLength = 8 + compressedChunks.Count * 8;
+        var dataStart = 16 + chunkTableLength;
+        var compressedDataSize = compressedChunks.Sum(chunk => chunk.Length);
+        var footerOffset = dataStart + compressedDataSize;
+        var footerLength = 50;
+        var output = new byte[footerOffset + footerLength];
+
+        BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(0, 4), 16);
+        BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(4, 4), (uint)footerOffset);
+        BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(8, 4), (uint)(chunkTableLength + compressedDataSize));
+        BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(12, 4), (uint)footerLength);
+        BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(16, 4), (uint)compressedDataSize);
+        BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(20, 4), (uint)compressedChunks.Count);
+
+        var chunkOutputOffset = dataStart;
+        for (var i = 0; i < compressedChunks.Count; i++)
+        {
+            var chunk = compressedChunks[i];
+            var tableOffset = 24 + i * 8;
+            BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(tableOffset, 4), (uint)(chunkOutputOffset - 20));
+            BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(tableOffset + 4, 4), (uint)chunk.Length);
+            chunk.CopyTo(output.AsSpan(chunkOutputOffset));
+            chunkOutputOffset += chunk.Length;
+        }
+
+        Encoding.ASCII.GetBytes("cmpf").CopyTo(output.AsSpan(footerOffset + 32));
+        return output;
+    }
+
+    private static byte[] BuildCmpfResourceFork(byte[] cmpfData)
+    {
+        var dataOffset = 16;
+        var dataLength = 4 + cmpfData.Length;
+        var mapOffset = dataOffset + dataLength;
+        var mapLength = 50;
+        var output = new byte[mapOffset + mapLength];
+
+        BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(0, 4), (uint)dataOffset);
+        BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(4, 4), (uint)mapOffset);
+        BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(8, 4), (uint)dataLength);
+        BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(12, 4), (uint)mapLength);
+        BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(dataOffset, 4), (uint)cmpfData.Length);
+        cmpfData.CopyTo(output.AsSpan(dataOffset + 4));
+
+        output.AsSpan(0, 16).CopyTo(output.AsSpan(mapOffset, 16));
+        BinaryPrimitives.WriteUInt16BigEndian(output.AsSpan(mapOffset + 24, 2), 28);
+        BinaryPrimitives.WriteUInt16BigEndian(output.AsSpan(mapOffset + 26, 2), 50);
+
+        var typeListStart = mapOffset + 28;
+        BinaryPrimitives.WriteUInt16BigEndian(output.AsSpan(typeListStart, 2), 0);
+        BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(typeListStart + 2, 4), 0x636D7066u);
+        BinaryPrimitives.WriteUInt16BigEndian(output.AsSpan(typeListStart + 6, 2), 0);
+        BinaryPrimitives.WriteUInt16BigEndian(output.AsSpan(typeListStart + 8, 2), 10);
+
+        var refStart = typeListStart + 10;
+        BinaryPrimitives.WriteUInt16BigEndian(output.AsSpan(refStart, 2), 1);
+        BinaryPrimitives.WriteUInt16BigEndian(output.AsSpan(refStart + 2, 2), 0xFFFF);
+        output[refStart + 4] = 0;
+        output[refStart + 5] = 0;
+        output[refStart + 6] = 0;
+        output[refStart + 7] = 0;
+
+        return output;
+    }
+
+    private static int Align4(int value) => (value + 3) & ~3;
 
     /// <summary>
     /// Builds a 12-block in-memory APFS image and a matching writable ApfsWriter.

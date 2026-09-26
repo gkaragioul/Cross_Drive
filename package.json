@@ -22,6 +22,7 @@
     "start": "concurrently \"npm run dev\" \"npm run electron\"",
     "start:prod": "npm run build && npm run electron:prod",
     "test": "node scripts/self-test.js",
+    "fs:test": "npm run apfs:test && npm run hfs:test",
     "trace:check": "node scripts/trace-check.js",
     "security:audit": "node scripts/security-audit.js",
     "license:audit": "node scripts/gpl-source-audit.js",
@@ -36,18 +37,21 @@
     "release:prep": "npm run native:publish && npm run build",
     "release:win": "npm run release:prep && electron-builder --win portable --publish never",
     "release:win:full": "npm run release:prep && electron-builder --win nsis portable --publish never",
-    "release:win:unsigned": "npm run release:prep && powershell -ExecutionPolicy Bypass -File scripts/build-release-unsigned.ps1",
+    "release:win:unsigned": "npm run release:prep && powershell -ExecutionPolicy Bypass -File scripts/build-release-unsigned.ps1 && npm run installer:smoke",
     "release:win:dev": "npm run release:win:unsigned",
     "release:audit": "powershell -ExecutionPolicy Bypass -File scripts/release-audit.ps1",
     "release:audit:unsigned": "powershell -ExecutionPolicy Bypass -File scripts/release-audit.ps1 -AllowUnsigned",
-    "release:gate": "npm run trace:check && npm run test && npm run security:audit && npm run commercial:gate && npm run release:audit",
+    "installer:smoke": "powershell -ExecutionPolicy Bypass -File scripts/installer-smoke.ps1",
+    "clean-install:smoke": "powershell -ExecutionPolicy Bypass -File scripts/clean-install-smoke.ps1",
+    "production:gate": "powershell -ExecutionPolicy Bypass -File scripts/production-release-gate.ps1",
+    "release:gate": "npm run trace:check && npm run test && npm run fs:test && npm run installer:smoke && npm run security:audit && npm run commercial:gate && npm run release:audit",
     "signing:verify": "powershell -ExecutionPolicy Bypass -File scripts/verify-signing-config.ps1",
     "release:candidate": "powershell -ExecutionPolicy Bypass -File scripts/release-candidate.ps1",
     "release:candidate:unsigned": "powershell -ExecutionPolicy Bypass -File scripts/release-candidate.ps1 -AllowUnsigned",
     "publish:release": "powershell -ExecutionPolicy Bypass -File scripts/publish-release.ps1",
     "signing:setup:test": "powershell -ExecutionPolicy Bypass -File scripts/setup-signing-env.ps1",
     "signing:setup:real": "powershell -ExecutionPolicy Bypass -File scripts/configure-real-signing.ps1",
-    "release:win:signed": "npm run release:win:full && npm run release:audit",
+    "release:win:signed": "npm run release:win:full && npm run installer:smoke && npm run release:audit",
     "hfs:test": "dotnet run --project native/CrossDrive.HfsWriteTest/CrossDrive.HfsWriteTest.csproj",
     "apfs:test": "dotnet run --project native/CrossDrive.ApfsWriteTest/CrossDrive.ApfsWriteTest.csproj"
   },
@@ -80,8 +84,6 @@
       "routes/**/*.js",
       "scripts/nativeServiceClient.js",
       "scripts/nativeBrokerClient.js",
-      "scripts/wslMountClient.js",
-      "scripts/wslSetup.js",
       "package.json"
     ],
     "asarUnpack": [],
@@ -103,40 +105,12 @@
         "to": "scripts/map-drive-user-session.ps1"
       },
       {
-        "from": "scripts/wsl_mount.sh",
-        "to": "scripts/wsl_mount.sh"
-      },
-      {
-        "from": "scripts/wsl_unmount.sh",
-        "to": "scripts/wsl_unmount.sh"
-      },
-      {
-        "from": "scripts/wsl_install_modules.sh",
-        "to": "scripts/wsl_install_modules.sh"
-      },
-      {
-        "from": "scripts/wsl_validate_mount.sh",
-        "to": "scripts/wsl_validate_mount.sh"
-      },
-      {
-        "from": "scripts/wsl_format_and_mount.sh",
-        "to": "scripts/wsl_format_and_mount.sh"
-      },
-      {
         "from": "prereqs/winfsp.msi",
         "to": "prereqs/winfsp.msi"
       },
       {
-        "from": "prereqs/crossdrive-kernel",
-        "to": "crossdrive-kernel"
-      },
-      {
         "from": "native/bin",
         "to": "native-bin"
-      },
-      {
-        "from": "native-bridge-bin",
-        "to": "native-bridge-bin"
       },
       {
         "from": "build/THIRD_PARTY_NOTICES.txt",

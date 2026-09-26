@@ -38,12 +38,16 @@ const validateReleaseScript = fs.existsSync(validateReleasePath) ? fs.readFileSy
 const nativeBrokerClientScript = fs.readFileSync(path.join(root, 'scripts', 'nativeBrokerClient.js'), 'utf8');
 const nativeServiceClientScript = fs.readFileSync(path.join(root, 'scripts', 'nativeServiceClient.js'), 'utf8');
 const crossDriveScript = fs.readFileSync(path.join(root, 'scripts', 'CrossDrive.ps1'), 'utf8');
-const wslMountClientScript = fs.readFileSync(path.join(root, 'scripts', 'wslMountClient.js'), 'utf8');
-const wslMountScript = fs.readFileSync(path.join(root, 'scripts', 'wsl_mount.sh'), 'utf8');
-const wslValidateMountScript = fs.readFileSync(path.join(root, 'scripts', 'wsl_validate_mount.sh'), 'utf8');
-const userSessionHelperProgram = fs.readFileSync(path.join(root, 'native', 'CrossDrive.UserSessionHelper', 'Program.cs'), 'utf8');
+const nativeServiceProgram = fs.readFileSync(path.join(root, 'native', 'CrossDrive.NativeService', 'Program.cs'), 'utf8');
 const nativeBrokerProgram = fs.readFileSync(path.join(root, 'native', 'CrossDrive.NativeBroker', 'Program.cs'), 'utf8');
+const userSessionHelperProgram = fs.readFileSync(path.join(root, 'native', 'CrossDrive.UserSessionHelper', 'Program.cs'), 'utf8');
+const rawDiskEngineSource = fs.readFileSync(path.join(root, 'native', 'CrossDrive.RawDiskEngine', 'RawDiskEngine.cs'), 'utf8');
+const cachedRawFileSystemProviderSource = fs.readFileSync(path.join(root, 'native', 'CrossDrive.RawDiskEngine', 'CachedRawFileSystemProvider.cs'), 'utf8');
+const virtualFsContractsSource = fs.readFileSync(path.join(root, 'native', 'CrossDrive.RawDiskEngine', 'VirtualFsContracts.cs'), 'utf8');
+const hfsPlusNativeReaderSource = fs.readFileSync(path.join(root, 'native', 'CrossDrive.RawDiskEngine', 'HfsPlusNativeReader.cs'), 'utf8');
+const hfsClassicProviderSource = fs.readFileSync(path.join(root, 'native', 'CrossDrive.RawDiskEngine', 'HfsClassicRawFileSystemProvider.cs'), 'utf8');
 const apfsProviderSource = fs.readFileSync(path.join(root, 'native', 'CrossDrive.RawDiskEngine', 'ApfsRawFileSystemProvider.cs'), 'utf8');
+const apfsFileOpsTestsSource = fs.readFileSync(path.join(root, 'native', 'CrossDrive.ApfsWriteTest', 'ApfsFileOpsTests.cs'), 'utf8');
 const appSource = fs.readFileSync(path.join(root, 'src', 'App.jsx'), 'utf8');
 const apiSource = fs.readFileSync(path.join(root, 'src', 'api.js'), 'utf8');
 const preloadSource = fs.readFileSync(preloadPath, 'utf8');
@@ -84,9 +88,82 @@ function assertNodeSyntax(filePath) {
 if (!pkg.scripts || !pkg.scripts.test) fail('package.json missing scripts.test');
 else pass('package.json has scripts.test');
 
-for (const scriptName of ['security:audit', 'commercial:gate', 'release:prep', 'release:win:unsigned', 'release:audit', 'signing:verify', 'release:candidate']) {
+for (const scriptName of ['fs:test', 'installer:smoke', 'clean-install:smoke', 'production:gate', 'security:audit', 'commercial:gate', 'release:prep', 'release:win:unsigned', 'release:audit', 'signing:verify', 'release:candidate']) {
   if (!pkg.scripts || !pkg.scripts[scriptName]) fail(`package.json missing scripts.${scriptName}`);
   else pass(`package.json has scripts.${scriptName}`);
+}
+
+if (!pkg.scripts['fs:test'].includes('apfs:test') || !pkg.scripts['fs:test'].includes('hfs:test')) {
+  fail('scripts.fs:test must run both APFS and HFS regression suites');
+} else {
+  pass('scripts.fs:test runs both APFS and HFS regression suites');
+}
+
+if (!pkg.scripts['release:gate'].includes('fs:test')) {
+  fail('release:gate must run filesystem regression suites');
+} else {
+  pass('release:gate runs filesystem regression suites');
+}
+
+if (!pkg.scripts['release:gate'].includes('installer:smoke')) {
+  fail('release:gate must validate the packaged installer layout');
+} else {
+  pass('release:gate validates the packaged installer layout');
+}
+
+if (!pkg.scripts['release:win:unsigned'].includes('installer:smoke')) {
+  fail('release:win:unsigned must validate the packaged installer layout');
+} else {
+  pass('release:win:unsigned validates the packaged installer layout');
+}
+
+if (!pkg.scripts['release:win:signed'].includes('installer:smoke')) {
+  fail('release:win:signed must validate the packaged installer layout');
+} else {
+  pass('release:win:signed validates the packaged installer layout');
+}
+
+if (!fs.existsSync(path.join(root, 'scripts', 'installer-smoke.ps1'))) {
+  fail('installer-smoke.ps1 missing');
+} else {
+  pass('installer-smoke.ps1 exists');
+}
+
+if (!fs.existsSync(path.join(root, 'scripts', 'clean-install-smoke.ps1'))) {
+  fail('clean-install-smoke.ps1 missing');
+} else {
+  pass('clean-install-smoke.ps1 exists');
+}
+
+const productionGateScriptPath = path.join(root, 'scripts', 'production-release-gate.ps1');
+if (!fs.existsSync(productionGateScriptPath)) {
+  fail('production-release-gate.ps1 missing');
+} else {
+  pass('production-release-gate.ps1 exists');
+}
+
+const releaseCandidateScript = fs.readFileSync(path.join(root, 'scripts', 'release-candidate.ps1'), 'utf8');
+if (!releaseCandidateScript.includes('npm run fs:test') ||
+    !releaseCandidateScript.includes('npm run installer:smoke') ||
+    !releaseCandidateScript.includes('npm run release:audit') ||
+    !releaseCandidateScript.includes('npm run production:gate')) {
+  fail('release-candidate must run filesystem tests, installer smoke, strict release audit, and production evidence gate');
+} else {
+  pass('release-candidate runs filesystem tests, installer smoke, strict release audit, and production evidence gate');
+}
+
+const productionGateScript = fs.existsSync(productionGateScriptPath) ? fs.readFileSync(productionGateScriptPath, 'utf8') : '';
+if (!productionGateScript.includes('CROSSDRIVE_REAL_MEDIA_EVIDENCE') ||
+    !productionGateScript.includes('CROSSDRIVE_CLEAN_INSTALL_EVIDENCE') ||
+    !productionGateScript.includes('verify-signing-config.ps1') ||
+    !productionGateScript.includes('Get-AuthenticodeSignature') ||
+    !productionGateScript.includes('CoreStorage') ||
+    !productionGateScript.includes('unsupported') ||
+    !productionGateScript.includes('Encrypted APFS') ||
+    !productionGateScript.includes('clean-windows-install')) {
+  fail('production gate must require signing, clean-install evidence, and real-media coverage including CoreStorage unsupported policy');
+} else {
+  pass('production gate requires signing, clean-install evidence, and real-media coverage');
 }
 
 if (!(pkg.build && Array.isArray(pkg.build.files) && pkg.build.files.includes('preload.js'))) {
@@ -126,6 +203,72 @@ if (!nativeBinResource) {
   fail('electron build must package native/bin as extraResources/native-bin');
 } else {
   pass('electron build packages native/bin as native-bin resource');
+}
+
+const serializedBuildConfig = JSON.stringify(pkg.build || {});
+for (const forbiddenRuntime of [
+  'wslMountClient.js',
+  'wslSetup.js',
+  'wsl_mount.sh',
+  'wsl_unmount.sh',
+  'wsl_install_modules.sh',
+  'wsl_validate_mount.sh',
+  'wsl_format_and_mount.sh',
+  'wsl_mount_test.sh',
+  'wsl_test_mount.sh',
+  'mount_drive.sh',
+  'setup_linux.sh',
+  'crossdrive-kernel',
+  'native-bridge-bin',
+  'apfs-fuse.exe'
+]) {
+  if (serializedBuildConfig.includes(forbiddenRuntime)) {
+    fail(`electron build must not package external-runtime component: ${forbiddenRuntime}`);
+  } else {
+    pass(`electron build excludes ${forbiddenRuntime}`);
+  }
+}
+
+for (const removedSource of [
+  'scripts/wslMountClient.js',
+  'scripts/wsl_mount.sh',
+  'scripts/wsl_unmount.sh',
+  'scripts/wsl_validate_mount.sh',
+  'scripts/wsl_format_and_mount.sh',
+  'scripts/wsl_mount_test.sh',
+  'scripts/wsl_test_mount.sh',
+  'scripts/mount_drive.sh',
+  'scripts/setup_linux.sh',
+  'scripts/build-apfs-fuse.ps1'
+]) {
+  const fullPath = path.join(root, ...removedSource.split('/'));
+  if (fs.existsSync(fullPath)) {
+    fail(`removed external-runtime source remains: ${removedSource}`);
+  } else {
+    pass(`removed external-runtime source absent: ${removedSource}`);
+  }
+}
+
+// The v1.5.35 release shipped these GPL-covered binaries and scripts. They stay in
+// the repository as part of its GPL source correspondence (see
+// docs/gpl-source/v1.5.35), but the native-only build must not package them.
+for (const gplRecordSource of [
+  'scripts/wslSetup.js',
+  'scripts/wsl_install_modules.sh',
+  'prereqs/crossdrive-kernel/wsl_kernel',
+  'prereqs/crossdrive-kernel/modules/apfs.ko',
+  'prereqs/crossdrive-kernel/modules/hfs.ko',
+  'prereqs/crossdrive-kernel/modules/hfsplus.ko'
+]) {
+  const fullPath = path.join(root, ...gplRecordSource.split('/'));
+  const fileName = gplRecordSource.split('/').pop();
+  if (!fs.existsSync(fullPath)) {
+    fail(`v1.5.35 GPL source record is missing: ${gplRecordSource}`);
+  } else if (serializedBuildConfig.includes(fileName) || serializedBuildConfig.includes('crossdrive-kernel')) {
+    fail(`v1.5.35 GPL record file must not be packaged by the native build: ${gplRecordSource}`);
+  } else {
+    pass(`v1.5.35 GPL record kept and not packaged: ${gplRecordSource}`);
+  }
 }
 
 const winTargets = (((pkg.build || {}).win || {}).target || []).map(String);
@@ -173,6 +316,7 @@ else pass('portable.artifactName is versioned');
 const mainJs = fs.readFileSync(mainPath, 'utf8');
 const serverSource = fs.readFileSync(serverPath, 'utf8');
 const mountRoutesSource = fs.readFileSync(path.join(routesDir, 'mountRoutes.js'), 'utf8');
+const nativeRoutesSource = fs.readFileSync(path.join(routesDir, 'nativeRoutes.js'), 'utf8');
 if (!mainJs.includes('contextIsolation: true')) fail('main.js missing contextIsolation: true');
 else pass('contextIsolation enabled');
 
@@ -233,10 +377,50 @@ if (!mainJs.includes('About ${APP_NAME}') || !mainJs.includes('WinFsp - Windows 
   pass('About dialog legal attribution wired');
 }
 
+const staleRuntimeWording = [
+  ['main.js', mainJs],
+  ['App.jsx', appSource],
+  ['systemRoutes.js', fs.readFileSync(path.join(routesDir, 'systemRoutes.js'), 'utf8')],
+  ['CrossDrive.ps1', crossDriveScript]
+].flatMap(([name, text]) => [
+  ['kernel', '+ modules'].join(' '),
+  ['Setting up Mac', 'drivers'].join(' '),
+  ['Driver repair', 'endpoint'].join(' '),
+  ['native bridge', 'helpers'].join(' '),
+  ['Legacy setup', 'bootstrap'].join(' '),
+  ['Legacy driver', 'repair'].join(' ')
+].filter(phrase => text.includes(phrase)).map(phrase => `${name}: ${phrase}`));
+
+if (staleRuntimeWording.length > 0) {
+  fail(`stale external-runtime wording remains: ${staleRuntimeWording.join(', ')}`);
+} else {
+  pass('user-facing runtime wording avoids retired prerequisite labels');
+}
+
 if (!nativeBrokerProgram.includes('Global\\\\CrossDrive.NativeBroker') || !nativeBrokerProgram.includes('exiting duplicate process')) {
   fail('NativeBroker missing single-instance guard');
 } else {
   pass('NativeBroker has single-instance guard');
+}
+
+if (!nativeServiceProgram.includes('TryUnlockEncryptedApfsAsync') ||
+    !nativeServiceProgram.includes('ApfsKeyManager') ||
+    !nativeServiceProgram.includes('EncryptionKey = encryptionKey') ||
+    !nativeServiceProgram.includes('HardwareBound') ||
+    nativeServiceProgram.includes(['Native raw provider', 'cannot unlock encrypted APFS volumes', 'yet'].join(' ')) ||
+    /bridge\s+fallback/i.test(nativeServiceProgram)) {
+  fail('NativeService must attempt native encrypted APFS unlock without external fallback messaging');
+} else {
+  pass('NativeService attempts native encrypted APFS unlock without external fallback messaging');
+}
+
+if (nativeServiceProgram.includes(['Install WinFsp', 'first'].join(' ')) ||
+    nativeServiceProgram.includes(['Install/repair WinFsp', 'runtime'].join(' ')) ||
+    !nativeServiceProgram.includes('CrossDrive runtime is not ready') ||
+    !nativeServiceProgram.includes('CrossDrive installer repair option')) {
+  fail('NativeService missing-runtime errors must direct users to CrossDrive runtime repair, not manual prerequisites');
+} else {
+  pass('NativeService missing-runtime errors direct users to CrossDrive runtime repair');
 }
 
 if (!nativeBrokerClientScript.includes('brokerStartPromise') || !nativeBrokerClientScript.includes('concurrent startup/runtime probes')) {
@@ -259,129 +443,194 @@ if (!serverSource.includes("if (!raw) return 'native_first'")) {
   pass('server.js defaults to the bundled native runtime');
 }
 
-if (!serverSource.includes('Optional WSL2 kernel runtime is not installed') ||
-    !serverSource.includes('Continuing with bundled native engine')) {
-  fail('server.js must treat missing WSL as optional outside wsl_kernel mode');
+if (!serverSource.includes("const VALID_RUNTIME_MOUNT_MODES = new Set(['native_first', 'native_only'])") ||
+    !serverSource.includes("status: 'ready'") ||
+    serverSource.includes('wslSetup') ||
+    serverSource.includes('ensureWslMountPathReady') ||
+    serverSource.includes('wsl_kernel')) {
+  fail('server.js must expose only bundled native runtime modes');
 } else {
-  pass('server.js treats missing WSL as optional outside wsl_kernel mode');
+  pass('server.js exposes only bundled native runtime modes');
 }
 
-if (!wslMountClientScript.includes('snapshotWslDiskNames') ||
-    !wslMountClientScript.includes('detectNewWslDiskAfterAttach') ||
-    !wslMountClientScript.includes('attachedDiskName')) {
-  fail('wslMountClient.js must identify the newly attached WSL disk instead of relying on global filesystem heuristics');
+if (crossDriveScript.includes('function Test-WslRuntimeReady') ||
+    crossDriveScript.includes('function Convert-WslOutputText') ||
+    crossDriveScript.includes('id = "wslRuntime"') ||
+    crossDriveScript.includes('id = "ubuntuDistro"') ||
+    crossDriveScript.includes('function Install-WslRuntime') ||
+    crossDriveScript.includes('wsl.exe') ||
+    crossDriveScript.includes('apfs-fuse') ||
+    crossDriveScript.includes('native-bridge') ||
+    crossDriveScript.includes('CROSSDRIVE_APFS_FUSE_EXE') ||
+    /Ubuntu/i.test(crossDriveScript)) {
+  fail('CrossDrive.ps1 must not install or require an external runtime');
 } else {
-  pass('wslMountClient.js identifies the newly attached WSL disk');
+  pass('CrossDrive.ps1 avoids external-runtime installation');
 }
 
-if (!wslMountClientScript.includes('function classifyWslRuntimeError') ||
-    !wslMountClientScript.includes('wslRuntimeMissing: true') ||
-    !wslMountClientScript.includes('wslDistroMissing: true') ||
-    !wslMountClientScript.includes('Install WSL2 and Ubuntu, reboot Windows, then relaunch CrossDrive')) {
-  fail('wslMountClient.js must classify missing WSL/Ubuntu runtime failures with setup guidance');
+if (!userSessionHelperProgram.includes('DefineDosDevice') ||
+    !userSessionHelperProgram.includes('WNetAddConnection2') ||
+    userSessionHelperProgram.includes('wsl.exe') ||
+    userSessionHelperProgram.includes('wslmount') ||
+    userSessionHelperProgram.includes('wslvalidate') ||
+    userSessionHelperProgram.includes('wslkeepalive') ||
+    /Ubuntu|RunWslCommand|StartWslKeepAlive/i.test(userSessionHelperProgram)) {
+  fail('CrossDrive.UserSessionHelper must expose only native drive-letter mapping actions');
 } else {
-  pass('wslMountClient.js classifies missing WSL/Ubuntu runtime failures');
-}
-
-if (!crossDriveScript.includes('function Test-WslRuntimeReady') ||
-    !crossDriveScript.includes('function Convert-WslOutputText') ||
-    !crossDriveScript.includes('.Replace([string][char]0') ||
-    !crossDriveScript.includes('id = "wslRuntime"') ||
-    !crossDriveScript.includes('id = "ubuntuDistro"') ||
-    !crossDriveScript.includes('function Install-WslRuntime') ||
-    !crossDriveScript.includes('wsl.exe" -ArgumentList "--install -d Ubuntu"')) {
-  fail('CrossDrive.ps1 preflight must check and repair WSL2/Ubuntu fallback runtime');
-} else {
-  pass('CrossDrive.ps1 preflight checks and repairs WSL2/Ubuntu fallback runtime');
+  pass('CrossDrive.UserSessionHelper exposes only native drive-letter mapping actions');
 }
 
 if (!appSource.includes('preflight.message') ||
     !appSource.includes('preflight.rebootRequired') ||
-    !appSource.includes('WSL Fallback Runtime')) {
-  fail('App.jsx preflight card must surface WSL setup messages and reboot requirement');
+    !appSource.includes('Native Runtime') ||
+    appSource.includes('WSL') ||
+    appSource.includes('Ubuntu') ||
+    appSource.includes('Auto-Install') ||
+    appSource.includes('Prerequisites Missing')) {
+  fail('App.jsx preflight card must present native runtime repair without external-runtime prompts');
 } else {
-  pass('App.jsx preflight card surfaces WSL setup messages and reboot requirement');
+  pass('App.jsx preflight card presents native runtime repair only');
 }
 
-if (!wslMountScript.includes('EXPECTED_DISK') ||
-    !wslMountScript.includes('Using expected WSL disk') ||
-    !wslMountScript.includes('/dev/$EXPECTED_DISK')) {
-  fail('wsl_mount.sh must prefer the explicit newly attached WSL disk when provided');
+if (mountRoutesSource.includes('wslMountClient') ||
+    mountRoutesSource.includes('attemptApfsWslFallback') ||
+    mountRoutesSource.includes('attemptClassicHfsWslFallback') ||
+    mountRoutesSource.includes('wsl_kernel') ||
+    /WSL|Ubuntu|Linux/i.test(mountRoutesSource)) {
+  fail('mountRoutes.js must not contain external-runtime mount paths');
 } else {
-  pass('wsl_mount.sh prefers the explicit newly attached WSL disk');
+  pass('mountRoutes.js contains only native mount paths');
 }
 
-if (!wslMountScript.includes('choose_mac_partition') ||
-    !wslMountScript.includes('detect_fs_type') ||
-    !wslMountScript.includes('Preferring Mac-format partition')) {
-  fail('wsl_mount.sh must prefer APFS/HFS/HFS+ partitions on the selected disk before largest-partition fallback');
+if (mountRoutesSource.includes('Classic HFS native mounting is not implemented yet') ||
+    !mountRoutesSource.includes('Native APFS mount failed')) {
+  fail('mountRoutes.js must attempt native classic HFS and report remaining native support gaps without external fallbacks');
 } else {
-  pass('wsl_mount.sh prefers Mac-format partitions before largest fallback');
+  pass('mountRoutes.js attempts native classic HFS and reports remaining native support gaps honestly');
 }
 
-if (!wslMountScript.includes('4244) fs_type="hfs"') ||
-    !wslMountScript.includes('modprobe hfs') ||
-    !wslMountScript.includes('mount -t hfs ') ||
-    !wslMountScript.includes('emit_success "$TARGET" "hfs"')) {
-  fail('wsl_mount.sh must mount classic HFS volumes with the hfs kernel driver instead of the HFS+ driver');
+if (!rawDiskEngineSource.includes('HfsClassicRawFileSystemProvider.CreateAsync') ||
+    !hfsClassicProviderSource.includes('Classic HFS') ||
+    !hfsClassicProviderSource.includes('ReadFile') ||
+    !nativeBrokerProgram.includes('string.Equals(fsType, "HFS", StringComparison.OrdinalIgnoreCase)')) {
+  fail('native engine and broker must wire classic HFS into the read-only raw provider path');
 } else {
-  pass('wsl_mount.sh mounts classic HFS volumes with the hfs kernel driver');
+  pass('native engine and broker wire classic HFS into the read-only raw provider path');
 }
 
-if (!wslMountScript.includes('[ "$fstype" = "hfs" ]') ||
-    !wslMountScript.includes('hfs/hfsplus/apfs partition')) {
-  fail('wsl_mount.sh fallback disk discovery must include classic HFS partitions');
+const hfsWriteTestsSource = fs.readFileSync(path.join(root, 'native', 'CrossDrive.HfsWriteTest', 'HfsPlusWriteTests.cs'), 'utf8');
+if (!hfsClassicProviderSource.includes('LoadExtentsOverflowAsync') ||
+    !hfsClassicProviderSource.includes('ExtentsOverflowExtents') ||
+    !hfsClassicProviderSource.includes('TryParseOverflowExtentRecord') ||
+    !hfsWriteTestsSource.includes('TestMountApmClassicHfsExtentsOverflow')) {
+  fail('classic HFS provider must read data-fork extents-overflow records and keep a regression test for fragmented files');
 } else {
-  pass('wsl_mount.sh fallback disk discovery includes classic HFS partitions');
+  pass('classic HFS provider reads data-fork extents-overflow records with regression coverage');
 }
 
-function hasCaseArm(source, arm) {
-  return new RegExp(`(^|[|\\s])${arm.replace('+', '\\+')}(?=[|)\\s;])`).test(source);
-}
-
-if (hasCaseArm(wslMountScript, 'hfsplus:hfs') ||
-    hasCaseArm(wslMountScript, 'hfs:hfsplus') ||
-    hasCaseArm(wslValidateMountScript, 'hfsplus:hfs') ||
-    hasCaseArm(wslValidateMountScript, 'hfs:hfsplus')) {
-  fail('WSL mount validation must reject HFS/HFS+ filesystem mismatches');
+if (!hfsClassicProviderSource.includes('BuildAppleDoubleHeader') ||
+    !hfsClassicProviderSource.includes('_appleDoubleByPath') ||
+    !hfsWriteTestsSource.includes('TestMountApmClassicHfsResourceForkAppleDouble') ||
+    !hfsWriteTestsSource.includes('TestMountApmClassicHfsResourceForkExtentsOverflow')) {
+  fail('classic HFS provider must expose resource forks, including extents-overflow continuation, as AppleDouble sidecars with regression coverage');
 } else {
-  pass('WSL mount validation rejects HFS/HFS+ filesystem mismatches');
+  pass('classic HFS provider exposes resource forks as AppleDouble sidecars with inline and overflow regression coverage');
 }
 
-if (!userSessionHelperProgram.includes('expectedDisk') ||
-    !userSessionHelperProgram.includes('args.Length >= 7 ? args[6]')) {
-  fail('CrossDrive.UserSessionHelper must forward the explicit WSL disk argument for user-session mounts');
+if (!hfsClassicProviderSource.includes('AppleDoubleFinderInfoEntryId = 9') ||
+    !hfsClassicProviderSource.includes('ReadClassicFinderInfo') ||
+    !hfsWriteTestsSource.includes('TestMountApmClassicHfsFinderInfoAppleDouble')) {
+  fail('classic HFS provider must preserve Finder Info as AppleDouble entry 9 with regression coverage');
 } else {
-  pass('CrossDrive.UserSessionHelper forwards the explicit WSL disk argument');
+  pass('classic HFS provider preserves Finder Info as AppleDouble entry 9 with regression coverage');
 }
 
-if (!mountRoutesSource.includes("forceNative !== true && RUNTIME_MOUNT_MODE === 'wsl_kernel'")) {
-  fail('mountRoutes.js must only attempt WSL mounts in explicit wsl_kernel mode');
+if (!hfsPlusNativeReaderSource.includes('dataOffset + 168') ||
+    !hfsPlusNativeReaderSource.includes('ResourceFork') ||
+    !rawDiskEngineSource.includes('_resourceForkSidecars') ||
+    !rawDiskEngineSource.includes('BuildAppleDoubleResourceForkHeader') ||
+    !rawDiskEngineSource.includes('results.Add(sidecarEntry)') ||
+    !rawDiskEngineSource.includes('0xFF') ||
+    !hfsWriteTestsSource.includes('TestMountHfsPlusResourceForkAppleDouble') ||
+    !hfsWriteTestsSource.includes('Expected listed AppleDouble sidecar ._Forked.txt') ||
+    !hfsWriteTestsSource.includes('TestMountHfsPlusResourceForkExtentsOverflow')) {
+  fail('HFS+ provider must expose resource forks, including extents-overflow continuation, as listed read-only AppleDouble sidecars with regression coverage');
 } else {
-  pass('mountRoutes.js only attempts WSL mounts in explicit wsl_kernel mode');
+  pass('HFS+ provider exposes resource forks as listed read-only AppleDouble sidecars with inline and overflow regression coverage');
 }
 
-if (!mountRoutesSource.includes('isClassicHfsPlan') ||
-    !mountRoutesSource.includes('attemptClassicHfsWslFallback') ||
-    !mountRoutesSource.includes("responseMountType: 'classic_hfs_wsl_kernel_fallback'")) {
-  fail('mountRoutes.js must route classic HFS through the WSL kernel fallback when the native provider cannot mount it');
+if (!hfsPlusNativeReaderSource.includes('dataOffset + 48') ||
+    !rawDiskEngineSource.includes('AppleDoubleFinderInfoEntryId = 9') ||
+    !rawDiskEngineSource.includes('FinderInfoOffset') ||
+    !hfsWriteTestsSource.includes('TestMountHfsPlusFinderInfoAppleDouble')) {
+  fail('HFS+ provider must preserve Finder Info as AppleDouble entry 9 with regression coverage');
 } else {
-  pass('mountRoutes.js routes classic HFS through the WSL kernel fallback');
+  pass('HFS+ provider preserves Finder Info as AppleDouble entry 9 with regression coverage');
 }
 
-if (!mountRoutesSource.includes('attemptApfsWslFallback') ||
-    !mountRoutesSource.includes("responseMountType: 'apfs_wsl_kernel_fallback'") ||
-    !mountRoutesSource.includes('APFS native fallback: attempting WSL kernel mount')) {
-  fail('mountRoutes.js must route APFS native fallback through the bundled WSL kernel path');
+if (!hfsPlusNativeReaderSource.includes('ReadCatalogMode') ||
+    !hfsPlusNativeReaderSource.includes('IsSymbolicLink') ||
+    !rawDiskEngineSource.includes('TryReadHfsPlusSymlinkTarget') ||
+    !rawDiskEngineSource.includes('FileAttributes.ReparsePoint') ||
+    !hfsWriteTestsSource.includes('TestMountHfsPlusSymlinkReparsePoint')) {
+  fail('HFS+ symlinks must preserve targets and expose WinFsp reparse-point metadata with regression coverage');
 } else {
-  pass('mountRoutes.js routes APFS native fallback through the bundled WSL kernel path');
+  pass('HFS+ symlinks preserve targets and expose WinFsp reparse-point metadata with regression coverage');
 }
 
-if (!appSource.includes("runtimeConfig?.mode !== 'wsl_kernel'") ||
+if (!hfsPlusNativeReaderSource.includes('0x4858') ||
+    !rawDiskEngineSource.includes('string.Equals(plan.FileSystemType, "HFSX"') ||
+    !hfsWriteTestsSource.includes('TestMountHfsxReadOnlyBrowsing') ||
+    !hfsWriteTestsSource.includes('PatchHfsxSignatureAsync')) {
+  fail('HFSX volumes must be analyzed and browsed through the native HFS provider with regression coverage');
+} else {
+  pass('HFSX volumes are analyzed and browsed through the native HFS provider with regression coverage');
+}
+
+if (!hfsPlusNativeReaderSource.includes('_catalogNameComparison = header.IsHfsx ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase') ||
+    !hfsPlusNativeReaderSource.includes('private int CompareCatalogKeys') ||
+    !hfsPlusNativeReaderSource.includes('string.Compare(recName, targetName, _catalogNameComparison)') ||
+    !hfsWriteTestsSource.includes('TestHfsxCatalogIndexCompareIsCaseSensitive')) {
+  fail('HFSX catalog index comparison must be case-sensitive with regression coverage');
+} else {
+  pass('HFSX catalog index comparison is case-sensitive with regression coverage');
+}
+
+if (!cachedRawFileSystemProviderSource.includes('IsCaseSensitiveFileSystem') ||
+    !cachedRawFileSystemProviderSource.includes('_pathComparer') ||
+    !cachedRawFileSystemProviderSource.includes('_pathComparison') ||
+    !rawDiskEngineSource.includes('new Dictionary<string, RawFsEntry>(_pathComparer)') ||
+    !rawDiskEngineSource.includes('key.StartsWith(prefix, _pathComparison)') ||
+    !nativeServiceProgram.includes('CaseSensitiveSearch = caseSensitiveSearch') ||
+    !nativeServiceProgram.includes('IsCaseSensitiveFileSystem(plan.FileSystemType)') ||
+    !nativeBrokerProgram.includes('var caseSensitiveSearch = IsCaseSensitiveFileSystem(plan.FileSystemType)') ||
+    !nativeBrokerProgram.includes('CaseSensitiveSearch = caseSensitiveSearch') ||
+    !hfsWriteTestsSource.includes('TestHfsxCaseSensitiveCacheKeepsDistinctNames')) {
+  fail('HFSX provider/cache and WinFsp host paths must remain case-sensitive with regression coverage');
+} else {
+  pass('HFSX provider/cache and WinFsp host paths remain case-sensitive with regression coverage');
+}
+
+if (!hfsClassicProviderSource.includes('MacRomanHighChars') ||
+    !hfsWriteTestsSource.includes('TestMountApmClassicHfsMacRomanFilename')) {
+  fail('classic HFS provider must decode MacRoman filenames with regression coverage');
+} else {
+  pass('classic HFS provider decodes MacRoman filenames with regression coverage');
+}
+
+if (!hfsClassicProviderSource.includes('visited.Add(current)') ||
+    !hfsClassicProviderSource.includes('BinaryPrimitives.ReadUInt32BigEndian(node.AsSpan(0, 4))') ||
+    !hfsWriteTestsSource.includes('TestMountApmClassicHfsCatalogLeafChain')) {
+  fail('classic HFS provider must follow linked catalog leaf nodes with regression coverage');
+} else {
+  pass('classic HFS provider follows linked catalog leaf nodes with regression coverage');
+}
+
+if (!appSource.includes('const environmentReady = setup.ready !== false') ||
     !appSource.includes('showSetupBanner')) {
-  fail('App.jsx must not block default native mounting on optional WSL setup state');
+  fail('App.jsx must keep native mounting available without optional runtime setup state');
 } else {
-  pass('App.jsx does not block default native mounting on optional WSL setup state');
+  pass('App.jsx keeps native mounting available without optional runtime setup state');
 }
 
 if (!apfsProviderSource.includes('ReadUInt32LittleEndian(buffer.AsSpan(104, 4))') ||
@@ -424,6 +673,96 @@ if (compressedReadCheck < 0 || inlineReadShortcut < 0 || compressedReadCheck > i
   pass('APFS compressed inline decmpfs reads are handled before generic inline data');
 }
 
+if (!apfsProviderSource.includes('public const int HeaderLength = 16') ||
+    !apfsProviderSource.includes('ApfsDecmpfs.GetInlineDataLogicalSize') ||
+    !apfsFileOpsTestsSource.includes('APFS decmpfs zlib inline reports uncompressed size and decompresses bytes') ||
+    !apfsFileOpsTestsSource.includes('APFS decmpfs uncompressed inline pads short resident payload to logical size')) {
+  fail('APFS decmpfs inline files must use the 16-byte header and expose uncompressed logical size with regression coverage');
+} else {
+  pass('APFS decmpfs inline files use the 16-byte header and expose uncompressed logical size with padded type-1 coverage');
+}
+
+if (!apfsProviderSource.includes('com.apple.decmpfs') ||
+    !apfsProviderSource.includes('CompressionResourceFork') ||
+	    !apfsProviderSource.includes('TryDecompressResourceForkDecmpfs') ||
+	    !apfsProviderSource.includes('TryDecompressResourceForkDecmpfsRange') ||
+	    !apfsProviderSource.includes('Func<long, int, byte[]?> readResourceForkRange') ||
+	    !apfsProviderSource.includes('TryLocateCmpfResourceData') ||
+	    !apfsProviderSource.includes('TryReadPlanRange') ||
+	    !apfsProviderSource.includes('MaxFullDecompressionSize') ||
+	    !apfsProviderSource.includes('TryExtractCmpfResourceData') ||
+	    !apfsFileOpsTestsSource.includes('APFS decmpfs zlib resource-fork cmpf chunks decompress bytes') ||
+	    !apfsFileOpsTestsSource.includes('APFS decmpfs zlib resource-fork cmpf range reads cross chunk boundaries') ||
+	    !apfsFileOpsTestsSource.includes('APFS decmpfs zlib resource-fork cmpf streamed range reads only intersecting chunks')) {
+  fail('APFS decmpfs type-4 resource-fork compression must preserve metadata, retain the raw resource fork, decode cmpf chunks, and serve partial ranges without full-file allocation');
+} else {
+  pass('APFS decmpfs type-4 resource-fork compression preserves metadata and decodes full/ranged cmpf chunks with regression coverage');
+}
+
+if (!apfsProviderSource.includes('com.apple.ResourceFork') ||
+    !apfsProviderSource.includes('BuildResourceForkSidecar') ||
+    !apfsProviderSource.includes('ResourceForkAppleDoubleByObjectId') ||
+    !apfsFileOpsTestsSource.includes('APFS ResourceFork xattr payload is converted to AppleDouble sidecar bytes')) {
+  fail('APFS inline resource forks must be exposed as AppleDouble sidecars with regression coverage');
+} else {
+  pass('APFS inline resource forks are exposed as AppleDouble sidecars with regression coverage');
+}
+
+if (!apfsProviderSource.includes('BuildResourceForkSidecarReadPlan') ||
+    !apfsProviderSource.includes('ReadInlinePrefixedExtentBackedFile') ||
+    !apfsFileOpsTestsSource.includes('APFS extent-backed ResourceFork sidecars stream AppleDouble header and payload')) {
+  fail('APFS extent-backed resource forks must stream AppleDouble sidecars with regression coverage');
+} else {
+  pass('APFS extent-backed resource forks stream AppleDouble sidecars with regression coverage');
+}
+
+if (!apfsProviderSource.includes('com.apple.FinderInfo') ||
+    !apfsProviderSource.includes('AppleDoubleFinderInfoEntryId = 9') ||
+    !apfsProviderSource.includes('BuildAppleDoubleSidecarReadPlan') ||
+    !apfsProviderSource.includes('AppleDoubleAttrMagic = 0x41545452') ||
+    !apfsProviderSource.includes('IsPreservableExtendedAttributeName') ||
+    !apfsFileOpsTestsSource.includes('APFS FinderInfo xattr is preserved as AppleDouble entry 9') ||
+    !apfsFileOpsTestsSource.includes('APFS extent-backed ResourceFork sidecars shift after FinderInfo entry') ||
+    !apfsFileOpsTestsSource.includes('APFS inline xattrs are packed into FinderInfo AppleDouble ATTR data')) {
+  fail('APFS FinderInfo and inline xattrs must be preserved as AppleDouble entry 9/ATTR data with inline and extent-backed regression coverage');
+} else {
+  pass('APFS FinderInfo and inline xattrs are preserved as AppleDouble entry 9/ATTR data with inline and extent-backed regression coverage');
+}
+
+if (!virtualFsContractsSource.includes('SymlinkTarget') ||
+    !virtualFsContractsSource.includes('IsSymbolicLink') ||
+    !apfsProviderSource.includes('DrecFileType.Symlink') ||
+    !apfsProviderSource.includes('TryReadApfsSymlinkTarget') ||
+    !nativeServiceProgram.includes('ReparsePoints = fs is RawProviderFileSystem') ||
+    !nativeServiceProgram.includes('GetReparsePoint') ||
+    !nativeServiceProgram.includes('BuildSymlinkReparseData') ||
+    !nativeBrokerProgram.includes('ReparsePoints = true') ||
+    !nativeBrokerProgram.includes('GetReparsePointByName') ||
+    !nativeBrokerProgram.includes('BrokerRawProviderFileSystem') ||
+    !nativeBrokerProgram.includes('BuildSymlinkReparseData') ||
+    !apfsFileOpsTestsSource.includes('Raw APFS symlink entries preserve target and reparse attributes')) {
+  fail('APFS symlinks must preserve targets and expose WinFsp reparse-point metadata in service and broker raw mounts with regression coverage');
+} else {
+  pass('APFS symlinks preserve targets and expose WinFsp reparse-point metadata in service and broker raw mounts with regression coverage');
+}
+
+if (!apfsProviderSource.includes('ReadExtentBackedFile') ||
+    !apfsProviderSource.includes('target.Clear()') ||
+    !apfsFileOpsTestsSource.includes('APFS sparse extent reads zero-fill holes and return logical byte count')) {
+  fail('APFS extent-backed sparse files must zero-fill holes and return the logical read byte count with regression coverage');
+} else {
+  pass('APFS extent-backed sparse files zero-fill holes with regression coverage');
+}
+
+if (!apfsProviderSource.includes('TryReadApfsInodeLogicalSize') ||
+    apfsProviderSource.includes('if (extentsByChildId.ContainsKey(key.ObjectId)) continue') ||
+    !apfsProviderSource.includes('GetExtentBackedLogicalSize') ||
+    !apfsFileOpsTestsSource.includes('APFS extent read plans preserve inode logical size beyond final extent')) {
+  fail('APFS extent-backed read plans must preserve inode union_size for sparse tail holes with regression coverage');
+} else {
+  pass('APFS extent-backed read plans preserve inode logical size with regression coverage');
+}
+
 if (!nativeBrokerProgram.includes('DeletePathWithRetry') || !nativeBrokerProgram.includes('Passthrough delete failed')) {
   fail('NativeBroker passthrough delete cleanup can silently fail');
 } else {
@@ -431,9 +770,9 @@ if (!nativeBrokerProgram.includes('DeletePathWithRetry') || !nativeBrokerProgram
 }
 
 if (!nativeBrokerProgram.includes('CROSSDRIVE_ENABLE_UNC_METADATA_CACHE') || !nativeBrokerProgram.includes('_enableMetadataCache && _dirCache')) {
-  fail('NativeBroker can serve stale WSL passthrough metadata cache');
+  fail('NativeBroker can serve stale passthrough metadata cache');
 } else {
-  pass('NativeBroker disables WSL passthrough metadata cache by default');
+  pass('NativeBroker disables passthrough metadata cache by default');
 }
 
 assertDependencyMajor('dependencies', 'express', 5);
@@ -447,10 +786,6 @@ for (const entryPath of [mainPath, preloadPath, serverPath]) {
 }
 
 for (const needle of [
-  'Bundled WSL kernel',
-  'Bundled WSL module: apfs.ko',
-  'Bundled WSL module: hfs.ko',
-  'Bundled WSL module: hfsplus.ko',
   'Native service published',
   'Native broker published',
   'User-session helper published'
@@ -471,31 +806,44 @@ if (!auditScript.includes('Packaging avoids dev script globs') || !auditScript.i
 if (!auditScript.includes('GPL source manifest present')) fail('release audit missing GPL source manifest check');
 else pass('release audit checks GPL source manifest');
 
+for (const forbiddenAuditNeedle of ['Bundled WSL kernel', 'apfs.ko', 'hfs.ko', 'hfsplus.ko']) {
+  if (auditScript.includes(forbiddenAuditNeedle)) fail(`release audit must not require external-runtime component: ${forbiddenAuditNeedle}`);
+  else pass(`release audit does not require ${forbiddenAuditNeedle}`);
+}
+
 if (!licenseText.includes('Copyright (c) 2026 George Karagioules and contributors')) fail('LICENSE copyright line is missing or changed');
 else pass('LICENSE copyright is CrossDrive 2026');
 
-if (!eulaText.includes('CrossDrive is distributed under the MIT License') || !eulaText.includes('WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos')) {
+// EULA, notices and GPL manifest describe the published v1.5.35 release, which
+// bundles the WSL2 kernel and modules, so they keep its GPL wording.
+if (!eulaText.includes('CrossDrive is distributed under the MIT License') ||
+    !eulaText.includes('WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos')) {
   fail('EULA missing MIT/WinFsp FLOSS notice');
 } else {
   pass('EULA includes MIT/WinFsp FLOSS notice');
 }
 
-if (!noticesText.includes('WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos') || !noticesText.includes('Custom WSL2 kernel and filesystem modules')) {
+if (!noticesText.includes('WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos') ||
+    !noticesText.includes('Custom WSL2 kernel and filesystem modules')) {
   fail('third-party notices missing WinFsp or WSL GPL notices');
 } else {
   pass('third-party notices include WinFsp and WSL GPL notices');
 }
 
-if (!/linux-msft-wsl-6\.6\.87\.2/.test(gplManifestText) || !/linux-apfs-rw/.test(gplManifestText) || !/0\.3\.20/.test(gplManifestText) || !/kernel `\.config`/.test(gplManifestText)) {
+if (!/linux-msft-wsl-6\.6\.87\.2/.test(gplManifestText) || !/linux-apfs-rw/.test(gplManifestText) ||
+    !/0\.3\.20/.test(gplManifestText) || !/kernel `\.config`/.test(gplManifestText)) {
   fail('GPL source manifest missing kernel/APFS source requirements');
 } else {
   pass('GPL source manifest documents kernel/APFS source requirements');
 }
 
-if (validateReleaseScript.includes('Encrypted APFS volumes will not be unlockable')) {
-  fail('validate-release still treats legacy apfs-fuse as required for encrypted APFS');
+if (validateReleaseScript.includes('Encrypted APFS volumes will not be unlockable') ||
+    validateReleaseScript.includes('apfs-fuse') ||
+    validateReleaseScript.includes('Node.js not found') ||
+    validateReleaseScript.includes('.NET runtime not found')) {
+  fail('validate-release still treats developer or external bridge runtimes as required');
 } else {
-  pass('validate-release does not require legacy apfs-fuse for encrypted APFS');
+  pass('validate-release does not require developer runtimes or legacy external helpers');
 }
 
 const readinessDocs = [
@@ -505,8 +853,8 @@ const readinessDocs = [
 ];
 for (const docPath of readinessDocs) {
   const doc = fs.readFileSync(docPath, 'utf8');
-  if (!/WSL2 kernel|WSL kernel/i.test(doc)) fail(`${path.basename(docPath)} missing WSL kernel architecture`);
-  else pass(`${path.basename(docPath)} documents WSL kernel architecture`);
+  if (/WSL2 kernel|WSL kernel|Ubuntu/i.test(doc)) fail(`${path.basename(docPath)} still documents removed external-runtime architecture`);
+  else pass(`${path.basename(docPath)} avoids removed external-runtime architecture`);
   if (!/APFS writes?.*experimental|experimental APFS writes?/i.test(doc)) fail(`${path.basename(docPath)} missing experimental APFS write policy`);
   else pass(`${path.basename(docPath)} documents experimental APFS write policy`);
   if (!/CoreStorage.*unsupported|unsupported.*CoreStorage/i.test(doc)) fail(`${path.basename(docPath)} missing CoreStorage unsupported policy`);
@@ -515,10 +863,10 @@ for (const docPath of readinessDocs) {
 
 const systemRoutes = fs.readFileSync(path.join(routesDir, 'systemRoutes.js'), 'utf8');
 const driveRoutesSource = fs.readFileSync(path.join(routesDir, 'driveRoutes.js'), 'utf8');
-if (!systemRoutes.includes('wslSetup')) {
-  fail('/api/status does not expose WSL setup details');
+if (systemRoutes.includes('wslSetup')) {
+  fail('/api/status must not expose external-runtime setup details');
 } else {
-  pass('/api/status exposes WSL setup details');
+  pass('/api/status avoids external-runtime setup details');
 }
 
 const realMediaFormats = ['APFS', 'Encrypted APFS', 'HFS+', 'Classic HFS', 'CoreStorage'];
@@ -535,10 +883,10 @@ if (!systemRoutes.includes('mountSmoke') ||
     !systemRoutes.includes('/api/mount') ||
     !systemRoutes.includes('/api/unmount') ||
     !systemRoutes.includes("smoke.status = 'opened'") ||
-    !systemRoutes.includes("requiredFormats.every(format => coverage[format].status === 'opened')")) {
-  fail('/api/validation/real-media must prove formats by mounting, opening, and unmounting detected media');
+    !systemRoutes.includes("format === 'CoreStorage' ? status === 'unsupported' : status === 'opened'")) {
+  fail('/api/validation/real-media must prove supported formats by mounting/opening/unmounting and accept CoreStorage only as unsupported');
 } else {
-  pass('/api/validation/real-media proves formats by mounting, opening, and unmounting detected media');
+  pass('/api/validation/real-media proves supported formats by opening them and CoreStorage by unsupported policy');
 }
 
 const coverageCoreStorageCheck = systemRoutes.indexOf('return \'CoreStorage\'');
@@ -599,10 +947,11 @@ if (!crossDriveScript.includes('Start-ElevatedPreflightFix') ||
 }
 
 if (!driveRoutesSource.includes('/^HFS$/i.test(fsType)') ||
-    !driveRoutesSource.includes('Classic HFS requires the WSL kernel fallback')) {
-  fail('driveRoutes.js must leave classic HFS mountable so the WSL kernel fallback can open it');
+    !driveRoutesSource.includes('Classic HFS native read-only support') ||
+    driveRoutesSource.includes('Classic HFS requires the WSL kernel fallback')) {
+  fail('driveRoutes.js must classify classic HFS as native read-only without promising an external fallback');
 } else {
-  pass('driveRoutes.js leaves classic HFS mountable for the WSL kernel fallback');
+  pass('driveRoutes.js classifies classic HFS as native read-only without an external fallback');
 }
 
 const routeModules = ['systemRoutes.js', 'driveRoutes.js', 'mountRoutes.js', 'nativeRoutes.js'];
@@ -631,12 +980,11 @@ try {
   const routeCtx = {
     addLog: noop,
     logs: [],
-    setupState: { status: 'ready', message: 'test', ready: true, wslSetup: {} },
+    setupState: { status: 'ready', message: 'test', ready: true },
     getNativeStatus: async () => ({ available: false }),
-    RUNTIME_MOUNT_MODE: 'wsl_kernel',
+    RUNTIME_MOUNT_MODE: 'native_first',
     RUNTIME_NATIVE_MOUNT_ENABLED: true,
     RUNTIME_CANARY_PERCENT: 100,
-    RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK: true,
     PREFER_SUBST_LOCAL_FAST_PATH: true,
     isAdmin: () => true,
     hasRawDiskAccess: () => true,
@@ -649,9 +997,7 @@ try {
     cleanupGhostDriveLetters: noop,
     cleanupSingleDriveLetter: noop,
     awaitStartupCleanup: async () => {},
-    shouldAttemptNativeMountForDrive: () => false,
     tryMountRawWithFallbackLetters: async () => ({ ok: false }),
-    execPsMount: async () => ({ error: 'not available in self-test' }),
     sendBrokerRequest: async () => ({ ok: false }),
     ensureBrokerReady: async () => false,
     getUsedDriveLetters: () => new Set(),
@@ -664,6 +1010,29 @@ try {
   pass('Express route modules register successfully');
 } catch (e) {
   fail(`Express route registration failed: ${e.message}`);
+}
+
+if (serverSource.includes('RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK') ||
+    mountRoutesSource.includes('RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK') ||
+    nativeRoutesSource.includes('allowBridgeFallback') ||
+    systemRoutes.includes('allowNativeBridgeFallback') ||
+    mountRoutesSource.includes('Native mount failed and fallback is disabled') ||
+    mountRoutesSource.includes('Fallback is only available for APFS right now') ||
+    mountRoutesSource.includes('Native APFS fallback cannot open it yet')) {
+  fail('Runtime status and mount errors must not expose retired bridge-fallback paths');
+} else {
+  pass('Runtime status and mount errors expose only native runtime behavior');
+}
+
+if (serverSource.includes('function execPsMount') ||
+    serverSource.includes("'-Action', 'Mount'") ||
+    serverSource.includes('shouldAttemptNativeMountForDrive') ||
+    mountRoutesSource.includes('execPsMount') ||
+    mountRoutesSource.includes('shouldAttemptNativeMountForDrive') ||
+    crossDriveScript.includes('function Mount-Drive')) {
+  fail('/api/mount must not keep retired PowerShell mount branches');
+} else {
+  pass('/api/mount is native-only without retired PowerShell mount branches');
 }
 
 if (process.exitCode && process.exitCode !== 0) {

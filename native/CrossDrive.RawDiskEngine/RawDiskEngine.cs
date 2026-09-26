@@ -298,6 +298,10 @@ public sealed class RawDiskEngine : IRawDiskEngine
         {
             provider = await ApfsRawFileSystemProvider.CreateAsync(plan, cancellationToken).ConfigureAwait(false);
         }
+        else if (string.Equals(plan.FileSystemType, "HFS", StringComparison.OrdinalIgnoreCase))
+        {
+            provider = await HfsClassicRawFileSystemProvider.CreateAsync(plan, cancellationToken).ConfigureAwait(false);
+        }
         else
         {
             provider = new ProbeRawFileSystemProvider(plan);
@@ -790,15 +794,23 @@ internal sealed class ProbeRawFileSystemProvider : IRawFileSystemProvider
 
 internal sealed class HfsPlusRawFileSystemProvider : IRawFileSystemProvider
 {
+    private const int AppleDoubleHeaderBaseLength = 26;
+    private const int AppleDoubleEntryLength = 12;
+    private const int AppleDoubleFinderInfoLength = 32;
+    private const uint AppleDoubleResourceForkEntryId = 2;
+    private const uint AppleDoubleFinderInfoEntryId = 9;
     private readonly IRawBlockDevice _device;
     private readonly HfsPlusNativeReader _reader;
     private readonly bool _writable;
     private readonly object _sync = new();
+    private readonly StringComparer _pathComparer;
+    private readonly StringComparison _pathComparison;
 
     // Path-to-entry and path-to-CNID caches, built lazily as directories are listed
-    private readonly Dictionary<string, RawFsEntry> _entryCache = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, uint> _cnidByPath = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, HfsPlusForkInfo> _forkByPath = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, RawFsEntry> _entryCache;
+    private readonly Dictionary<string, uint> _cnidByPath;
+    private readonly Dictionary<string, HfsPlusForkInfo> _forkByPath;
+    private readonly Dictionary<string, HfsPlusAppleDoubleSidecar> _resourceForkSidecars;
 
     private HfsPlusRawFileSystemProvider(IRawBlockDevice device, HfsPlusNativeReader reader, string fsType, bool writable)
     {
@@ -806,6 +818,13 @@ internal sealed class HfsPlusRawFileSystemProvider : IRawFileSystemProvider
         _reader = reader;
         _writable = writable;
         FileSystemType = fsType;
+        var caseSensitivePaths = IsCaseSensitiveFileSystem(fsType);
+        _pathComparer = caseSensitivePaths ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase;
+        _pathComparison = caseSensitivePaths ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+        _entryCache = new Dictionary<string, RawFsEntry>(_pathComparer);
+        _cnidByPath = new Dictionary<string, uint>(_pathComparer);
+        _forkByPath = new Dictionary<string, HfsPlusForkInfo>(_pathComparer);
+        _resourceForkSidecars = new Dictionary<string, HfsPlusAppleDoubleSidecar>(_pathComparer);
         _cnidByPath["\\"] = 2; // root folder CNID
     }
 
@@ -910,15 +929,41 @@ internal sealed class HfsPlusRawFileSystemProvider : IRawFileSystemProvider
                 foreach (var item in items)
                 {
                     var childPath = n == "\\" ? $"\\{item.Name}" : $"{n}\\{item.Name}";
-                    var attrs = item.IsDirectory ? FileAttributes.Directory : (_writable ? FileAttributes.Normal : FileAttributes.ReadOnly);
-                    var entry = new RawFsEntry(childPath, item.Name, item.IsDirectory, item.Size, item.ModifiedTime, attrs);
+                    var symlinkTarget = item.IsSymbolicLink ? TryReadHfsPlusSymlinkTarget(item) : null;
+                    var attrs = item.IsDirectory
+                        ? FileAttributes.Directory
+                        : symlinkTarget is not null
+                            ? FileAttributes.ReadOnly | FileAttributes.ReparsePoint
+                            : _writable ? FileAttributes.Normal : FileAttributes.ReadOnly;
+                    var entrySize = symlinkTarget is not null ? 0 : item.Size;
+                    var entry = new RawFsEntry(childPath, item.Name, item.IsDirectory, entrySize, item.ModifiedTime, attrs, symlinkTarget);
 
                     // Always cache for internal lookups (GetEntry, WriteFile, etc.)
                     _entryCache[childPath] = entry;
                     _cnidByPath[childPath] = item.Cnid;
-                    if (item.DataFork is not null)
+                    if (item.DataFork is not null && symlinkTarget is null)
                     {
                         _forkByPath[childPath] = item.DataFork;
+                    }
+
+                    if (!item.IsDirectory &&
+                        symlinkTarget is null &&
+                        (item.ResourceFork is { LogicalSize: > 0 } || item.FinderInfo is { Length: AppleDoubleFinderInfoLength }))
+                    {
+                        var sidecar = new HfsPlusAppleDoubleSidecar(item.Cnid, item.ResourceFork, item.FinderInfo);
+                        var sidecarName = "._" + item.Name;
+                        var sidecarPath = n == "\\" ? $"\\{sidecarName}" : $"{n}\\{sidecarName}";
+                        var sidecarEntry = new RawFsEntry(
+                            sidecarPath,
+                            sidecarName,
+                            false,
+                            sidecar.TotalSize,
+                            item.ModifiedTime,
+                            FileAttributes.ReadOnly | FileAttributes.Hidden);
+
+                        _entryCache[sidecarPath] = sidecarEntry;
+                        _resourceForkSidecars[sidecarPath] = sidecar;
+                        results.Add(sidecarEntry);
                     }
 
                     // Only show non-metadata entries to Explorer
@@ -938,10 +983,40 @@ internal sealed class HfsPlusRawFileSystemProvider : IRawFileSystemProvider
         }
     }
 
+    private string? TryReadHfsPlusSymlinkTarget(HfsPlusCatalogItem item)
+    {
+        if (item.DataFork is not { LogicalSize: > 0 } fork || fork.LogicalSize > 4096)
+        {
+            return null;
+        }
+
+        try
+        {
+            var buffer = new byte[(int)fork.LogicalSize];
+            var read = _reader.ReadFileAsync(fork, item.Cnid, 0x00, 0, buffer, buffer.Length).GetAwaiter().GetResult();
+            if (read <= 0)
+            {
+                return null;
+            }
+
+            var target = Encoding.UTF8.GetString(buffer, 0, read).TrimEnd('\0');
+            return string.IsNullOrWhiteSpace(target) ? null : target;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     public int ReadFile(string path, long offset, Span<byte> destination)
     {
         if (destination.Length == 0) return 0;
         var n = NormalizePath(path);
+
+        if (TryGetResourceForkSidecar(n, out var sidecar))
+        {
+            return ReadAppleDoubleResourceFork(sidecar, offset, destination);
+        }
 
         HfsPlusForkInfo? fork;
         uint fileId;
@@ -973,6 +1048,7 @@ internal sealed class HfsPlusRawFileSystemProvider : IRawFileSystemProvider
         if (source.Length == 0) return 0;
 
         var n = NormalizePath(path);
+        if (IsResourceForkSidecar(n)) throw new InvalidOperationException("Resource fork sidecars are read-only.");
         uint cnid;
         lock (_sync)
         {
@@ -1091,6 +1167,7 @@ internal sealed class HfsPlusRawFileSystemProvider : IRawFileSystemProvider
         if (!_writable) throw new InvalidOperationException("Provider is read-only.");
 
         var n = NormalizePath(path);
+        if (IsResourceForkSidecar(n)) throw new InvalidOperationException("Resource fork sidecars are read-only.");
         var parentPath = GetParentPath(n);
         var entryName = n[(n.LastIndexOf('\\') + 1)..];
 
@@ -1122,6 +1199,10 @@ internal sealed class HfsPlusRawFileSystemProvider : IRawFileSystemProvider
 
         var oldN = NormalizePath(oldPath);
         var newN = NormalizePath(newPath);
+        if (IsResourceForkSidecar(oldN) || IsResourceForkSidecar(newN))
+        {
+            throw new InvalidOperationException("Resource fork sidecars are read-only.");
+        }
         var oldParent = GetParentPath(oldN);
         var newParent = GetParentPath(newN);
         var oldName = oldN[(oldN.LastIndexOf('\\') + 1)..];
@@ -1168,7 +1249,7 @@ internal sealed class HfsPlusRawFileSystemProvider : IRawFileSystemProvider
             InvalidatePath(oldN);
             InvalidatePath(newN);
             InvalidateParent(oldParent);
-            if (!string.Equals(oldParent, newParent, StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(oldParent, newParent, _pathComparison))
             {
                 InvalidateParent(newParent);
             }
@@ -1185,6 +1266,7 @@ internal sealed class HfsPlusRawFileSystemProvider : IRawFileSystemProvider
         if (!_writable) throw new InvalidOperationException("Provider is read-only.");
 
         var n = NormalizePath(path);
+        if (IsResourceForkSidecar(n)) throw new InvalidOperationException("Resource fork sidecars are read-only.");
         uint cnid;
         lock (_sync)
         {
@@ -1228,6 +1310,7 @@ internal sealed class HfsPlusRawFileSystemProvider : IRawFileSystemProvider
         {
             _entryCache.Remove(normalizedPath);
             _forkByPath.Remove(normalizedPath);
+            _resourceForkSidecars.Remove(normalizedPath);
             // Don't remove CNID mapping — it stays valid
         }
     }
@@ -1241,7 +1324,7 @@ internal sealed class HfsPlusRawFileSystemProvider : IRawFileSystemProvider
             var toRemove = new List<string>();
             foreach (var key in _entryCache.Keys)
             {
-                if (key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) &&
+                if (key.StartsWith(prefix, _pathComparison) &&
                     key.IndexOf('\\', prefix.Length) < 0) // direct children only
                 {
                     toRemove.Add(key);
@@ -1251,6 +1334,7 @@ internal sealed class HfsPlusRawFileSystemProvider : IRawFileSystemProvider
             {
                 _entryCache.Remove(key);
                 _forkByPath.Remove(key);
+                _resourceForkSidecars.Remove(key);
             }
         }
     }
@@ -1278,6 +1362,158 @@ internal sealed class HfsPlusRawFileSystemProvider : IRawFileSystemProvider
         return false;
     }
 
+    private bool TryGetResourceForkSidecar(string normalizedPath, out HfsPlusAppleDoubleSidecar sidecar)
+    {
+        lock (_sync)
+        {
+            if (_resourceForkSidecars.TryGetValue(normalizedPath, out var cached))
+            {
+                sidecar = cached;
+                return true;
+            }
+        }
+
+        var parent = GetParentPath(normalizedPath);
+        ListDirectory(parent);
+
+        lock (_sync)
+        {
+            if (_resourceForkSidecars.TryGetValue(normalizedPath, out var cached))
+            {
+                sidecar = cached;
+                return true;
+            }
+        }
+
+        sidecar = null!;
+        return false;
+    }
+
+    private bool IsResourceForkSidecar(string normalizedPath)
+    {
+        return TryGetResourceForkSidecar(normalizedPath, out _);
+    }
+
+    private int ReadAppleDoubleResourceFork(HfsPlusAppleDoubleSidecar sidecar, long offset, Span<byte> destination)
+    {
+        if (offset < 0 || destination.Length <= 0)
+        {
+            return 0;
+        }
+
+        var totalSize = sidecar.TotalSize;
+        if (offset >= totalSize)
+        {
+            return 0;
+        }
+
+        var requested = (int)Math.Min(destination.Length, totalSize - offset);
+        var writtenEnd = 0;
+
+        var header = BuildAppleDoubleResourceForkHeader(sidecar);
+        CopyAppleDoubleSegment(header, 0, offset, requested, destination, ref writtenEnd);
+
+        if (sidecar.FinderInfo is { Length: AppleDoubleFinderInfoLength } finderInfo)
+        {
+            CopyAppleDoubleSegment(finderInfo, sidecar.FinderInfoOffset, offset, requested, destination, ref writtenEnd);
+        }
+
+        if (sidecar.ResourceFork is { LogicalSize: > 0 } resourceFork)
+        {
+            var targetStart = offset;
+            var targetEnd = offset + requested;
+            var resourceStart = sidecar.ResourceForkOffset;
+            var resourceEnd = resourceStart + resourceFork.LogicalSize;
+            var copyStart = Math.Max(targetStart, resourceStart);
+            var copyEnd = Math.Min(targetEnd, resourceEnd);
+            var resourceCount = (int)Math.Max(0, copyEnd - copyStart);
+            if (resourceCount <= 0)
+            {
+                return writtenEnd;
+            }
+
+            var destinationOffset = (int)(copyStart - targetStart);
+            var temp = new byte[resourceCount];
+            var read = _reader.ReadFileAsync(
+                resourceFork,
+                sidecar.FileId,
+                0xFF,
+                copyStart - resourceStart,
+                temp,
+                resourceCount).GetAwaiter().GetResult();
+            if (read > 0)
+            {
+                temp.AsSpan(0, read).CopyTo(destination[destinationOffset..]);
+                writtenEnd = Math.Max(writtenEnd, destinationOffset + read);
+            }
+        }
+
+        return writtenEnd;
+    }
+
+    private static byte[] BuildAppleDoubleResourceForkHeader(HfsPlusAppleDoubleSidecar sidecar)
+    {
+        var header = new byte[sidecar.HeaderLength];
+        BinaryPrimitives.WriteUInt32BigEndian(header.AsSpan(0, 4), 0x00051607);
+        BinaryPrimitives.WriteUInt32BigEndian(header.AsSpan(4, 4), 0x00020000);
+        BinaryPrimitives.WriteUInt16BigEndian(header.AsSpan(24, 2), (ushort)sidecar.EntryCount);
+
+        var entryOffset = AppleDoubleHeaderBaseLength;
+        if (sidecar.FinderInfo is { Length: AppleDoubleFinderInfoLength })
+        {
+            WriteAppleDoubleEntry(header.AsSpan(entryOffset, AppleDoubleEntryLength), AppleDoubleFinderInfoEntryId, sidecar.FinderInfoOffset, AppleDoubleFinderInfoLength);
+            entryOffset += AppleDoubleEntryLength;
+        }
+
+        if (sidecar.ResourceFork is { LogicalSize: > 0 } resourceFork)
+        {
+            WriteAppleDoubleEntry(
+                header.AsSpan(entryOffset, AppleDoubleEntryLength),
+                AppleDoubleResourceForkEntryId,
+                sidecar.ResourceForkOffset,
+                resourceFork.LogicalSize);
+        }
+
+        return header;
+    }
+
+    private static void WriteAppleDoubleEntry(Span<byte> target, uint id, long offset, long length)
+    {
+        BinaryPrimitives.WriteUInt32BigEndian(target[..4], id);
+        BinaryPrimitives.WriteUInt32BigEndian(target.Slice(4, 4), (uint)Math.Min(offset, uint.MaxValue));
+        BinaryPrimitives.WriteUInt32BigEndian(target.Slice(8, 4), (uint)Math.Min(length, uint.MaxValue));
+    }
+
+    private static void CopyAppleDoubleSegment(ReadOnlySpan<byte> source, long sourceOffset, long requestOffset, int requested, Span<byte> destination, ref int writtenEnd)
+    {
+        var targetStart = requestOffset;
+        var targetEnd = requestOffset + requested;
+        var sourceEnd = sourceOffset + source.Length;
+        var copyStart = Math.Max(targetStart, sourceOffset);
+        var copyEnd = Math.Min(targetEnd, sourceEnd);
+        var count = (int)Math.Max(0, copyEnd - copyStart);
+        if (count <= 0)
+        {
+            return;
+        }
+
+        var sourceIndex = (int)(copyStart - sourceOffset);
+        var destinationIndex = (int)(copyStart - targetStart);
+        source.Slice(sourceIndex, count).CopyTo(destination.Slice(destinationIndex, count));
+        writtenEnd = Math.Max(writtenEnd, destinationIndex + count);
+    }
+
+    private sealed record HfsPlusAppleDoubleSidecar(uint FileId, HfsPlusForkInfo? ResourceFork, byte[]? FinderInfo)
+    {
+        public bool HasFinderInfo => FinderInfo is { Length: AppleDoubleFinderInfoLength };
+        public bool HasResourceFork => ResourceFork is { LogicalSize: > 0 };
+        public int EntryCount => (HasFinderInfo ? 1 : 0) + (HasResourceFork ? 1 : 0);
+        public int HeaderLength => AppleDoubleHeaderBaseLength + EntryCount * AppleDoubleEntryLength;
+        public int FinderInfoOffset => HeaderLength;
+        public long ResourceForkOffset => HeaderLength + (HasFinderInfo ? AppleDoubleFinderInfoLength : 0);
+        public long TotalSize => ResourceForkOffset + (HasResourceFork ? ResourceFork!.LogicalSize : 0);
+    }
+
     private static string NormalizePath(string path)
     {
         if (string.IsNullOrWhiteSpace(path) || path == "/" || path == "\\") return "\\";
@@ -1285,6 +1521,9 @@ internal sealed class HfsPlusRawFileSystemProvider : IRawFileSystemProvider
         if (!p.StartsWith('\\')) p = "\\" + p;
         return p;
     }
+
+    private static bool IsCaseSensitiveFileSystem(string fileSystemType)
+        => string.Equals(fileSystemType, "HFSX", StringComparison.OrdinalIgnoreCase);
 
     private static string GetParentPath(string path)
     {

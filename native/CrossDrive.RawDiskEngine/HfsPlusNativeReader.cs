@@ -48,6 +48,7 @@ public sealed class HfsPlusNativeReader : IDisposable
     private uint _leafRecords;
     private uint _lastLeafNode;
     private ushort _treeDepth;
+    private readonly StringComparison _catalogNameComparison;
 
     // Thread safety: serialise all write operations (WinFsp callbacks are concurrent)
     private readonly SemaphoreSlim _writeLock = new(1, 1);
@@ -84,6 +85,7 @@ public sealed class HfsPlusNativeReader : IDisposable
         _extentsExtents = extentsExtents;
         _extentsNodeSize = extentsNodeSize;
         _extentsRootNode = extentsRootNode;
+        _catalogNameComparison = header.IsHfsx ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
     }
 
     public static async Task<HfsPlusNativeReader?> OpenAsync(IRawBlockDevice device, long partitionOffset, CancellationToken ct = default)
@@ -406,16 +408,30 @@ public sealed class HfsPlusNativeReader : IDisposable
                     if (dataOffset + 70 > nodeBuf.Length) continue;
                     var folderCnid = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(dataOffset + 8, 4));
                     var modTime = ReadHfsTimestamp(nodeBuf, dataOffset + 16);
-                    results.Add(new HfsPlusCatalogItem(name, true, 0, modTime, folderCnid, null));
+                    var mode = ReadCatalogMode(nodeBuf, dataOffset);
+                    results.Add(new HfsPlusCatalogItem(name, true, 0, modTime, folderCnid, null, null, null, mode));
                 }
                 else if (recordType == 2) // File
                 {
                     if (dataOffset + 248 > nodeBuf.Length) continue;
                     var fileCnid = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(dataOffset + 8, 4));
                     var modTime = ReadHfsTimestamp(nodeBuf, dataOffset + 16);
+                    var mode = ReadCatalogMode(nodeBuf, dataOffset);
+                    var finderInfo = ReadFinderInfo(nodeBuf.AsSpan(dataOffset + 48, 32));
                     // Data fork: starts at dataOffset + 88
                     var dataFork = ParseForkData(nodeBuf, dataOffset + 88);
-                    results.Add(new HfsPlusCatalogItem(name, false, dataFork.LogicalSize, modTime, fileCnid, dataFork));
+                    // Resource fork: starts at dataOffset + 168
+                    var resourceFork = ParseForkData(nodeBuf, dataOffset + 168);
+                    results.Add(new HfsPlusCatalogItem(
+                        name,
+                        false,
+                        dataFork.LogicalSize,
+                        modTime,
+                        fileCnid,
+                        dataFork,
+                        resourceFork.LogicalSize > 0 ? resourceFork : null,
+                        finderInfo,
+                        mode));
                 }
                 // Types 3/4 are thread records — skip
             }
@@ -688,6 +704,29 @@ public sealed class HfsPlusNativeReader : IDisposable
             extents[i] = new HfsPlusExtent(startBlock, blockCount);
         }
         return extents;
+    }
+
+    private static byte[]? ReadFinderInfo(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.Length < 32) return null;
+        for (var i = 0; i < 32; i++)
+        {
+            if (bytes[i] != 0)
+            {
+                return bytes[..32].ToArray();
+            }
+        }
+
+        return null;
+    }
+
+    private static ushort ReadCatalogMode(byte[] buffer, int dataOffset)
+    {
+        const int BSDInfoOffset = 32;
+        const int FileModeOffset = BSDInfoOffset + 10;
+        return dataOffset + FileModeOffset + 2 <= buffer.Length
+            ? BinaryPrimitives.ReadUInt16BigEndian(buffer.AsSpan(dataOffset + FileModeOffset, 2))
+            : (ushort)0;
     }
 
     // ─── WRITE SUPPORT ────────────────────────────────────────────────────────
@@ -1238,7 +1277,7 @@ public sealed class HfsPlusNativeReader : IDisposable
     /// Compare two catalog keys: (parentCnid, name) ordering.
     /// Returns negative if a &lt; b, 0 if equal, positive if a &gt; b.
     /// </summary>
-    private static int CompareCatalogKeys(byte[] nodeBuf, int recOffset, uint targetParent, string targetName)
+    private int CompareCatalogKeys(byte[] nodeBuf, int recOffset, uint targetParent, string targetName)
     {
         var recParent = BinaryPrimitives.ReadUInt32BigEndian(nodeBuf.AsSpan(recOffset + 2, 4));
         if (recParent != targetParent) return recParent.CompareTo(targetParent);
@@ -1250,7 +1289,7 @@ public sealed class HfsPlusNativeReader : IDisposable
             nameChars[i] = (char)BinaryPrimitives.ReadUInt16BigEndian(nodeBuf.AsSpan(recOffset + 8 + i * 2, 2));
         }
         var recName = new string(nameChars);
-        return string.Compare(recName, targetName, StringComparison.OrdinalIgnoreCase);
+        return string.Compare(recName, targetName, _catalogNameComparison);
     }
 
     /// <summary>
@@ -1867,7 +1906,7 @@ public sealed class HfsPlusNativeReader : IDisposable
                             recChars[c] = (char)BinaryPrimitives.ReadUInt16BigEndian(nodeBuf.AsSpan(recOff + 8 + c * 2, 2));
                         var recName = new string(recChars);
 
-                        if (string.Equals(recName, name, StringComparison.OrdinalIgnoreCase))
+                        if (string.Equals(recName, name, _catalogNameComparison))
                         {
                             removeAt = allRecords.Count;
                         }
@@ -2094,7 +2133,7 @@ public sealed class HfsPlusNativeReader : IDisposable
         {
             // First, find the entry to get its CNID and data fork (for freeing blocks)
             var items = await ListDirectoryAsync(parentCnid, ct).ConfigureAwait(false);
-            var target = items.Find(i => string.Equals(i.Name, name, StringComparison.OrdinalIgnoreCase));
+            var target = items.Find(i => string.Equals(i.Name, name, _catalogNameComparison));
             if (target is null) throw new FileNotFoundException($"Entry '{name}' not found under CNID {parentCnid}.");
 
             // Free data blocks if it's a file
@@ -2268,7 +2307,7 @@ public sealed class HfsPlusNativeReader : IDisposable
                     recChars[c] = (char)BinaryPrimitives.ReadUInt16BigEndian(nodeBuf.AsSpan(recOff + 8 + c * 2, 2));
                 var recName = new string(recChars);
 
-                if (!string.Equals(recName, fileName, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!string.Equals(recName, fileName, _catalogNameComparison)) continue;
 
                 var dataOff = recOff + 2 + keyLen;
                 if (dataOff % 2 != 0) dataOff++;
@@ -2555,7 +2594,7 @@ public sealed class HfsPlusNativeReader : IDisposable
                 for (int c = 0; c < rnl; c++)
                     rch[c] = (char)BinaryPrimitives.ReadUInt16BigEndian(nb.AsSpan(ro + 8 + c * 2, 2));
                 var rn = new string(rch);
-                if (!string.Equals(rn, fileName, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!string.Equals(rn, fileName, _catalogNameComparison)) continue;
 
                 var dOff = ro + 2 + kl;
                 if (dOff % 2 != 0) dOff++;
@@ -3337,8 +3376,14 @@ public sealed record HfsPlusCatalogItem(
     long Size,
     DateTimeOffset ModifiedTime,
     uint Cnid,
-    HfsPlusForkInfo? DataFork
-);
+    HfsPlusForkInfo? DataFork,
+    HfsPlusForkInfo? ResourceFork,
+    byte[]? FinderInfo,
+    ushort Mode = 0
+)
+{
+    public bool IsSymbolicLink => (Mode & 0xF000) == 0xA000;
+}
 
 // ─── Diagnostic types ────────────────────────────────────────────────────
 

@@ -79,6 +79,25 @@ function Get-SignatureStatus([string]$filePath) {
     return @{ Ok = $false; Detail = "Signature verification unavailable in this shell environment." }
 }
 
+function Test-BinaryMissingStrings([string]$filePath, [string[]]$needles) {
+    if (-not (Test-Path $filePath)) {
+        return @{ Ok = $false; Detail = "$filePath missing" }
+    }
+
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($filePath)
+        $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
+        $unicode = [System.Text.Encoding]::Unicode.GetString($bytes)
+        $found = @($needles | Where-Object { $ascii.Contains($_) -or $unicode.Contains($_) })
+        return @{
+            Ok = ($found.Count -eq 0)
+            Detail = $(if ($found.Count -eq 0) { "$filePath has no forbidden strings" } else { "$filePath contains forbidden strings: $($found -join ', ')" })
+        }
+    } catch {
+        return @{ Ok = $false; Detail = $_.Exception.Message }
+    }
+}
+
 $checks += [pscustomobject]@{
     Check = "Package metadata (description/author/license)"
     Passed = (-not [string]::IsNullOrWhiteSpace($pkg.description) -and -not [string]::IsNullOrWhiteSpace($pkg.author) -and -not [string]::IsNullOrWhiteSpace($pkg.license))
@@ -182,22 +201,6 @@ $checks += [pscustomobject]@{
     Check = "Dev/release scripts not packaged"
     Passed = ($forbiddenFound.Count -eq 0)
     Detail = $(if ($forbiddenFound.Count -eq 0) { "No forbidden scripts found in resources/scripts or app.asar.unpacked/scripts" } else { ($forbiddenFound -join "; ") })
-}
-
-$linuxScriptNames = @("wsl_mount.sh", "wsl_unmount.sh", "wsl_install_modules.sh", "wsl_validate_mount.sh", "wsl_format_and_mount.sh")
-$linuxScriptFailures = @()
-foreach ($scriptName in $linuxScriptNames) {
-    $scriptPath = Join-Path $root "dist\win-unpacked\resources\scripts\$scriptName"
-    if (-not (Test-Path -LiteralPath $scriptPath)) {
-        $linuxScriptFailures += "$scriptName missing"
-    } elseif ([IO.File]::ReadAllText($scriptPath).Contains("`r")) {
-        $linuxScriptFailures += "$scriptName contains CRLF"
-    }
-}
-$checks += [pscustomobject]@{
-    Check = "Bundled Linux scripts retain LF endings"
-    Passed = ($linuxScriptFailures.Count -eq 0)
-    Detail = $(if ($linuxScriptFailures.Count -eq 0) { "All five WSL shell scripts contain LF only" } else { ($linuxScriptFailures -join "; ") })
 }
 
 $nativeBinResourcePath = Join-Path $root "dist\win-unpacked\resources\native-bin"
@@ -333,24 +336,17 @@ $checks += [pscustomobject]@{
     Detail = $setupExePath
 }
 
-$kernelPath = Join-Path $root "prereqs\crossdrive-kernel\wsl_kernel"
-$checks += [pscustomobject]@{
-    Check = "Bundled WSL kernel"
-    Passed = (Test-Path $kernelPath)
-    Detail = $kernelPath
-}
-
-$wslModules = @(
-    @{ Label = "Bundled WSL module: apfs.ko"; Name = "apfs.ko" },
-    @{ Label = "Bundled WSL module: hfs.ko"; Name = "hfs.ko" },
-    @{ Label = "Bundled WSL module: hfsplus.ko"; Name = "hfsplus.ko" }
+$removedRuntimePaths = @(
+    (Join-Path $root "dist\win-unpacked\resources\prereqs\crossdrive-kernel"),
+    (Join-Path $root "dist\win-unpacked\resources\scripts\wslMountClient.js"),
+    (Join-Path $root "dist\win-unpacked\resources\scripts\wslSetup.js"),
+    (Join-Path $root "dist\win-unpacked\resources\native-bridge-bin")
 )
-foreach ($module in $wslModules) {
-    $modulePath = Join-Path $root "prereqs\crossdrive-kernel\modules\$($module.Name)"
+foreach ($removedPath in $removedRuntimePaths) {
     $checks += [pscustomobject]@{
-        Check = $module.Label
-        Passed = (Test-Path $modulePath)
-        Detail = $modulePath
+        Check = "Removed external runtime not packaged"
+        Passed = -not (Test-Path $removedPath)
+        Detail = $removedPath
     }
 }
 
@@ -364,6 +360,20 @@ foreach ($item in $nativeRequired) {
         Check = $item.Label
         Passed = (Test-Path $item.Path)
         Detail = $item.Path
+    }
+}
+
+$helperForbiddenStrings = @("wsl.exe", "wslmount", "wslvalidate", "wslkeepalive", "Ubuntu", "RunWslCommand", "StartWslKeepAlive")
+$helperArtifacts = @(
+    (Join-Path $root "native\bin\user-session\CrossDrive.UserSessionHelper.exe"),
+    (Join-Path $root "dist\win-unpacked\resources\native-bin\user-session\CrossDrive.UserSessionHelper.exe")
+)
+foreach ($helperArtifact in $helperArtifacts) {
+    $helperScan = Test-BinaryMissingStrings -filePath $helperArtifact -needles $helperForbiddenStrings
+    $checks += [pscustomobject]@{
+        Check = "User-session helper has no external-runtime commands"
+        Passed = [bool]$helperScan.Ok
+        Detail = [string]$helperScan.Detail
     }
 }
 

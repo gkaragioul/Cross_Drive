@@ -15,48 +15,12 @@ module.exports = function mountDriveRoutes(app, ctx) {
         analysisCache.clear();
     };
 
-    function hasActiveWslMount() {
-        for (const mount of nativeMountState.values()) {
-            if (mount?.mountType === 'wsl_kernel') return true;
-        }
-        return false;
-    }
-
     function isMountOperationInFlight() {
         if (!inFlightOps || typeof inFlightOps.values !== 'function') return false;
         for (const op of inFlightOps.values()) {
             if (/^(mount|unmount):/.test(String(op))) return true;
         }
         return false;
-    }
-
-    function buildWslMountedDriveList() {
-        const drives = [];
-        for (const [id, mount] of nativeMountState.entries()) {
-            if (mount?.mountType !== 'wsl_kernel') continue;
-            const letter = String(mount.driveLetter || '').trim().toUpperCase().replace(':', '');
-            drives.push({
-                id,
-                type: 'WSL2',
-                size: mount.size || '',
-                format: mount.fsType || 'HFS+',
-                uncPath: mount.uncPath || null,
-                driveLetter: /^[A-Z]$/.test(letter) ? letter : null,
-                name: mount.friendlyName || `Physical Drive ${id}`,
-                mountPath: /^[A-Z]$/.test(letter) ? `${letter}:\\` : (mount.uncPath || null),
-                isMac: true,
-                mounted: true,
-                isEncrypted: false,
-                needsPassword: false,
-                hardwareBound: false,
-                analysisNotes: 'Mounted via WSL2. Raw Windows rescans are paused while mounted to keep the Linux mount stable.',
-                supported: true,
-                mountHint: '',
-                mountType: 'wsl_kernel',
-                fsType: mount.fsType || 'HFS+'
-            });
-        }
-        return drives;
     }
 
     async function getNativeAnalysisForDrive(driveId) {
@@ -100,13 +64,7 @@ module.exports = function mountDriveRoutes(app, ctx) {
             if (driveCache.data) {
                 return res.json(driveCache.data);
             }
-            return res.json(buildWslMountedDriveList());
-        }
-
-        if (hasActiveWslMount()) {
-            const mounted = buildWslMountedDriveList();
-            driveCache = { data: mounted, time: now };
-            return res.json(mounted);
+            return res.json([]);
         }
 
         if (driveCache.data && (now - driveCache.time) < CACHE_TTL_MS) {
@@ -134,21 +92,6 @@ module.exports = function mountDriveRoutes(app, ctx) {
                         macDrives.map(async (drive) => [String(drive.id), await getNativeAnalysisForDrive(drive.id)])
                     )
                 );
-
-                // Pre-pass: surface any drives currently held by a WSL2 mount even
-                // if the Windows-side enumeration no longer lists them (the disk is
-                // exclusively claimed by WSL2 while attached via `wsl --mount --bare`).
-                for (const [stateId, mount] of nativeMountState.entries()) {
-                    if (mount?.mountType !== 'wsl_kernel') continue;
-                    if (macDrives.some(d => String(d.id) === stateId)) continue;
-                    macDrives.push({
-                        id: Number(stateId) || stateId,
-                        friendlyName: mount.friendlyName || `Drive ${stateId} (mounted via WSL2)`,
-                        sizeGB: mount.sizeGB || null,
-                        format: mount.fsType || 'HFS+',
-                        isMac: true
-                    });
-                }
 
                 for (const drive of macDrives) {
                     const id = String(drive.id);
@@ -182,7 +125,7 @@ module.exports = function mountDriveRoutes(app, ctx) {
                             drive.mountHint = 'CoreStorage/FileVault unlock is not implemented yet.';
                         } else if (/^HFS$/i.test(fsType)) {
                             drive.supported = true;
-                            drive.mountHint = 'Classic HFS requires the WSL kernel fallback.';
+                            drive.mountHint = 'Classic HFS native read-only support.';
                         } else if (drive.needsPassword) {
                             drive.mountHint = 'Encrypted volume. Password required to unlock.';
                         } else if (drive.supported) {
@@ -197,26 +140,6 @@ module.exports = function mountDriveRoutes(app, ctx) {
                         drive.supported = true;
                         drive.mountHint = '';
                         drive.analysisNotes = '';
-                    }
-
-                    // WSL2-backed mount takes precedence over any native broker state.
-                    const wslMount = nativeMountState.get(id);
-                    if (wslMount?.mountType === 'wsl_kernel' && wslMount.uncPath) {
-                        drive.mounted = true;
-                        drive.mountType = 'wsl_kernel';
-                        drive.fsType = wslMount.fsType || drive.format;
-                        drive.supported = true;
-                        drive.mountHint = '';
-                        if (wslMount.driveLetter) {
-                            const ltr = String(wslMount.driveLetter).toUpperCase().replace(':', '');
-                            drive.driveLetter = ltr;
-                            drive.mountPath = `${ltr}:\\`;
-                            activeLetters.add(ltr);
-                        } else {
-                            drive.mountPath = wslMount.uncPath;
-                            drive.driveLetter = undefined;
-                        }
-                        continue;
                     }
 
                     const broker = brokerMounted.get(id);

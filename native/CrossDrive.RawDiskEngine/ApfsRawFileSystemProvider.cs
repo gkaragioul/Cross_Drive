@@ -239,25 +239,60 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
 
         if (readPlan.IsCompressed)
         {
+            byte[]? decompressed = null;
             if (readPlan.InlineData is not null)
             {
-                var decompressed = TryDecompressInlineDecmpfs(readPlan.InlineData);
-                if (decompressed is not null)
+                decompressed = TryDecompressInlineDecmpfs(readPlan.InlineData);
+                if (decompressed is null && readPlan.CompressionResourceFork is not null)
                 {
-                    if (offset >= decompressed.Length) return 0;
-                    var available = decompressed.Length - (int)offset;
-                    var count = Math.Min(destination.Length, available);
-                    if (count > 0)
+                    var requestedCount = Math.Min(destination.Length, (int)Math.Min(int.MaxValue, readPlan.TotalSize - offset));
+                    var streamedRange = TryDecompressResourceForkDecmpfsRange(
+                        readPlan.InlineData,
+                        (forkOffset, forkCount) => TryReadPlanRange(readPlan.CompressionResourceFork, forkOffset, forkCount),
+                        readPlan.CompressionResourceFork.TotalSize,
+                        offset,
+                        requestedCount);
+                    if (streamedRange is not null)
                     {
-                        decompressed.AsSpan((int)offset, count).CopyTo(destination);
+                        streamedRange.AsSpan().CopyTo(destination);
+                        return streamedRange.Length;
                     }
-                    return count;
+
+                    var resourceForkBytes = TryReadPlanBytes(
+                        readPlan.CompressionResourceFork,
+                        ApfsDecmpfs.MaxCompressedResourceForkSize);
+                    if (resourceForkBytes is not null)
+                    {
+                        var range = TryDecompressResourceForkDecmpfsRange(
+                            readPlan.InlineData,
+                            resourceForkBytes,
+                            offset,
+                            requestedCount);
+                        if (range is not null)
+                        {
+                            range.AsSpan().CopyTo(destination);
+                            return range.Length;
+                        }
+
+                        decompressed = TryDecompressResourceForkDecmpfs(readPlan.InlineData, resourceForkBytes);
+                    }
                 }
+            }
+            if (decompressed is not null)
+            {
+                if (offset >= decompressed.Length) return 0;
+                var available = decompressed.Length - (int)offset;
+                var count = Math.Min(destination.Length, available);
+                if (count > 0)
+                {
+                    decompressed.AsSpan((int)offset, count).CopyTo(destination);
+                }
+                return count;
             }
             return 0;
         }
 
-        if (readPlan.InlineData is not null)
+        if (readPlan.InlineData is not null && readPlan.Extents.Count == 0)
         {
             var available = readPlan.InlineData.Length - (int)offset;
             var count = Math.Min(destination.Length, Math.Max(0, available));
@@ -266,6 +301,18 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
                 readPlan.InlineData.AsSpan((int)offset, count).CopyTo(destination);
             }
             return count;
+        }
+
+        if (readPlan.InlineData is not null && readPlan.Extents.Count > 0)
+        {
+            var compositeWritten = ReadInlinePrefixedExtentBackedFile(_device, _partitionOffsetBytes, _blockSize, readPlan, offset, destination);
+            if (compositeWritten > 0 && compositeWritten <= 131072)
+            {
+                var snap = destination.Slice(0, compositeWritten).ToArray();
+                _readCache[n] = (offset, snap);
+            }
+
+            return compositeWritten;
         }
 
         if (destination.Length <= 131072 &&
@@ -278,9 +325,110 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
             return destination.Length;
         }
 
-        var written = 0;
+        var written = ReadExtentBackedFile(_device, _partitionOffsetBytes, _blockSize, readPlan, offset, destination);
+        if (written > 0 && written <= 131072)
+        {
+            var snap = destination.Slice(0, written).ToArray();
+            _readCache[n] = (offset, snap);
+        }
+
+        return written;
+    }
+
+    private byte[]? TryReadPlanBytes(ApfsFileReadPlan readPlan, long maxBytes)
+    {
+        if (readPlan.TotalSize <= 0 || readPlan.TotalSize > maxBytes || readPlan.TotalSize > int.MaxValue)
+        {
+            return null;
+        }
+
+        var output = new byte[(int)readPlan.TotalSize];
+        var read = readPlan.InlineData is not null && readPlan.Extents.Count == 0
+            ? CopyInlinePlanBytes(readPlan, output)
+            : readPlan.InlineData is not null
+                ? ReadInlinePrefixedExtentBackedFile(_device, _partitionOffsetBytes, _blockSize, readPlan, 0, output)
+                : ReadExtentBackedFile(_device, _partitionOffsetBytes, _blockSize, readPlan, 0, output);
+        return read == output.Length ? output : null;
+    }
+
+    private byte[]? TryReadPlanRange(ApfsFileReadPlan readPlan, long offset, int count)
+    {
+        if (offset < 0 || count <= 0 || offset >= readPlan.TotalSize)
+        {
+            return null;
+        }
+
+        var logicalBytes = (int)Math.Min(count, readPlan.TotalSize - offset);
+        if (logicalBytes <= 0)
+        {
+            return null;
+        }
+
+        var output = new byte[logicalBytes];
+        int read;
+        if (readPlan.InlineData is not null && readPlan.Extents.Count == 0)
+        {
+            output.AsSpan().Clear();
+            var inlineStart = 0L;
+            var inlineEnd = readPlan.InlineData.Length;
+            var targetEnd = offset + logicalBytes;
+            if (inlineEnd > offset && inlineStart < targetEnd)
+            {
+                var copyStart = Math.Max(inlineStart, offset);
+                var copyEnd = Math.Min(inlineEnd, targetEnd);
+                var sourceOffset = (int)(copyStart - inlineStart);
+                var targetOffset = (int)(copyStart - offset);
+                var copyLength = (int)(copyEnd - copyStart);
+                readPlan.InlineData.AsSpan(sourceOffset, copyLength).CopyTo(output.AsSpan(targetOffset, copyLength));
+            }
+
+            read = logicalBytes;
+        }
+        else
+        {
+            read = readPlan.InlineData is not null
+                ? ReadInlinePrefixedExtentBackedFile(_device, _partitionOffsetBytes, _blockSize, readPlan, offset, output)
+                : ReadExtentBackedFile(_device, _partitionOffsetBytes, _blockSize, readPlan, offset, output);
+        }
+
+        return read == logicalBytes ? output : null;
+    }
+
+    private static int CopyInlinePlanBytes(ApfsFileReadPlan readPlan, Span<byte> destination)
+    {
+        if (readPlan.InlineData is null || destination.Length == 0)
+        {
+            return 0;
+        }
+
+        var count = Math.Min(destination.Length, readPlan.InlineData.Length);
+        readPlan.InlineData.AsSpan(0, count).CopyTo(destination);
+        return count;
+    }
+
+    internal static int ReadExtentBackedFile(
+        IRawBlockDevice device,
+        long partitionOffsetBytes,
+        uint blockSize,
+        ApfsFileReadPlan readPlan,
+        long offset,
+        Span<byte> destination)
+    {
+        if (offset < 0 || destination.Length <= 0 || offset >= readPlan.TotalSize)
+        {
+            return 0;
+        }
+
+        var logicalBytes = (int)Math.Min(destination.Length, readPlan.TotalSize - offset);
+        if (logicalBytes <= 0)
+        {
+            return 0;
+        }
+
+        var target = destination[..logicalBytes];
+        target.Clear();
         var targetStart = offset;
-        var targetEnd = offset + destination.Length;
+        var targetEnd = offset + logicalBytes;
 
         foreach (var extent in readPlan.Extents)
         {
@@ -301,59 +449,146 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
 
             var srcOffInExtent = copyStart - extentStart;
             var dstOff = (int)(copyStart - targetStart);
-            var deviceOffset = checked(_partitionOffsetBytes + (long)(extent.PhysicalBlockNumber * _blockSize) + srcOffInExtent);
+            var deviceOffset = checked(partitionOffsetBytes + (long)(extent.PhysicalBlockNumber * blockSize) + srcOffInExtent);
 
             var temp = new byte[bytesToRead];
-            var read = _device.ReadAsync(deviceOffset, temp, bytesToRead).AsTask().GetAwaiter().GetResult();
+            var read = device.ReadAsync(deviceOffset, temp, bytesToRead).AsTask().GetAwaiter().GetResult();
             if (read <= 0)
             {
                 continue;
             }
 
-            temp.AsSpan(0, read).CopyTo(destination.Slice(dstOff, read));
-            written += read;
-            if (read < bytesToRead)
-            {
-                break;
-            }
+            temp.AsSpan(0, read).CopyTo(target.Slice(dstOff, read));
         }
 
-        if (written > 0 && written <= 131072)
+        return logicalBytes;
+    }
+
+    internal static int ReadInlinePrefixedExtentBackedFile(
+        IRawBlockDevice device,
+        long partitionOffsetBytes,
+        uint blockSize,
+        ApfsFileReadPlan readPlan,
+        long offset,
+        Span<byte> destination)
+    {
+        if (readPlan.InlineData is null)
         {
-            var snap = destination.Slice(0, written).ToArray();
-            _readCache[n] = (offset, snap);
+            return ReadExtentBackedFile(device, partitionOffsetBytes, blockSize, readPlan, offset, destination);
+        }
+        if (offset < 0 || destination.Length <= 0 || offset >= readPlan.TotalSize)
+        {
+            return 0;
         }
 
-        return written;
+        var logicalBytes = (int)Math.Min(destination.Length, readPlan.TotalSize - offset);
+        if (logicalBytes <= 0)
+        {
+            return 0;
+        }
+
+        var target = destination[..logicalBytes];
+        target.Clear();
+
+        var inlineStart = 0L;
+        var inlineEnd = readPlan.InlineData.Length;
+        var targetStart = offset;
+        var targetEnd = offset + logicalBytes;
+        if (inlineEnd > targetStart && inlineStart < targetEnd)
+        {
+            var copyStart = Math.Max(inlineStart, targetStart);
+            var copyEnd = Math.Min(inlineEnd, targetEnd);
+            var srcOff = (int)(copyStart - inlineStart);
+            var dstOff = (int)(copyStart - targetStart);
+            var count = (int)(copyEnd - copyStart);
+            readPlan.InlineData.AsSpan(srcOff, count).CopyTo(target.Slice(dstOff, count));
+        }
+
+        foreach (var extent in readPlan.Extents)
+        {
+            var extentStart = extent.LogicalOffset;
+            var extentEnd = extent.LogicalOffset + extent.Length;
+            if (extentEnd <= targetStart || extentStart >= targetEnd)
+            {
+                continue;
+            }
+
+            var copyStart = Math.Max(extentStart, targetStart);
+            var copyEnd = Math.Min(extentEnd, targetEnd);
+            var bytesToRead = (int)Math.Max(0, copyEnd - copyStart);
+            if (bytesToRead <= 0)
+            {
+                continue;
+            }
+
+            var srcOffInExtent = copyStart - extentStart;
+            var dstOff = (int)(copyStart - targetStart);
+            var deviceOffset = checked(partitionOffsetBytes + (long)(extent.PhysicalBlockNumber * blockSize) + srcOffInExtent);
+
+            var temp = new byte[bytesToRead];
+            var read = device.ReadAsync(deviceOffset, temp, bytesToRead).AsTask().GetAwaiter().GetResult();
+            if (read <= 0)
+            {
+                continue;
+            }
+
+            temp.AsSpan(0, read).CopyTo(target.Slice(dstOff, read));
+        }
+
+        return logicalBytes;
+    }
+
+    internal static long GetExtentBackedLogicalSize(
+        IReadOnlyList<ApfsFileExtent> orderedExtents,
+        long? inodeLogicalSize,
+        byte[]? inlineData,
+        bool isCompressed)
+    {
+        var totalSize = orderedExtents.Count == 0
+            ? 0
+            : orderedExtents.Max(x => x.LogicalOffset + x.Length);
+        if (inodeLogicalSize.HasValue && inodeLogicalSize.Value > totalSize)
+        {
+            totalSize = inodeLogicalSize.Value;
+        }
+        if (isCompressed && inlineData is not null)
+        {
+            totalSize = ApfsDecmpfs.TryReadInlineUncompressedSize(inlineData) ?? totalSize;
+        }
+        return totalSize;
     }
 
     private static byte[]? TryDecompressInlineDecmpfs(byte[] inlineData)
     {
-        // decmpfs header: 4-byte magic + 4-byte type + 8-byte uncompressed_size = 12 bytes minimum
-        if (inlineData.Length < 12) return null;
+        // decmpfs header: 4-byte magic + 4-byte type + 8-byte uncompressed_size.
+        if (inlineData.Length < ApfsDecmpfs.HeaderLength) return null;
 
         var magic = BinaryPrimitives.ReadUInt32LittleEndian(inlineData.AsSpan(0, 4));
         if (magic != 0x636D7066) return null; // "fpmc" LE
 
         var compressionType = BinaryPrimitives.ReadUInt32LittleEndian(inlineData.AsSpan(4, 4));
-        var uncompressedSize = (long)BinaryPrimitives.ReadUInt64LittleEndian(inlineData.AsSpan(8, 8));
-
-        if (uncompressedSize <= 0 || uncompressedSize > 64 * 1024 * 1024) return null; // sanity cap
+        var uncompressedSize = TryReadInlineDecmpfsUncompressedSize(inlineData);
+        if (!uncompressedSize.HasValue) return null;
+        if (uncompressedSize.Value > ApfsDecmpfs.MaxFullDecompressionSize)
+        {
+            return null;
+        }
 
         // Type 1: uncompressed data stored inline after the header (rare, small files)
-        if (compressionType == 1 && inlineData.Length > 12)
+        if (compressionType == 1 && inlineData.Length > ApfsDecmpfs.HeaderLength)
         {
-            var data = new byte[Math.Min(uncompressedSize, inlineData.Length - 12)];
-            Array.Copy(inlineData, 12, data, 0, data.Length);
+            var data = new byte[(int)uncompressedSize.Value];
+            var residentBytes = Math.Min(data.Length, inlineData.Length - ApfsDecmpfs.HeaderLength);
+            Array.Copy(inlineData, ApfsDecmpfs.HeaderLength, data, 0, residentBytes);
             return data;
         }
 
-        // Type 3: zlib-compressed data stored inline after the 12-byte header
-        if (compressionType == 3 && inlineData.Length > 12)
+        // Type 3: zlib-compressed data stored inline after the decmpfs header.
+        if (compressionType == 3 && inlineData.Length > ApfsDecmpfs.HeaderLength)
         {
             try
             {
-                var compressedPayload = inlineData.AsSpan(12);
+                var compressedPayload = inlineData.AsSpan(ApfsDecmpfs.HeaderLength);
                 using var inputStream = new MemoryStream(compressedPayload.ToArray());
 
                 // APFS zlib inline data uses raw deflate (no zlib header) when the first byte
@@ -364,7 +599,7 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
                 }
 
                 using var deflate = new System.IO.Compression.DeflateStream(inputStream, System.IO.Compression.CompressionMode.Decompress);
-                using var output = new MemoryStream((int)uncompressedSize);
+                using var output = new MemoryStream((int)uncompressedSize.Value);
                 deflate.CopyTo(output);
                 return output.ToArray();
             }
@@ -375,15 +610,802 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
         }
 
         // Types 4, 8, 12: resource-fork variants — compressed payload lives in the
-        //   resource fork rather than inline. Inline buffer is just the decmpfs
-        //   header. Reading the resource fork requires a separate code path that's
-        //   not yet implemented.
+        //   resource fork rather than inline. Let the caller route those through
+        //   TryDecompressResourceForkDecmpfs once it has the matching resource fork.
+        if (compressionType is 4 or 8 or 12)
+        {
+            return null;
+        }
+
         // Type 11: LZFSE-compressed inline. Decoder is significantly larger than
         //   LZVN (FSE entropy coding); not yet ported.
         // For all of these we log the type so the caller can produce a specific
         // diagnostic instead of a silent zero-byte read.
         Console.Error.WriteLine($"[APFS] decmpfs: unsupported compression type {compressionType} ({DecmpfsTypeName(compressionType)}) — file will read as 0 bytes.");
         return null;
+    }
+
+    private static byte[]? TryDecompressResourceForkDecmpfs(byte[] inlineData, byte[] resourceForkBytes)
+    {
+        if (inlineData.Length < ApfsDecmpfs.HeaderLength)
+        {
+            return null;
+        }
+
+        var magic = BinaryPrimitives.ReadUInt32LittleEndian(inlineData.AsSpan(0, 4));
+        if (magic != 0x636D7066)
+        {
+            return null;
+        }
+
+        var compressionType = BinaryPrimitives.ReadUInt32LittleEndian(inlineData.AsSpan(4, 4));
+        var uncompressedSize = TryReadInlineDecmpfsUncompressedSize(inlineData);
+        if (!uncompressedSize.HasValue)
+        {
+            return null;
+        }
+
+        if (compressionType != 4)
+        {
+            Console.Error.WriteLine($"[APFS] decmpfs: unsupported resource-fork compression type {compressionType} ({DecmpfsTypeName(compressionType)}).");
+            return null;
+        }
+
+        var cmpfData = TryExtractCmpfResourceData(resourceForkBytes) ?? resourceForkBytes;
+        return TryDecompressZlibResourceData(cmpfData, uncompressedSize.Value);
+    }
+
+    private static byte[]? TryDecompressResourceForkDecmpfsRange(
+        byte[] inlineData,
+        byte[] resourceForkBytes,
+        long offset,
+        int count)
+    {
+        return TryDecompressResourceForkDecmpfsRange(
+            inlineData,
+            (forkOffset, forkCount) =>
+            {
+                if (forkOffset > int.MaxValue ||
+                    !IsRangeInside(resourceForkBytes.Length, (int)forkOffset, forkCount))
+                {
+                    return null;
+                }
+
+                return resourceForkBytes.AsSpan((int)forkOffset, forkCount).ToArray();
+            },
+            resourceForkBytes.Length,
+            offset,
+            count);
+    }
+
+    private static byte[]? TryDecompressResourceForkDecmpfsRange(
+        byte[] inlineData,
+        Func<long, int, byte[]?> readResourceForkRange,
+        long resourceForkLength,
+        long offset,
+        int count)
+    {
+        if (offset < 0 || count <= 0 || inlineData.Length < ApfsDecmpfs.HeaderLength)
+        {
+            return null;
+        }
+
+        var magic = BinaryPrimitives.ReadUInt32LittleEndian(inlineData.AsSpan(0, 4));
+        if (magic != 0x636D7066)
+        {
+            return null;
+        }
+
+        var compressionType = BinaryPrimitives.ReadUInt32LittleEndian(inlineData.AsSpan(4, 4));
+        var uncompressedSize = TryReadInlineDecmpfsUncompressedSize(inlineData);
+        if (compressionType != 4 || !uncompressedSize.HasValue || offset >= uncompressedSize.Value)
+        {
+            return null;
+        }
+
+        var rangeLength = (int)Math.Min(count, uncompressedSize.Value - offset);
+        if (rangeLength <= 0)
+        {
+            return null;
+        }
+
+        if (TryLocateCmpfResourceData(
+            resourceForkLength,
+            readResourceForkRange,
+            out var cmpfPayloadOffset,
+            out var cmpfPayloadLength))
+        {
+            return TryDecompressZlibResourceDataRange(
+                cmpfPayloadLength,
+                (cmpfOffset, cmpfCount) => readResourceForkRange(cmpfPayloadOffset + cmpfOffset, cmpfCount),
+                uncompressedSize.Value,
+                offset,
+                rangeLength);
+        }
+
+        return TryDecompressZlibResourceDataRange(
+            resourceForkLength,
+            readResourceForkRange,
+            uncompressedSize.Value,
+            offset,
+            rangeLength);
+    }
+
+    private static bool TryLocateCmpfResourceData(
+        long resourceForkLength,
+        Func<long, int, byte[]?> readResourceForkRange,
+        out long cmpfPayloadOffset,
+        out int cmpfPayloadLength)
+    {
+        cmpfPayloadOffset = 0;
+        cmpfPayloadLength = 0;
+        if (resourceForkLength < 16 || resourceForkLength > ApfsDecmpfs.MaxCompressedResourceForkSize)
+        {
+            return false;
+        }
+
+        var header = readResourceForkRange(0, 16);
+        if (header is null || header.Length != 16)
+        {
+            return false;
+        }
+
+        var dataOffset = ReadUInt32BigEndianAsInt(header.AsSpan(0, 4));
+        var mapOffset = ReadUInt32BigEndianAsInt(header.AsSpan(4, 4));
+        var dataLength = ReadUInt32BigEndianAsInt(header.AsSpan(8, 4));
+        var mapLength = ReadUInt32BigEndianAsInt(header.AsSpan(12, 4));
+        if (dataOffset < 0 ||
+            mapOffset < 0 ||
+            dataLength < 0 ||
+            mapLength < 30 ||
+            !IsRangeInside(resourceForkLength, dataOffset, dataLength) ||
+            !IsRangeInside(resourceForkLength, mapOffset, mapLength))
+        {
+            return false;
+        }
+
+        var map = readResourceForkRange(mapOffset, mapLength);
+        if (map is null || map.Length != mapLength)
+        {
+            return false;
+        }
+
+        var typeListOffset = BinaryPrimitives.ReadUInt16BigEndian(map.AsSpan(24, 2));
+        if (typeListOffset + 2 > map.Length)
+        {
+            return false;
+        }
+
+        var typeCount = BinaryPrimitives.ReadUInt16BigEndian(map.AsSpan(typeListOffset, 2)) + 1;
+        var typeEntryStart = typeListOffset + 2;
+        for (var typeIndex = 0; typeIndex < typeCount; typeIndex++)
+        {
+            var entryOffset = typeEntryStart + typeIndex * 8;
+            if (entryOffset + 8 > map.Length)
+            {
+                return false;
+            }
+
+            var typeCode = BinaryPrimitives.ReadUInt32BigEndian(map.AsSpan(entryOffset, 4));
+            var resourceCount = BinaryPrimitives.ReadUInt16BigEndian(map.AsSpan(entryOffset + 4, 2)) + 1;
+            var refListOffset = BinaryPrimitives.ReadUInt16BigEndian(map.AsSpan(entryOffset + 6, 2));
+            if (typeCode != 0x636D7066u) // "cmpf"
+            {
+                continue;
+            }
+
+            var refListStart = typeListOffset + refListOffset;
+            for (var refIndex = 0; refIndex < resourceCount; refIndex++)
+            {
+                var refOffset = refListStart + refIndex * 12;
+                if (refOffset + 12 > map.Length)
+                {
+                    return false;
+                }
+
+                var resourceDataOffset = ReadUInt24BigEndian(map.AsSpan(refOffset + 5, 3));
+                var dataRecordOffset = (long)dataOffset + resourceDataOffset;
+                if (!IsRangeInside(resourceForkLength, dataRecordOffset, 4) ||
+                    dataRecordOffset + 4 > (long)dataOffset + dataLength)
+                {
+                    continue;
+                }
+
+                var lengthBytes = readResourceForkRange(dataRecordOffset, 4);
+                if (lengthBytes is null || lengthBytes.Length != 4)
+                {
+                    continue;
+                }
+
+                var resourceLength = ReadUInt32BigEndianAsInt(lengthBytes.AsSpan(0, 4));
+                var payloadOffset = dataRecordOffset + 4;
+                if (resourceLength >= 0 &&
+                    IsRangeInside(resourceForkLength, payloadOffset, resourceLength) &&
+                    payloadOffset + resourceLength <= (long)dataOffset + dataLength)
+                {
+                    cmpfPayloadOffset = payloadOffset;
+                    cmpfPayloadLength = resourceLength;
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static byte[]? TryExtractCmpfResourceData(byte[] resourceForkBytes)
+    {
+        if (resourceForkBytes.Length < 16)
+        {
+            return null;
+        }
+
+        var dataOffset = ReadUInt32BigEndianAsInt(resourceForkBytes.AsSpan(0, 4));
+        var mapOffset = ReadUInt32BigEndianAsInt(resourceForkBytes.AsSpan(4, 4));
+        var dataLength = ReadUInt32BigEndianAsInt(resourceForkBytes.AsSpan(8, 4));
+        var mapLength = ReadUInt32BigEndianAsInt(resourceForkBytes.AsSpan(12, 4));
+        if (!IsRangeInside(resourceForkBytes.Length, dataOffset, dataLength) ||
+            !IsRangeInside(resourceForkBytes.Length, mapOffset, mapLength) ||
+            mapLength < 30)
+        {
+            return null;
+        }
+
+        var map = resourceForkBytes.AsSpan(mapOffset, mapLength);
+        var typeListOffset = BinaryPrimitives.ReadUInt16BigEndian(map.Slice(24, 2));
+        if (typeListOffset + 2 > map.Length)
+        {
+            return null;
+        }
+
+        var typeListStart = mapOffset + typeListOffset;
+        var typeCount = BinaryPrimitives.ReadUInt16BigEndian(resourceForkBytes.AsSpan(typeListStart, 2)) + 1;
+        var typeEntryStart = typeListStart + 2;
+        for (var typeIndex = 0; typeIndex < typeCount; typeIndex++)
+        {
+            var entryOffset = typeEntryStart + typeIndex * 8;
+            if (entryOffset + 8 > mapOffset + mapLength)
+            {
+                return null;
+            }
+
+            var typeCode = BinaryPrimitives.ReadUInt32BigEndian(resourceForkBytes.AsSpan(entryOffset, 4));
+            var resourceCount = BinaryPrimitives.ReadUInt16BigEndian(resourceForkBytes.AsSpan(entryOffset + 4, 2)) + 1;
+            var refListOffset = BinaryPrimitives.ReadUInt16BigEndian(resourceForkBytes.AsSpan(entryOffset + 6, 2));
+            if (typeCode != 0x636D7066u) // "cmpf"
+            {
+                continue;
+            }
+
+            var refListStart = typeListStart + refListOffset;
+            for (var refIndex = 0; refIndex < resourceCount; refIndex++)
+            {
+                var refOffset = refListStart + refIndex * 12;
+                if (refOffset + 12 > mapOffset + mapLength)
+                {
+                    return null;
+                }
+
+                var resourceDataOffset = ReadUInt24BigEndian(resourceForkBytes.AsSpan(refOffset + 5, 3));
+                var dataRecordOffset = dataOffset + resourceDataOffset;
+                if (dataRecordOffset + 4 > dataOffset + dataLength || dataRecordOffset + 4 > resourceForkBytes.Length)
+                {
+                    continue;
+                }
+
+                var resourceLength = ReadUInt32BigEndianAsInt(resourceForkBytes.AsSpan(dataRecordOffset, 4));
+                var payloadOffset = dataRecordOffset + 4;
+                if (IsRangeInside(resourceForkBytes.Length, payloadOffset, resourceLength) &&
+                    payloadOffset + resourceLength <= dataOffset + dataLength)
+                {
+                    return resourceForkBytes.AsSpan(payloadOffset, resourceLength).ToArray();
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static byte[]? TryDecompressZlibResourceData(byte[] cmpfData, long uncompressedSize)
+    {
+        if (uncompressedSize <= 0 || uncompressedSize > ApfsDecmpfs.MaxFullDecompressionSize)
+        {
+            return null;
+        }
+
+        var expectedLength = (int)uncompressedSize;
+        var chunked = TryDecompressChunkedZlibResourceData(cmpfData, expectedLength);
+        if (chunked is not null)
+        {
+            return chunked;
+        }
+
+        return TryInflateDecmpfsZlibPayload(cmpfData, expectedLength);
+    }
+
+    private static byte[]? TryDecompressZlibResourceDataRange(
+        byte[] cmpfData,
+        long uncompressedSize,
+        long offset,
+        int count)
+    {
+        if (uncompressedSize <= 0 ||
+            uncompressedSize > ApfsDecmpfs.MaxLogicalSize ||
+            offset < 0 ||
+            count <= 0 ||
+            offset >= uncompressedSize)
+        {
+            return null;
+        }
+
+        var requestedLength = (int)Math.Min(count, uncompressedSize - offset);
+        var chunked = TryDecompressChunkedZlibResourceDataRange(cmpfData, uncompressedSize, offset, requestedLength);
+        if (chunked is not null)
+        {
+            return chunked;
+        }
+
+        if (uncompressedSize > ApfsDecmpfs.MaxFullDecompressionSize)
+        {
+            return null;
+        }
+
+        var whole = TryInflateDecmpfsZlibPayload(cmpfData, (int)uncompressedSize);
+        if (whole is null)
+        {
+            return null;
+        }
+
+        return whole.AsSpan((int)offset, requestedLength).ToArray();
+    }
+
+    private static byte[]? TryDecompressZlibResourceDataRange(
+        long cmpfLength,
+        Func<long, int, byte[]?> readCmpfRange,
+        long uncompressedSize,
+        long offset,
+        int count)
+    {
+        if (cmpfLength <= 0 ||
+            cmpfLength > ApfsDecmpfs.MaxCompressedResourceForkSize ||
+            uncompressedSize <= 0 ||
+            uncompressedSize > ApfsDecmpfs.MaxLogicalSize ||
+            offset < 0 ||
+            count <= 0 ||
+            offset >= uncompressedSize)
+        {
+            return null;
+        }
+
+        var requestedLength = (int)Math.Min(count, uncompressedSize - offset);
+        var chunked = TryDecompressChunkedZlibResourceDataRange(cmpfLength, readCmpfRange, uncompressedSize, offset, requestedLength);
+        if (chunked is not null)
+        {
+            return chunked;
+        }
+
+        if (uncompressedSize > ApfsDecmpfs.MaxFullDecompressionSize || cmpfLength > int.MaxValue)
+        {
+            return null;
+        }
+
+        var cmpfData = readCmpfRange(0, (int)cmpfLength);
+        if (cmpfData is null || cmpfData.Length != cmpfLength)
+        {
+            return null;
+        }
+
+        var whole = TryInflateDecmpfsZlibPayload(cmpfData, (int)uncompressedSize);
+        if (whole is null)
+        {
+            return null;
+        }
+
+        return whole.AsSpan((int)offset, requestedLength).ToArray();
+    }
+
+    private static byte[]? TryDecompressChunkedZlibResourceData(byte[] cmpfData, int expectedLength)
+    {
+        if (cmpfData.Length < 24)
+        {
+            return null;
+        }
+
+        var descriptorsOffset = ReadUInt32BigEndianAsInt(cmpfData.AsSpan(0, 4));
+        var footerOffset = ReadUInt32BigEndianAsInt(cmpfData.AsSpan(4, 4));
+        var descriptorsAndDataSize = ReadUInt32BigEndianAsInt(cmpfData.AsSpan(8, 4));
+        if (descriptorsOffset < 16 ||
+            descriptorsOffset + 8 > cmpfData.Length ||
+            footerOffset < descriptorsOffset ||
+            footerOffset > cmpfData.Length ||
+            descriptorsAndDataSize <= 0)
+        {
+            return null;
+        }
+
+        var compressedDataSize = ReadUInt32BigEndianAsInt(cmpfData.AsSpan(descriptorsOffset, 4));
+        var chunkCount = ReadUInt32BigEndianAsInt(cmpfData.AsSpan(descriptorsOffset + 4, 4));
+        var maxChunks = (expectedLength + ApfsDecmpfs.ChunkSize - 1) / ApfsDecmpfs.ChunkSize;
+        if (chunkCount <= 0 || chunkCount > Math.Max(1, maxChunks) || compressedDataSize < 0)
+        {
+            return null;
+        }
+
+        var tupleStart = descriptorsOffset + 8;
+        if (tupleStart + chunkCount * 8 > cmpfData.Length)
+        {
+            return null;
+        }
+
+        var output = new byte[expectedLength];
+        var outputOffset = 0;
+        for (var i = 0; i < chunkCount; i++)
+        {
+            var tupleOffset = tupleStart + i * 8;
+            var relativeDataOffset = ReadUInt32BigEndianAsInt(cmpfData.AsSpan(tupleOffset, 4));
+            var chunkCompressedSize = ReadUInt32BigEndianAsInt(cmpfData.AsSpan(tupleOffset + 4, 4));
+            var chunkDataOffset = 20 + relativeDataOffset;
+            if (chunkCompressedSize <= 0 || !IsRangeInside(cmpfData.Length, chunkDataOffset, chunkCompressedSize))
+            {
+                return null;
+            }
+
+            var remaining = expectedLength - outputOffset;
+            if (remaining <= 0)
+            {
+                return null;
+            }
+
+            var expectedChunkLength = Math.Min(ApfsDecmpfs.ChunkSize, remaining);
+            var chunk = TryInflateDecmpfsZlibPayload(
+                cmpfData.AsSpan(chunkDataOffset, chunkCompressedSize),
+                expectedChunkLength);
+            if (chunk is null || chunk.Length > remaining)
+            {
+                return null;
+            }
+
+            chunk.CopyTo(output.AsSpan(outputOffset));
+            outputOffset += chunk.Length;
+        }
+
+        return outputOffset == expectedLength ? output : null;
+    }
+
+    private static byte[]? TryDecompressChunkedZlibResourceDataRange(
+        byte[] cmpfData,
+        long uncompressedSize,
+        long offset,
+        int count)
+    {
+        if (cmpfData.Length < 24 || count <= 0)
+        {
+            return null;
+        }
+
+        if (!TryReadCmpfChunkTable(cmpfData, uncompressedSize, out var chunkDescriptors))
+        {
+            return null;
+        }
+
+        var output = new byte[count];
+        var requestedStart = offset;
+        var requestedEnd = offset + count;
+        foreach (var descriptor in chunkDescriptors)
+        {
+            var chunkStart = descriptor.Index * (long)ApfsDecmpfs.ChunkSize;
+            var chunkEnd = chunkStart + descriptor.UncompressedLength;
+            if (chunkEnd <= requestedStart || chunkStart >= requestedEnd)
+            {
+                continue;
+            }
+
+            var chunk = TryInflateDecmpfsZlibPayload(
+                cmpfData.AsSpan(descriptor.DataOffset, descriptor.CompressedLength),
+                descriptor.UncompressedLength);
+            if (chunk is null)
+            {
+                return null;
+            }
+
+            var copyStart = Math.Max(chunkStart, requestedStart);
+            var copyEnd = Math.Min(chunkEnd, requestedEnd);
+            var sourceOffset = (int)(copyStart - chunkStart);
+            var targetOffset = (int)(copyStart - requestedStart);
+            var copyLength = (int)(copyEnd - copyStart);
+            chunk.AsSpan(sourceOffset, copyLength).CopyTo(output.AsSpan(targetOffset, copyLength));
+        }
+
+        return output;
+    }
+
+    private static byte[]? TryDecompressChunkedZlibResourceDataRange(
+        long cmpfLength,
+        Func<long, int, byte[]?> readCmpfRange,
+        long uncompressedSize,
+        long offset,
+        int count)
+    {
+        if (cmpfLength < 24 || count <= 0)
+        {
+            return null;
+        }
+
+        if (!TryReadCmpfChunkTable(cmpfLength, readCmpfRange, uncompressedSize, out var chunkDescriptors))
+        {
+            return null;
+        }
+
+        var output = new byte[count];
+        var requestedStart = offset;
+        var requestedEnd = offset + count;
+        foreach (var descriptor in chunkDescriptors)
+        {
+            var chunkStart = descriptor.Index * (long)ApfsDecmpfs.ChunkSize;
+            var chunkEnd = chunkStart + descriptor.UncompressedLength;
+            if (chunkEnd <= requestedStart || chunkStart >= requestedEnd)
+            {
+                continue;
+            }
+
+            var compressedChunk = readCmpfRange(descriptor.DataOffset, descriptor.CompressedLength);
+            if (compressedChunk is null || compressedChunk.Length != descriptor.CompressedLength)
+            {
+                return null;
+            }
+
+            var chunk = TryInflateDecmpfsZlibPayload(compressedChunk, descriptor.UncompressedLength);
+            if (chunk is null)
+            {
+                return null;
+            }
+
+            var copyStart = Math.Max(chunkStart, requestedStart);
+            var copyEnd = Math.Min(chunkEnd, requestedEnd);
+            var sourceOffset = (int)(copyStart - chunkStart);
+            var targetOffset = (int)(copyStart - requestedStart);
+            var copyLength = (int)(copyEnd - copyStart);
+            chunk.AsSpan(sourceOffset, copyLength).CopyTo(output.AsSpan(targetOffset, copyLength));
+        }
+
+        return output;
+    }
+
+    private static bool TryReadCmpfChunkTable(
+        byte[] cmpfData,
+        long uncompressedSize,
+        out IReadOnlyList<ApfsCmpfChunkDescriptor> chunkDescriptors)
+    {
+        chunkDescriptors = Array.Empty<ApfsCmpfChunkDescriptor>();
+        if (cmpfData.Length < 24 || uncompressedSize <= 0 || uncompressedSize > ApfsDecmpfs.MaxLogicalSize)
+        {
+            return false;
+        }
+
+        var descriptorsOffset = ReadUInt32BigEndianAsInt(cmpfData.AsSpan(0, 4));
+        var footerOffset = ReadUInt32BigEndianAsInt(cmpfData.AsSpan(4, 4));
+        var descriptorsAndDataSize = ReadUInt32BigEndianAsInt(cmpfData.AsSpan(8, 4));
+        if (descriptorsOffset < 16 ||
+            descriptorsOffset + 8 > cmpfData.Length ||
+            footerOffset < descriptorsOffset ||
+            footerOffset > cmpfData.Length ||
+            descriptorsAndDataSize <= 0)
+        {
+            return false;
+        }
+
+        var compressedDataSize = ReadUInt32BigEndianAsInt(cmpfData.AsSpan(descriptorsOffset, 4));
+        var chunkCount = ReadUInt32BigEndianAsInt(cmpfData.AsSpan(descriptorsOffset + 4, 4));
+        var maxChunks = (int)Math.Min(int.MaxValue, (uncompressedSize + ApfsDecmpfs.ChunkSize - 1) / ApfsDecmpfs.ChunkSize);
+        if (chunkCount <= 0 || chunkCount > Math.Max(1, maxChunks) || compressedDataSize < 0)
+        {
+            return false;
+        }
+
+        var tupleStart = descriptorsOffset + 8;
+        if (tupleStart + chunkCount * 8 > cmpfData.Length)
+        {
+            return false;
+        }
+
+        var descriptors = new List<ApfsCmpfChunkDescriptor>(chunkCount);
+        for (var i = 0; i < chunkCount; i++)
+        {
+            var tupleOffset = tupleStart + i * 8;
+            var relativeDataOffset = ReadUInt32BigEndianAsInt(cmpfData.AsSpan(tupleOffset, 4));
+            var chunkCompressedSize = ReadUInt32BigEndianAsInt(cmpfData.AsSpan(tupleOffset + 4, 4));
+            var chunkDataOffset = 20 + relativeDataOffset;
+            if (chunkCompressedSize <= 0 || !IsRangeInside(cmpfData.Length, chunkDataOffset, chunkCompressedSize))
+            {
+                return false;
+            }
+
+            var remaining = uncompressedSize - i * (long)ApfsDecmpfs.ChunkSize;
+            if (remaining <= 0)
+            {
+                return false;
+            }
+
+            descriptors.Add(new ApfsCmpfChunkDescriptor(
+                i,
+                chunkDataOffset,
+                chunkCompressedSize,
+                (int)Math.Min(ApfsDecmpfs.ChunkSize, remaining)));
+        }
+
+        chunkDescriptors = descriptors;
+        return true;
+    }
+
+    private static bool TryReadCmpfChunkTable(
+        long cmpfLength,
+        Func<long, int, byte[]?> readCmpfRange,
+        long uncompressedSize,
+        out IReadOnlyList<ApfsCmpfChunkDescriptor> chunkDescriptors)
+    {
+        chunkDescriptors = Array.Empty<ApfsCmpfChunkDescriptor>();
+        if (cmpfLength < 24 ||
+            cmpfLength > ApfsDecmpfs.MaxCompressedResourceForkSize ||
+            uncompressedSize <= 0 ||
+            uncompressedSize > ApfsDecmpfs.MaxLogicalSize)
+        {
+            return false;
+        }
+
+        var header = readCmpfRange(0, 24);
+        if (header is null || header.Length != 24)
+        {
+            return false;
+        }
+
+        var descriptorsOffset = ReadUInt32BigEndianAsInt(header.AsSpan(0, 4));
+        var footerOffset = ReadUInt32BigEndianAsInt(header.AsSpan(4, 4));
+        var descriptorsAndDataSize = ReadUInt32BigEndianAsInt(header.AsSpan(8, 4));
+        if (descriptorsOffset < 16 ||
+            footerOffset < descriptorsOffset ||
+            footerOffset > cmpfLength ||
+            descriptorsAndDataSize <= 0 ||
+            !IsRangeInside(cmpfLength, descriptorsOffset, 8))
+        {
+            return false;
+        }
+
+        var tableHeader = readCmpfRange(descriptorsOffset, 8);
+        if (tableHeader is null || tableHeader.Length != 8)
+        {
+            return false;
+        }
+
+        var compressedDataSize = ReadUInt32BigEndianAsInt(tableHeader.AsSpan(0, 4));
+        var chunkCount = ReadUInt32BigEndianAsInt(tableHeader.AsSpan(4, 4));
+        var maxChunks = (int)Math.Min(int.MaxValue, (uncompressedSize + ApfsDecmpfs.ChunkSize - 1) / ApfsDecmpfs.ChunkSize);
+        if (chunkCount <= 0 || chunkCount > Math.Max(1, maxChunks) || compressedDataSize < 0)
+        {
+            return false;
+        }
+
+        var tupleBytes = checked(chunkCount * 8);
+        var tableLength = 8 + tupleBytes;
+        if (tableLength < 8 ||
+            tableLength > int.MaxValue ||
+            !IsRangeInside(cmpfLength, descriptorsOffset, tableLength))
+        {
+            return false;
+        }
+
+        var table = readCmpfRange(descriptorsOffset, tableLength);
+        if (table is null || table.Length != tableLength)
+        {
+            return false;
+        }
+
+        var descriptors = new List<ApfsCmpfChunkDescriptor>(chunkCount);
+        for (var i = 0; i < chunkCount; i++)
+        {
+            var tupleOffset = 8 + i * 8;
+            var relativeDataOffset = ReadUInt32BigEndianAsInt(table.AsSpan(tupleOffset, 4));
+            var chunkCompressedSize = ReadUInt32BigEndianAsInt(table.AsSpan(tupleOffset + 4, 4));
+            var chunkDataOffset = 20L + relativeDataOffset;
+            if (relativeDataOffset < 0 ||
+                chunkCompressedSize <= 0 ||
+                chunkDataOffset > int.MaxValue ||
+                !IsRangeInside(cmpfLength, chunkDataOffset, chunkCompressedSize))
+            {
+                return false;
+            }
+
+            var remaining = uncompressedSize - i * (long)ApfsDecmpfs.ChunkSize;
+            if (remaining <= 0)
+            {
+                return false;
+            }
+
+            descriptors.Add(new ApfsCmpfChunkDescriptor(
+                i,
+                (int)chunkDataOffset,
+                chunkCompressedSize,
+                (int)Math.Min(ApfsDecmpfs.ChunkSize, remaining)));
+        }
+
+        chunkDescriptors = descriptors;
+        return true;
+    }
+
+    private static byte[]? TryInflateDecmpfsZlibPayload(ReadOnlySpan<byte> compressedPayload, int expectedLength)
+    {
+        if (expectedLength < 0 || compressedPayload.IsEmpty)
+        {
+            return null;
+        }
+
+        if (compressedPayload[0] == 0xFF)
+        {
+            var raw = compressedPayload[1..];
+            if (raw.Length != expectedLength)
+            {
+                return null;
+            }
+            return raw.ToArray();
+        }
+
+        byte[]? Inflate(ReadOnlySpan<byte> payload)
+        {
+            try
+            {
+                using var inputStream = new MemoryStream(payload.ToArray());
+                using var deflate = new System.IO.Compression.DeflateStream(inputStream, System.IO.Compression.CompressionMode.Decompress);
+                using var output = new MemoryStream(expectedLength);
+                deflate.CopyTo(output);
+                var inflated = output.ToArray();
+                return inflated.Length == expectedLength ? inflated : null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        if (compressedPayload.Length > 2 && compressedPayload[0] == 0x78)
+        {
+            var zlibInflated = Inflate(compressedPayload[2..]);
+            if (zlibInflated is not null)
+            {
+                return zlibInflated;
+            }
+        }
+
+        return Inflate(compressedPayload);
+    }
+
+    private static int ReadUInt32BigEndianAsInt(ReadOnlySpan<byte> value)
+    {
+        var raw = BinaryPrimitives.ReadUInt32BigEndian(value);
+        return raw <= int.MaxValue ? (int)raw : -1;
+    }
+
+    private static int ReadUInt24BigEndian(ReadOnlySpan<byte> value)
+    {
+        return (value[0] << 16) | (value[1] << 8) | value[2];
+    }
+
+    private static bool IsRangeInside(int containerLength, int offset, int length)
+    {
+        return offset >= 0 && length >= 0 && offset <= containerLength && length <= containerLength - offset;
+    }
+
+    private static bool IsRangeInside(long containerLength, long offset, long length)
+    {
+        return offset >= 0 && length >= 0 && offset <= containerLength && length <= containerLength - offset;
+    }
+
+    private static long? TryReadInlineDecmpfsUncompressedSize(byte[] inlineData)
+    {
+        return ApfsDecmpfs.TryReadInlineUncompressedSize(inlineData);
+    }
+
+    private static long GetInlineDataLogicalSize(byte[] inlineData, bool isCompressed)
+    {
+        return ApfsDecmpfs.GetInlineDataLogicalSize(inlineData, isCompressed);
     }
 
     private static string DecmpfsTypeName(uint type) => type switch
@@ -397,6 +1419,13 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
         12 => "LZFSE in resource fork",
         _  => $"unknown ({type})"
     };
+
+    private readonly record struct ApfsCmpfChunkDescriptor(
+        int Index,
+        int DataOffset,
+        int CompressedLength,
+        int UncompressedLength
+    );
 
     // Write operations
     public int WriteFile(string path, long offset, ReadOnlySpan<byte> source)
@@ -684,18 +1713,51 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
 
                 var childPath = JoinPath(currentPath, item.Name);
                 long size = 0;
+                string? symlinkTarget = null;
                 if (!item.IsDirectory &&
                     item.ChildId.HasValue &&
                     preview.FilePlansByObjectId.TryGetValue(item.ChildId.Value, out var planForFile))
                 {
-                    _fileReadPlans[childPath] = planForFile;
-                    size = Math.Max(0, planForFile.TotalSize);
+                    if (item.IsSymbolicLink)
+                    {
+                        symlinkTarget = TryReadApfsSymlinkTarget(planForFile);
+                    }
+                    else
+                    {
+                        _fileReadPlans[childPath] = planForFile;
+                        size = Math.Max(0, planForFile.TotalSize);
+                    }
                 }
 
-                var attrs = item.IsDirectory ? FileAttributes.Directory : FileAttributes.ReadOnly;
-                var child = new RawFsEntry(childPath, item.Name, item.IsDirectory, size, now, attrs);
+                var attrs = item.IsDirectory
+                    ? FileAttributes.Directory
+                    : symlinkTarget is not null
+                        ? FileAttributes.ReadOnly | FileAttributes.ReparsePoint
+                        : FileAttributes.ReadOnly;
+                var child = new RawFsEntry(childPath, item.Name, item.IsDirectory, size, now, attrs, symlinkTarget);
                 _entries[childPath] = child;
                 currentChildren.Add(child);
+
+                if (!item.IsDirectory &&
+                    item.ChildId.HasValue &&
+                    preview.ResourceForkAppleDoubleByObjectId.TryGetValue(item.ChildId.Value, out var appleDoublePlan))
+                {
+                    var sidecarName = "._" + item.Name;
+                    var sidecarPath = JoinPath(currentPath, sidecarName);
+                    if (!_entries.ContainsKey(sidecarPath))
+                    {
+                        var sidecar = new RawFsEntry(
+                            sidecarPath,
+                            sidecarName,
+                            false,
+                            Math.Max(0, appleDoublePlan.TotalSize),
+                            now,
+                            FileAttributes.ReadOnly | FileAttributes.Hidden);
+                        _entries[sidecarPath] = sidecar;
+                        _fileReadPlans[sidecarPath] = appleDoublePlan;
+                        currentChildren.Add(sidecar);
+                    }
+                }
 
                 if (item.IsDirectory && item.ChildId.HasValue)
                 {
@@ -720,17 +1782,61 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
             var childPath = JoinPath(volumePath, item.Name);
             var attrs = item.IsDirectory ? FileAttributes.Directory : FileAttributes.ReadOnly;
             long size = 0;
+            string? symlinkTarget = null;
             if (!item.IsDirectory &&
                 preview.RootFilePlansByName.TryGetValue(item.Name, out var planForFile))
             {
-                _fileReadPlans[childPath] = planForFile;
-                size = Math.Max(0, planForFile.TotalSize);
+                if (item.IsSymbolicLink)
+                {
+                    symlinkTarget = TryReadApfsSymlinkTarget(planForFile);
+                    if (symlinkTarget is not null)
+                    {
+                        attrs = FileAttributes.ReadOnly | FileAttributes.ReparsePoint;
+                    }
+                }
+                else
+                {
+                    _fileReadPlans[childPath] = planForFile;
+                    size = Math.Max(0, planForFile.TotalSize);
+                }
             }
-            var child = new RawFsEntry(childPath, item.Name, item.IsDirectory, size, now, attrs);
+            var child = new RawFsEntry(childPath, item.Name, item.IsDirectory, size, now, attrs, symlinkTarget);
             _entries[childPath] = child;
             previewChildren.Add(child);
         }
         _dirChildren[volumePath] = previewChildren;
+    }
+
+    private string? TryReadApfsSymlinkTarget(ApfsFileReadPlan plan)
+    {
+        if (plan.TotalSize <= 0 || plan.TotalSize > 4096 || plan.IsCompressed)
+        {
+            return null;
+        }
+
+        var buffer = new byte[(int)plan.TotalSize];
+        var read = plan.InlineData is not null && plan.Extents.Count == 0
+            ? CopyInlinePlanData(plan, buffer)
+            : ReadExtentBackedFile(_device, _partitionOffsetBytes, _blockSize, plan, 0, buffer);
+        if (read <= 0)
+        {
+            return null;
+        }
+
+        var target = Encoding.UTF8.GetString(buffer, 0, read).TrimEnd('\0');
+        return string.IsNullOrWhiteSpace(target) ? null : target;
+    }
+
+    private static int CopyInlinePlanData(ApfsFileReadPlan plan, Span<byte> destination)
+    {
+        if (plan.InlineData is null || destination.Length == 0)
+        {
+            return 0;
+        }
+
+        var count = Math.Min(destination.Length, plan.InlineData.Length);
+        plan.InlineData.AsSpan(0, count).CopyTo(destination);
+        return count;
     }
 
     private static ApfsVolumePreview? SelectPrimaryVolumePreview(ApfsContainerSummary summary)
@@ -948,6 +2054,335 @@ internal sealed class ApfsRawFileSystemProvider : IRawFileSystemProvider
     }
 }
 
+internal static class ApfsDecmpfs
+{
+    public const int HeaderLength = 16;
+    public const int ChunkSize = 64 * 1024;
+    public const long MaxLogicalSize = 16L * 1024 * 1024 * 1024;
+    public const long MaxFullDecompressionSize = 128L * 1024 * 1024;
+    public const long MaxCompressedResourceForkSize = 512L * 1024 * 1024;
+
+    public static long? TryReadInlineUncompressedSize(byte[] inlineData)
+    {
+        if (inlineData.Length < HeaderLength) return null;
+
+        var magic = BinaryPrimitives.ReadUInt32LittleEndian(inlineData.AsSpan(0, 4));
+        if (magic != 0x636D7066) return null; // "fpmc" LE
+
+        var uncompressedSize = (long)BinaryPrimitives.ReadUInt64LittleEndian(inlineData.AsSpan(8, 8));
+        if (uncompressedSize <= 0 || uncompressedSize > MaxLogicalSize) return null;
+
+        return uncompressedSize;
+    }
+
+    public static long GetInlineDataLogicalSize(byte[] inlineData, bool isCompressed)
+    {
+        if (!isCompressed) return inlineData.Length;
+        return TryReadInlineUncompressedSize(inlineData) ?? inlineData.Length;
+    }
+}
+
+internal static class ApfsAppleDouble
+{
+    private const int AppleDoubleHeaderBaseLength = 26;
+    private const int AppleDoubleEntryLength = 12;
+    private const int AppleDoubleFinderInfoLength = 32;
+    private const int AppleDoubleAttrPadLength = 2;
+    private const int AppleDoubleAttrHeaderLength = 36;
+    private const uint AppleDoubleResourceForkEntryId = 2;
+    private const uint AppleDoubleFinderInfoEntryId = 9;
+    private const uint AppleDoubleAttrMagic = 0x41545452;
+    private const int MaxInlineResourceForkBytes = 16 * 1024 * 1024;
+
+    public static byte[]? TryExtractInlineXattrData(byte[] value)
+    {
+        return TryExtractInlineXattrData(value.AsSpan());
+    }
+
+    public static byte[]? TryExtractInlineXattrData(ReadOnlySpan<byte> value)
+    {
+        if (value.Length == 0 || value.Length > MaxInlineResourceForkBytes + 16)
+        {
+            return null;
+        }
+
+        if (value.Length >= 4)
+        {
+            var flags = BinaryPrimitives.ReadUInt16LittleEndian(value[0..2]);
+            var declaredLength = BinaryPrimitives.ReadUInt16LittleEndian(value[2..4]);
+            if (declaredLength > 0 &&
+                4 + declaredLength <= value.Length)
+            {
+                const ushort XATTR_DATA_EMBEDDED = 0x0001;
+                return (flags & XATTR_DATA_EMBEDDED) != 0
+                    ? value.Slice(4, declaredLength).ToArray()
+                    : null;
+            }
+        }
+
+        if (value.Length <= MaxInlineResourceForkBytes)
+        {
+            return value.ToArray();
+        }
+
+        return null;
+    }
+
+    public static byte[] BuildResourceForkSidecar(byte[] resourceFork)
+    {
+        return BuildInlineAppleDoubleSidecar(resourceFork, null, null);
+    }
+
+    internal static ApfsFileReadPlan BuildResourceForkSidecarReadPlan(ApfsFileReadPlan resourceForkPlan)
+        => BuildAppleDoubleSidecarReadPlan(resourceForkPlan, null, null);
+
+    internal static ApfsFileReadPlan BuildAppleDoubleSidecarReadPlan(ApfsFileReadPlan? resourceForkPlan, byte[]? finderInfo)
+        => BuildAppleDoubleSidecarReadPlan(resourceForkPlan, finderInfo, null);
+
+    internal static ApfsFileReadPlan BuildAppleDoubleSidecarReadPlan(
+        ApfsFileReadPlan? resourceForkPlan,
+        byte[]? finderInfo,
+        IReadOnlyList<ApfsExtendedAttribute>? extendedAttributes)
+    {
+        var hasResourceFork = resourceForkPlan is { TotalSize: > 0 };
+        var cleanFinderInfo = NormalizeFinderInfo(finderInfo);
+        var cleanExtendedAttributes = NormalizeExtendedAttributes(extendedAttributes);
+        var hasExtendedAttributes = cleanExtendedAttributes.Count > 0;
+        var hasFinderInfo = cleanFinderInfo is not null;
+        if (!hasResourceFork && !hasFinderInfo && !hasExtendedAttributes)
+        {
+            return new ApfsFileReadPlan(0, Array.Empty<ApfsFileExtent>(), Array.Empty<byte>());
+        }
+        if (resourceForkPlan is { TotalSize: > uint.MaxValue })
+        {
+            return new ApfsFileReadPlan(0, Array.Empty<ApfsFileExtent>(), Array.Empty<byte>());
+        }
+
+        if (resourceForkPlan?.InlineData is { Length: > 0 } inlineResourceFork && resourceForkPlan.Extents.Count == 0)
+        {
+            var inlineSidecar = BuildInlineAppleDoubleSidecar(inlineResourceFork, cleanFinderInfo, cleanExtendedAttributes);
+            return new ApfsFileReadPlan(
+                inlineSidecar.Length,
+                Array.Empty<ApfsFileExtent>(),
+                inlineSidecar);
+        }
+
+        var prefix = BuildAppleDoubleInlinePrefix(resourceForkPlan?.TotalSize ?? 0, hasResourceFork, cleanFinderInfo, cleanExtendedAttributes);
+        var shiftedExtents = resourceForkPlan?.Extents
+            .Select(extent => new ApfsFileExtent(
+                LogicalOffset: prefix.Length + extent.LogicalOffset,
+                Length: extent.Length,
+                PhysicalBlockNumber: extent.PhysicalBlockNumber))
+            .ToArray() ?? Array.Empty<ApfsFileExtent>();
+        return new ApfsFileReadPlan(
+            prefix.Length + (resourceForkPlan?.TotalSize ?? 0),
+            shiftedExtents,
+            prefix,
+            IsCompressed: false);
+    }
+
+    internal static bool IsPreservableExtendedAttributeName(string name)
+    {
+        return !string.IsNullOrWhiteSpace(name) &&
+               !string.Equals(name, "com.apple.ResourceFork", StringComparison.Ordinal) &&
+               !string.Equals(name, "com.apple.FinderInfo", StringComparison.Ordinal) &&
+               !string.Equals(name, "com.apple.decmpfs", StringComparison.Ordinal);
+    }
+
+    private static byte[] BuildInlineAppleDoubleSidecar(
+        byte[]? resourceFork,
+        byte[]? finderInfo,
+        IReadOnlyList<ApfsExtendedAttribute>? extendedAttributes)
+    {
+        var cleanFinderInfo = NormalizeFinderInfo(finderInfo);
+        var cleanExtendedAttributes = NormalizeExtendedAttributes(extendedAttributes);
+        var output = BuildAppleDoubleInlinePrefix(
+            resourceFork?.LongLength ?? 0,
+            resourceFork is { Length: > 0 },
+            cleanFinderInfo,
+            cleanExtendedAttributes);
+        if (resourceFork is { Length: > 0 })
+        {
+            Array.Resize(ref output, output.Length + resourceFork.Length);
+            resourceFork.CopyTo(output.AsSpan(output.Length - resourceFork.Length));
+        }
+        return output;
+    }
+
+    private static byte[] BuildAppleDoubleInlinePrefix(
+        long resourceForkLength,
+        bool hasResourceFork,
+        byte[]? finderInfo,
+        IReadOnlyList<ApfsExtendedAttribute>? extendedAttributes)
+    {
+        var cleanFinderInfo = NormalizeFinderInfo(finderInfo);
+        var cleanExtendedAttributes = NormalizeExtendedAttributes(extendedAttributes);
+        var includeResourceForkEntry = hasResourceFork || cleanExtendedAttributes.Count > 0;
+        var includeFinderInfoEntry = cleanFinderInfo is not null || cleanExtendedAttributes.Count > 0;
+        var headerLength = AppleDoubleHeaderBaseLength +
+            ((includeFinderInfoEntry ? 1 : 0) + (includeResourceForkEntry ? 1 : 0)) * AppleDoubleEntryLength;
+        var finderInfoPayload = cleanExtendedAttributes.Count > 0
+            ? BuildFinderInfoAttributePayload(cleanFinderInfo, cleanExtendedAttributes, headerLength)
+            : cleanFinderInfo;
+        var output = BuildAppleDoubleSidecarHeader(
+            resourceForkLength,
+            includeResourceForkEntry,
+            finderInfoPayload?.Length ?? 0);
+        if (finderInfoPayload is not null)
+        {
+            Array.Resize(ref output, output.Length + finderInfoPayload.Length);
+            finderInfoPayload.CopyTo(output.AsSpan(output.Length - finderInfoPayload.Length));
+        }
+        return output;
+    }
+
+    private static byte[] BuildAppleDoubleSidecarHeader(long resourceForkLength, bool includeResourceForkEntry, int finderInfoEntryLength)
+    {
+        if (includeResourceForkEntry && (resourceForkLength < 0 || resourceForkLength > uint.MaxValue))
+        {
+            throw new ArgumentOutOfRangeException(nameof(resourceForkLength), "AppleDouble resource fork length must fit in 32 bits.");
+        }
+
+        var hasFinderInfoEntry = finderInfoEntryLength > 0;
+        var entryCount = (hasFinderInfoEntry ? 1 : 0) + (includeResourceForkEntry ? 1 : 0);
+        var headerLength = AppleDoubleHeaderBaseLength + entryCount * AppleDoubleEntryLength;
+        var output = new byte[headerLength];
+        BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(0, 4), 0x00051607);
+        BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(4, 4), 0x00020000);
+        BinaryPrimitives.WriteUInt16BigEndian(output.AsSpan(24, 2), (ushort)entryCount);
+
+        var entryOffset = AppleDoubleHeaderBaseLength;
+        var dataOffset = headerLength;
+        if (hasFinderInfoEntry)
+        {
+            WriteAppleDoubleEntry(output.AsSpan(entryOffset, AppleDoubleEntryLength), AppleDoubleFinderInfoEntryId, dataOffset, finderInfoEntryLength);
+            entryOffset += AppleDoubleEntryLength;
+            dataOffset += finderInfoEntryLength;
+        }
+
+        if (includeResourceForkEntry)
+        {
+            WriteAppleDoubleEntry(output.AsSpan(entryOffset, AppleDoubleEntryLength), AppleDoubleResourceForkEntryId, dataOffset, resourceForkLength);
+        }
+
+        return output;
+    }
+
+    private static void WriteAppleDoubleEntry(Span<byte> target, uint id, int offset, long length)
+    {
+        BinaryPrimitives.WriteUInt32BigEndian(target[..4], id);
+        BinaryPrimitives.WriteUInt32BigEndian(target.Slice(4, 4), (uint)offset);
+        BinaryPrimitives.WriteUInt32BigEndian(target.Slice(8, 4), (uint)Math.Min(length, uint.MaxValue));
+    }
+
+    private static byte[] BuildFinderInfoAttributePayload(
+        byte[]? finderInfo,
+        IReadOnlyList<ApfsExtendedAttribute> extendedAttributes,
+        int finderInfoEntryOffset)
+    {
+        var cleanFinderInfo = NormalizeFinderInfo(finderInfo);
+        var attrs = NormalizeExtendedAttributes(extendedAttributes);
+        var entryPayloads = attrs.Select(attr =>
+        {
+            var nameBytes = Encoding.UTF8.GetBytes(attr.Name);
+            var nameLengthWithNull = nameBytes.Length + 1;
+            var entryLength = Align4(11 + nameLengthWithNull);
+            return (Attribute: attr, NameBytes: nameBytes, NameLengthWithNull: nameLengthWithNull, EntryLength: entryLength);
+        }).ToArray();
+
+        var attrEntriesLength = entryPayloads.Sum(entry => entry.EntryLength);
+        var attrDataLength = attrs.Sum(attr => attr.Data.Length);
+        var attrHeaderOffset = AppleDoubleFinderInfoLength + AppleDoubleAttrPadLength;
+        var attrEntriesOffset = attrHeaderOffset + AppleDoubleAttrHeaderLength;
+        var attrDataOffset = attrEntriesOffset + attrEntriesLength;
+        var output = new byte[attrDataOffset + attrDataLength];
+        var absoluteDataStart = finderInfoEntryOffset + attrDataOffset;
+        var absoluteTotalSize = finderInfoEntryOffset + output.Length;
+
+        cleanFinderInfo?.CopyTo(output.AsSpan(0, AppleDoubleFinderInfoLength));
+
+        var attrHeader = output.AsSpan(attrHeaderOffset, AppleDoubleAttrHeaderLength);
+        BinaryPrimitives.WriteUInt32BigEndian(attrHeader.Slice(0, 4), AppleDoubleAttrMagic);
+        BinaryPrimitives.WriteUInt32BigEndian(attrHeader.Slice(4, 4), 0);
+        BinaryPrimitives.WriteUInt32BigEndian(attrHeader.Slice(8, 4), (uint)absoluteTotalSize);
+        BinaryPrimitives.WriteUInt32BigEndian(attrHeader.Slice(12, 4), (uint)absoluteDataStart);
+        BinaryPrimitives.WriteUInt32BigEndian(attrHeader.Slice(16, 4), (uint)attrDataLength);
+        BinaryPrimitives.WriteUInt16BigEndian(attrHeader.Slice(32, 2), 0);
+        BinaryPrimitives.WriteUInt16BigEndian(attrHeader.Slice(34, 2), (ushort)attrs.Count);
+
+        var entryOffset = attrEntriesOffset;
+        var dataOffset = attrDataOffset;
+        foreach (var entry in entryPayloads)
+        {
+            var entrySpan = output.AsSpan(entryOffset, entry.EntryLength);
+            BinaryPrimitives.WriteUInt32BigEndian(entrySpan.Slice(0, 4), (uint)(finderInfoEntryOffset + dataOffset));
+            BinaryPrimitives.WriteUInt32BigEndian(entrySpan.Slice(4, 4), (uint)entry.Attribute.Data.Length);
+            BinaryPrimitives.WriteUInt16BigEndian(entrySpan.Slice(8, 2), 0);
+            entrySpan[10] = (byte)entry.NameLengthWithNull;
+            entry.NameBytes.CopyTo(entrySpan.Slice(11, entry.NameBytes.Length));
+            entry.Attribute.Data.CopyTo(output.AsSpan(dataOffset, entry.Attribute.Data.Length));
+            entryOffset += entry.EntryLength;
+            dataOffset += entry.Attribute.Data.Length;
+        }
+
+        return output;
+    }
+
+    private static byte[]? NormalizeFinderInfo(byte[]? finderInfo)
+    {
+        if (finderInfo is not { Length: >= AppleDoubleFinderInfoLength })
+        {
+            return null;
+        }
+
+        for (var i = 0; i < AppleDoubleFinderInfoLength; i++)
+        {
+            if (finderInfo[i] != 0)
+            {
+                return finderInfo.Take(AppleDoubleFinderInfoLength).ToArray();
+            }
+        }
+
+        return null;
+    }
+
+    private static IReadOnlyList<ApfsExtendedAttribute> NormalizeExtendedAttributes(IReadOnlyList<ApfsExtendedAttribute>? extendedAttributes)
+    {
+        if (extendedAttributes is null || extendedAttributes.Count == 0)
+        {
+            return Array.Empty<ApfsExtendedAttribute>();
+        }
+
+        var byName = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+        foreach (var attribute in extendedAttributes)
+        {
+            if (!IsPreservableExtendedAttributeName(attribute.Name) ||
+                attribute.Data is not { Length: > 0 } data ||
+                data.Length > MaxInlineResourceForkBytes)
+            {
+                continue;
+            }
+
+            var nameLengthWithNull = Encoding.UTF8.GetByteCount(attribute.Name) + 1;
+            if (nameLengthWithNull > byte.MaxValue)
+            {
+                continue;
+            }
+
+            byName[attribute.Name] = data.ToArray();
+        }
+
+        return byName
+            .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+            .Select(pair => new ApfsExtendedAttribute(pair.Key, pair.Value))
+            .ToArray();
+    }
+
+    private static int Align4(int value) => (value + 3) & ~3;
+}
+
+internal sealed record ApfsExtendedAttribute(string Name, byte[] Data);
+
 internal sealed record ApfsContainerSummary(
     uint BlockSize,
     ulong BlockCount,
@@ -1011,25 +2446,29 @@ internal sealed record ApfsVolumePreview(
     IReadOnlyDictionary<string, ApfsFileReadPlan> RootFilePlansByName,
     ulong RootDirectoryId,
     IReadOnlyDictionary<ulong, IReadOnlyList<ApfsCatalogEntry>> DirectoryEntriesByParentId,
-    IReadOnlyDictionary<ulong, ApfsFileReadPlan> FilePlansByObjectId
+    IReadOnlyDictionary<ulong, ApfsFileReadPlan> FilePlansByObjectId,
+    IReadOnlyDictionary<ulong, ApfsFileReadPlan> ResourceForkAppleDoubleByObjectId
 );
 
 internal sealed record ApfsPreviewEntry(
     string Name,
-    bool IsDirectory
+    bool IsDirectory,
+    bool IsSymbolicLink = false
 );
 
 internal sealed record ApfsCatalogEntry(
     string Name,
     bool IsDirectory,
-    ulong? ChildId
+    ulong? ChildId,
+    bool IsSymbolicLink = false
 );
 
 internal sealed record ApfsFileReadPlan(
     long TotalSize,
     IReadOnlyList<ApfsFileExtent> Extents,
     byte[]? InlineData = null,
-    bool IsCompressed = false
+    bool IsCompressed = false,
+    ApfsFileReadPlan? CompressionResourceFork = null
 );
 
 internal sealed record ApfsFileExtent(
@@ -1699,6 +3138,7 @@ internal sealed class ApfsMetadataReader
         ulong rootDirectoryId = DefaultApfsRootDirectoryId;
         IReadOnlyDictionary<ulong, IReadOnlyList<ApfsCatalogEntry>> directoryEntriesByParentId = new Dictionary<ulong, IReadOnlyList<ApfsCatalogEntry>>();
         IReadOnlyDictionary<ulong, ApfsFileReadPlan> filePlansByObjectId = new Dictionary<ulong, ApfsFileReadPlan>();
+        IReadOnlyDictionary<ulong, ApfsFileReadPlan> resourceForkAppleDoubleByObjectId = new Dictionary<ulong, ApfsFileReadPlan>();
         if (rootTreeBlock.HasValue)
         {
             var traversal = await TraverseFsTreePreviewEntriesAsync(
@@ -1715,6 +3155,7 @@ internal sealed class ApfsMetadataReader
             rootDirectoryId = traversal.RootDirectoryId;
             directoryEntriesByParentId = traversal.DirectoryEntriesByParentId;
             filePlansByObjectId = traversal.FilePlansByObjectId;
+            resourceForkAppleDoubleByObjectId = traversal.ResourceForkAppleDoubleByObjectId;
         }
 
         return new ApfsVolumePreview(
@@ -1731,7 +3172,8 @@ internal sealed class ApfsMetadataReader
             RootFilePlansByName: rootFilePlansByName,
             RootDirectoryId: rootDirectoryId,
             DirectoryEntriesByParentId: directoryEntriesByParentId,
-            FilePlansByObjectId: filePlansByObjectId
+            FilePlansByObjectId: filePlansByObjectId,
+            ResourceForkAppleDoubleByObjectId: resourceForkAppleDoubleByObjectId
         );
     }
 
@@ -1744,7 +3186,9 @@ internal sealed class ApfsMetadataReader
     {
         var fallbackNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var extentsByChildId = new Dictionary<ulong, List<ApfsFileExtent>>();
-        var inlineDataByObjectId = new Dictionary<ulong, (byte[]?, bool)>();
+        var inlineDataByObjectId = new Dictionary<ulong, (byte[]? InlineData, bool IsCompressed, long? LogicalSize)>();
+        var resourceForkByObjectId = new Dictionary<ulong, ApfsFileReadPlan>();
+        var resourceForkAppleDoubleByObjectId = new Dictionary<ulong, ApfsFileReadPlan>();
         var dirEntriesByParentId = new Dictionary<ulong, Dictionary<string, ApfsCatalogEntry>>();
         var visitedBlocks = new HashSet<ulong>();
         var queue = new Queue<(ulong Block, int Depth)>();
@@ -1800,7 +3244,7 @@ internal sealed class ApfsMetadataReader
                         if (!byName.TryGetValue(e.Name, out var existing) ||
                             (!existing.ChildId.HasValue && e.ChildId.HasValue))
                         {
-                            byName[e.Name] = new ApfsCatalogEntry(e.Name, e.IsDirectory, e.ChildId);
+                            byName[e.Name] = new ApfsCatalogEntry(e.Name, e.IsDirectory, e.ChildId, e.IsSymbolicLink);
                         }
                     }
                 }
@@ -1823,6 +3267,29 @@ internal sealed class ApfsMetadataReader
                     {
                         inlineDataByObjectId[kv.Key] = kv.Value;
                     }
+                }
+
+                var nodeXattrs = BuildResourceForkMaps(node, slots, extentsByChildId);
+                foreach (var kv in nodeXattrs.ResourceForkByObjectId)
+                {
+                    if (!resourceForkByObjectId.ContainsKey(kv.Key))
+                    {
+                        resourceForkByObjectId[kv.Key] = kv.Value;
+                    }
+                }
+                foreach (var kv in nodeXattrs.AppleDoubleByObjectId)
+                {
+                    if (!resourceForkAppleDoubleByObjectId.ContainsKey(kv.Key))
+                    {
+                        resourceForkAppleDoubleByObjectId[kv.Key] = kv.Value;
+                    }
+                }
+                foreach (var kv in nodeXattrs.DecmpfsByObjectId)
+                {
+                    inlineDataByObjectId[kv.Key] = (
+                        kv.Value,
+                        IsCompressed: true,
+                        LogicalSize: ApfsDecmpfs.TryReadInlineUncompressedSize(kv.Value));
                 }
                 continue;
             }
@@ -1860,7 +3327,7 @@ internal sealed class ApfsMetadataReader
                 .OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
                 .Take(maxEntries))
             {
-                results.Add(new ApfsPreviewEntry(item.Name, item.IsDirectory));
+                results.Add(new ApfsPreviewEntry(item.Name, item.IsDirectory, item.IsSymbolicLink));
                 if (item.ChildId.HasValue)
                 {
                     rootChildIdToName[item.ChildId.Value] = item.Name;
@@ -1889,21 +3356,29 @@ internal sealed class ApfsMetadataReader
             {
                 continue;
             }
-            var totalSize = ordered.Max(x => x.LogicalOffset + x.Length);
+            byte[]? inlineData = null;
+            var isCompressed = false;
+            long? inodeLogicalSize = null;
+            if (inlineDataByObjectId.TryGetValue(kv.Key, out var inodeInfo))
+            {
+                inlineData = inodeInfo.InlineData;
+                isCompressed = inodeInfo.IsCompressed;
+                inodeLogicalSize = inodeInfo.LogicalSize;
+            }
+
+            resourceForkByObjectId.TryGetValue(kv.Key, out var compressionResourceFork);
+            var totalSize = ApfsRawFileSystemProvider.GetExtentBackedLogicalSize(ordered, inodeLogicalSize, inlineData, isCompressed);
             if (totalSize <= 0)
             {
                 continue;
             }
 
-            byte[]? inlineData = null;
-            var isCompressed = false;
-            if (inlineDataByObjectId.TryGetValue(kv.Key, out var inodeInfo))
-            {
-                inlineData = inodeInfo.Item1;
-                isCompressed = inodeInfo.Item2;
-            }
-
-            var plan = new ApfsFileReadPlan(totalSize, ordered, inlineData, isCompressed);
+            var plan = new ApfsFileReadPlan(
+                totalSize,
+                ordered,
+                inlineData,
+                isCompressed,
+                isCompressed ? compressionResourceFork : null);
             filePlansByObjectId[kv.Key] = plan;
             if (rootChildIdToName.TryGetValue(kv.Key, out var name))
             {
@@ -1915,17 +3390,30 @@ internal sealed class ApfsMetadataReader
         {
             if (filePlansByObjectId.ContainsKey(kv.Key)) continue;
             if (rootChildIdToIsDir.TryGetValue(kv.Key, out var isDir) && isDir) continue;
-            if (kv.Value.Item1 is null)
+            if (kv.Value.InlineData is null)
             {
-                if (kv.Value.Item2 && rootChildIdToName.TryGetValue(kv.Key, out var cname))
+                if (kv.Value.IsCompressed && rootChildIdToName.TryGetValue(kv.Key, out var cname))
                 {
-                    filePlansByObjectId[kv.Key] = new ApfsFileReadPlan(0, Array.Empty<ApfsFileExtent>(), null, true);
+                    resourceForkByObjectId.TryGetValue(kv.Key, out var compressionResourceFork);
+                    filePlansByObjectId[kv.Key] = new ApfsFileReadPlan(
+                        Math.Max(0, kv.Value.LogicalSize ?? 0),
+                        Array.Empty<ApfsFileExtent>(),
+                        null,
+                        true,
+                        compressionResourceFork);
                     rootFilePlansByName[cname] = filePlansByObjectId[kv.Key];
                 }
                 continue;
             }
 
-            var iPlan = new ApfsFileReadPlan(kv.Value.Item1.Length, Array.Empty<ApfsFileExtent>(), kv.Value.Item1, kv.Value.Item2);
+            var logicalSize = ApfsDecmpfs.GetInlineDataLogicalSize(kv.Value.InlineData, kv.Value.IsCompressed);
+            resourceForkByObjectId.TryGetValue(kv.Key, out var inlineCompressionResourceFork);
+            var iPlan = new ApfsFileReadPlan(
+                logicalSize,
+                Array.Empty<ApfsFileExtent>(),
+                kv.Value.InlineData,
+                kv.Value.IsCompressed,
+                kv.Value.IsCompressed ? inlineCompressionResourceFork : null);
             filePlansByObjectId[kv.Key] = iPlan;
             if (rootChildIdToName.TryGetValue(kv.Key, out var iname))
             {
@@ -1944,7 +3432,8 @@ internal sealed class ApfsMetadataReader
             rootFilePlansByName,
             rootDirectoryId == 0 ? DefaultApfsRootDirectoryId : rootDirectoryId,
             readonlyCatalog,
-            filePlansByObjectId);
+            filePlansByObjectId,
+            resourceForkAppleDoubleByObjectId);
     }
 
     private static ulong? TryExtractVolumeRootTreeOid(byte[] volumeBuffer, Dictionary<ulong, ApfsObjectPointer> objectIndex)
@@ -2059,7 +3548,7 @@ internal sealed class ApfsMetadataReader
                 continue;
             }
 
-            output.Add(new FsTreePreviewItem(record.KeyType, record.ParentId, record.Name, record.IsDirectory, record.ChildId));
+            output.Add(new FsTreePreviewItem(record.KeyType, record.ParentId, record.Name, record.IsDirectory, record.ChildId, record.IsSymbolicLink));
             if (output.Count >= MaxVolumePreviewEntries)
             {
                 break;
@@ -2176,6 +3665,7 @@ internal sealed class ApfsMetadataReader
             }
 
             var isDir = false;
+            var isSymlink = false;
             ulong? childId = null;
             foreach (var absValOff in EnumerateAbsoluteOffsets(slot.ValueOffset))
             {
@@ -2196,15 +3686,20 @@ internal sealed class ApfsMetadataReader
                     {
                         isDir = true;
                     }
+                    else if (drec.FileType == DrecFileType.Symlink)
+                    {
+                        isDir = false;
+                        isSymlink = true;
+                    }
                 }
 
-                if (!isDir)
+                if (!isDir && !isSymlink)
                 {
                     for (var i = 0; i + 4 <= limit; i += 2)
                     {
                         var v = BinaryPrimitives.ReadUInt32LittleEndian(nodeBuffer.AsSpan(absValOff + i, 4));
                         // Common "directory" discriminator values seen in drec-like payloads.
-                        if (v is 2 or 4 or 8)
+                        if (v is 2 or 8)
                         {
                             isDir = true;
                             break;
@@ -2221,14 +3716,21 @@ internal sealed class ApfsMetadataReader
                 if ((mode & 0xF000) == 0x4000)
                 {
                     isDir = true;
+                    isSymlink = false;
                 }
                 else if ((mode & 0xF000) == 0x8000)
                 {
                     isDir = false;
+                    isSymlink = false;
+                }
+                else if ((mode & 0xF000) == 0xA000)
+                {
+                    isDir = false;
+                    isSymlink = true;
                 }
             }
 
-            record = new FsTreeRecord(key.Type, key.ObjectId, name, isDir, childId);
+            record = new FsTreeRecord(key.Type, key.ObjectId, name, isDir, childId, isSymlink);
             return true;
         }
 
@@ -2264,12 +3766,12 @@ internal sealed class ApfsMetadataReader
         return map;
     }
 
-    private static Dictionary<ulong, (byte[]? InlineData, bool IsCompressed)> BuildInodeDataMap(
+    private static Dictionary<ulong, (byte[]? InlineData, bool IsCompressed, long? LogicalSize)> BuildInodeDataMap(
         byte[] nodeBuffer,
         IReadOnlyList<NodeSlot> slots,
         IReadOnlyDictionary<ulong, List<ApfsFileExtent>> extentsByChildId)
     {
-        var map = new Dictionary<ulong, (byte[]?, bool)>();
+        var map = new Dictionary<ulong, (byte[]?, bool, long?)>();
         foreach (var slot in slots)
         {
             if (!TryDecodeFsTreeKeyFromNode(nodeBuffer, slot, out var key) || key.Type != FsKeyType.Inode)
@@ -2314,17 +3816,16 @@ internal sealed class ApfsMetadataReader
                 var isRegular = (mode.Value & 0xF000) == 0x8000;
                 if (!isRegular) continue;
 
-                // Skip if this object already has extents (means it's not inline)
-                if (extentsByChildId.ContainsKey(key.ObjectId)) continue;
-
                 var internalFlags = valLen >= 32 ? BinaryPrimitives.ReadUInt32LittleEndian(inodeData.Slice(28, 4)) : 0u;
                 var bsdFlags = valLen >= 28 ? BinaryPrimitives.ReadUInt16LittleEndian(inodeData.Slice(26, 2)) : (ushort)0;
+                var logicalSize = TryReadApfsInodeLogicalSize(inodeData);
                 const uint INLINE_DATA_FLAG = 0x20000000;
                 const ushort UF_COMPRESSED = 0x0020;
 
                 var isCompressed = (bsdFlags & UF_COMPRESSED) != 0;
+                var hasExtents = extentsByChildId.ContainsKey(key.ObjectId);
 
-                if ((internalFlags & INLINE_DATA_FLAG) != 0 && valLen >= 80)
+                if (!hasExtents && (internalFlags & INLINE_DATA_FLAG) != 0 && valLen >= 80)
                 {
                     // Inline data starts around offset 64 in the inode value
                     // The size is stored in union_size at offset 32
@@ -2332,20 +3833,227 @@ internal sealed class ApfsMetadataReader
                     if (inlineSize > 0 && inlineSize <= 3800 && valLen >= 64 + inlineSize)
                     {
                         var inlineBytes = inodeData.Slice(64, inlineSize).ToArray();
-                        map[key.ObjectId] = (inlineBytes, isCompressed);
+                        map[key.ObjectId] = (inlineBytes, isCompressed, logicalSize);
                     }
                 }
-                else if (isCompressed)
+                else if (isCompressed || logicalSize.HasValue)
                 {
-                    // File is compressed but has no inline data flag
-                    // Mark it so we can report size but not serve garbage
-                    map[key.ObjectId] = (null, true);
+                    // File has extents or unsupported compressed data. Keep inode
+                    // metadata so read plans preserve APFS logical size.
+                    map[key.ObjectId] = (null, isCompressed, logicalSize);
                 }
 
                 break;
             }
         }
         return map;
+    }
+
+    private static long? TryReadApfsInodeLogicalSize(ReadOnlySpan<byte> inodeData)
+    {
+        if (inodeData.Length < 40)
+        {
+            return null;
+        }
+
+        var raw = BinaryPrimitives.ReadUInt64LittleEndian(inodeData.Slice(32, 8));
+        return raw <= long.MaxValue ? (long)raw : long.MaxValue;
+    }
+
+    private static ApfsResourceForkMaps BuildResourceForkMaps(
+        byte[] nodeBuffer,
+        IReadOnlyList<NodeSlot> slots,
+        IReadOnlyDictionary<ulong, List<ApfsFileExtent>> extentsByChildId)
+    {
+        var resourceForks = new Dictionary<ulong, ApfsFileReadPlan>();
+        var finderInfoByObjectId = new Dictionary<ulong, byte[]>();
+        var extendedAttributesByObjectId = new Dictionary<ulong, List<ApfsExtendedAttribute>>();
+        var decmpfsByObjectId = new Dictionary<ulong, byte[]>();
+        foreach (var slot in slots)
+        {
+            if (!TryDecodeFsTreeKeyFromNode(nodeBuffer, slot, out var key) || key.Type != FsKeyType.Xattr)
+            {
+                continue;
+            }
+
+            var name = DecodeName(key.NamePayload);
+            var isResourceFork = string.Equals(name, "com.apple.ResourceFork", StringComparison.Ordinal);
+            var isFinderInfo = string.Equals(name, "com.apple.FinderInfo", StringComparison.Ordinal);
+            var isDecmpfs = string.Equals(name, "com.apple.decmpfs", StringComparison.Ordinal);
+            var isPreservableXattr = ApfsAppleDouble.IsPreservableExtendedAttributeName(name);
+            if (!isResourceFork && !isFinderInfo && !isDecmpfs && !isPreservableXattr)
+            {
+                continue;
+            }
+
+            foreach (var absValOff in EnumerateAbsoluteOffsets(slot.ValueOffset))
+            {
+                if (absValOff < 0 || absValOff >= nodeBuffer.Length)
+                {
+                    continue;
+                }
+
+                var valLen = slot.ValueLength > 0
+                    ? Math.Min((int)slot.ValueLength, nodeBuffer.Length - absValOff)
+                    : nodeBuffer.Length - absValOff;
+                if (valLen <= 0)
+                {
+                    continue;
+                }
+
+                var inlineXattr = ApfsAppleDouble.TryExtractInlineXattrData(nodeBuffer.AsSpan(absValOff, valLen));
+                if (isDecmpfs)
+                {
+                    if (inlineXattr is { Length: >= ApfsDecmpfs.HeaderLength } decmpfs)
+                    {
+                        decmpfsByObjectId[key.ObjectId] = decmpfs;
+                        break;
+                    }
+                    continue;
+                }
+
+                if (isFinderInfo)
+                {
+                    if (inlineXattr is { Length: >= 32 } finderInfo)
+                    {
+                        finderInfoByObjectId[key.ObjectId] = finderInfo.Take(32).ToArray();
+                        break;
+                    }
+                    continue;
+                }
+
+                if (!isResourceFork)
+                {
+                    if (inlineXattr is { Length: > 0 } xattrData)
+                    {
+                        if (!extendedAttributesByObjectId.TryGetValue(key.ObjectId, out var list))
+                        {
+                            list = new List<ApfsExtendedAttribute>();
+                            extendedAttributesByObjectId[key.ObjectId] = list;
+                        }
+
+                        list.Add(new ApfsExtendedAttribute(name, xattrData));
+                        break;
+                    }
+
+                    continue;
+                }
+
+                if (inlineXattr is not { Length: > 0 } resourceFork)
+                {
+                    if (TryBuildExtentBackedResourceForkPlan(
+                        key.ObjectId,
+                        nodeBuffer.AsSpan(absValOff, valLen),
+                        extentsByChildId) is { TotalSize: > 0 } extentBackedPlan)
+                    {
+                        resourceForks[key.ObjectId] = extentBackedPlan;
+                        break;
+                    }
+                    continue;
+                }
+
+                resourceForks[key.ObjectId] = new ApfsFileReadPlan(
+                    resourceFork.Length,
+                    Array.Empty<ApfsFileExtent>(),
+                    resourceFork,
+                    IsCompressed: false);
+                break;
+            }
+        }
+
+        var map = new Dictionary<ulong, ApfsFileReadPlan>();
+        foreach (var objectId in resourceForks.Keys.Concat(finderInfoByObjectId.Keys).Concat(extendedAttributesByObjectId.Keys).Distinct())
+        {
+            resourceForks.TryGetValue(objectId, out var resourceForkPlan);
+            finderInfoByObjectId.TryGetValue(objectId, out var finderInfo);
+            IReadOnlyList<ApfsExtendedAttribute> extendedAttributes = extendedAttributesByObjectId.TryGetValue(objectId, out var attrs)
+                ? attrs
+                : Array.Empty<ApfsExtendedAttribute>();
+            var sidecar = ApfsAppleDouble.BuildAppleDoubleSidecarReadPlan(resourceForkPlan, finderInfo, extendedAttributes);
+            if (sidecar.TotalSize > 0)
+            {
+                map[objectId] = sidecar;
+            }
+        }
+
+        return new ApfsResourceForkMaps(resourceForks, map, decmpfsByObjectId);
+    }
+
+    private static ApfsFileReadPlan? TryBuildExtentBackedResourceForkPlan(
+        ulong ownerObjectId,
+        ReadOnlySpan<byte> xattrValue,
+        IReadOnlyDictionary<ulong, List<ApfsFileExtent>> extentsByChildId)
+    {
+        if (xattrValue.Length < 16)
+        {
+            return null;
+        }
+
+        var candidateObjectIds = new List<ulong>();
+        for (var i = 0; i + 8 <= xattrValue.Length; i += 8)
+        {
+            var candidate = BinaryPrimitives.ReadUInt64LittleEndian(xattrValue.Slice(i, 8));
+            if (candidate != 0 && candidate != ownerObjectId && extentsByChildId.ContainsKey(candidate))
+            {
+                candidateObjectIds.Add(candidate);
+            }
+        }
+
+        foreach (var candidateObjectId in candidateObjectIds.Distinct())
+        {
+            if (!extentsByChildId.TryGetValue(candidateObjectId, out var extents) || extents.Count == 0)
+            {
+                continue;
+            }
+
+            var ordered = extents.OrderBy(x => x.LogicalOffset).ToArray();
+            var logicalSize = TryExtractResourceForkDstreamSize(xattrValue)
+                ?? ApfsRawFileSystemProvider.GetExtentBackedLogicalSize(ordered, null, null, isCompressed: false);
+            if (logicalSize <= 0)
+            {
+                continue;
+            }
+
+            return new ApfsFileReadPlan(logicalSize, ordered);
+        }
+
+        return null;
+    }
+
+    private static long? TryExtractResourceForkDstreamSize(ReadOnlySpan<byte> xattrValue)
+    {
+        if (xattrValue.Length < 8)
+        {
+            return null;
+        }
+
+        var start = 0;
+        if (xattrValue.Length >= 4)
+        {
+            var declaredLength = BinaryPrimitives.ReadUInt16LittleEndian(xattrValue[2..4]);
+            if (declaredLength > 0 && 4 + declaredLength <= xattrValue.Length)
+            {
+                start = 4;
+            }
+        }
+
+        long? best = null;
+        for (var i = start; i + 8 <= xattrValue.Length; i += 8)
+        {
+            var raw = BinaryPrimitives.ReadUInt64LittleEndian(xattrValue.Slice(i, 8));
+            if (raw == 0 || raw > int.MaxValue)
+            {
+                continue;
+            }
+
+            var value = (long)raw;
+            if (!best.HasValue || value > best.Value)
+            {
+                best = value;
+            }
+        }
+
+        return best;
     }
 
     private static ushort? TryExtractModeFromValue(ReadOnlySpan<byte> value)
@@ -2935,16 +4643,23 @@ internal sealed class ApfsMetadataReader
 
     private readonly record struct OmapKey(ulong Oid, ulong Xid);
 
-    private readonly record struct FsTreeRecord(FsKeyType KeyType, ulong ParentId, string Name, bool IsDirectory, ulong? ChildId);
+    private readonly record struct FsTreeRecord(FsKeyType KeyType, ulong ParentId, string Name, bool IsDirectory, ulong? ChildId, bool IsSymbolicLink);
 
-    private readonly record struct FsTreePreviewItem(FsKeyType KeyType, ulong ParentId, string Name, bool IsDirectory, ulong? ChildId);
+    private readonly record struct FsTreePreviewItem(FsKeyType KeyType, ulong ParentId, string Name, bool IsDirectory, ulong? ChildId, bool IsSymbolicLink);
 
     private sealed record ApfsVolumeTraversalResult(
         IReadOnlyList<ApfsPreviewEntry> Entries,
         IReadOnlyDictionary<string, ApfsFileReadPlan> RootFilePlansByName,
         ulong RootDirectoryId,
         IReadOnlyDictionary<ulong, IReadOnlyList<ApfsCatalogEntry>> DirectoryEntriesByParentId,
-        IReadOnlyDictionary<ulong, ApfsFileReadPlan> FilePlansByObjectId
+        IReadOnlyDictionary<ulong, ApfsFileReadPlan> FilePlansByObjectId,
+        IReadOnlyDictionary<ulong, ApfsFileReadPlan> ResourceForkAppleDoubleByObjectId
+    );
+
+    private sealed record ApfsResourceForkMaps(
+        IReadOnlyDictionary<ulong, ApfsFileReadPlan> ResourceForkByObjectId,
+        IReadOnlyDictionary<ulong, ApfsFileReadPlan> AppleDoubleByObjectId,
+        IReadOnlyDictionary<ulong, byte[]> DecmpfsByObjectId
     );
 
     private readonly record struct DecodedFsKey(FsKeyType Type, ulong ObjectId, byte[] NamePayload);

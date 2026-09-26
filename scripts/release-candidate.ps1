@@ -14,6 +14,9 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 npm run test
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+npm run fs:test
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 npm run security:audit
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -43,12 +46,20 @@ if ($AllowUnsigned) {
 }
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+Write-Host "Validating packaged installer layout..."
+npm run installer:smoke
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 Write-Host $(if ($AllowUnsigned) { "Running unsigned release audit..." } else { "Running strict signed release audit..." })
 if ($AllowUnsigned) {
     npm run release:audit:unsigned
 } else {
     npm run release:audit
 }
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+Write-Host "Running production evidence gate..."
+npm run production:gate
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host "Release candidate passed all gates."

@@ -17,6 +17,13 @@ public static class HfsPlusWriteTests
         results.Add(("TestCreateDirectory", await RunTest("TestCreateDirectory", () => TestCreateDirectory(imageFilePath))));
         results.Add(("TestCreateFileInSubdirectory", await RunTest("TestCreateFileInSubdirectory", () => TestCreateFileInSubdirectory(imageFilePath))));
         results.Add(("TestCreateManyFiles", await RunTest("TestCreateManyFiles", () => TestCreateManyFiles(imageFilePath))));
+        results.Add(("TestMountHfsPlusResourceForkAppleDouble", await RunTest("TestMountHfsPlusResourceForkAppleDouble", () => TestMountHfsPlusResourceForkAppleDouble(imageFilePath))));
+        results.Add(("TestMountHfsPlusFinderInfoAppleDouble", await RunTest("TestMountHfsPlusFinderInfoAppleDouble", () => TestMountHfsPlusFinderInfoAppleDouble(imageFilePath))));
+        results.Add(("TestMountHfsPlusSymlinkReparsePoint", await RunTest("TestMountHfsPlusSymlinkReparsePoint", () => TestMountHfsPlusSymlinkReparsePoint(imageFilePath))));
+        results.Add(("TestMountHfsxReadOnlyBrowsing", await RunTest("TestMountHfsxReadOnlyBrowsing", () => TestMountHfsxReadOnlyBrowsing(imageFilePath))));
+        results.Add(("TestHfsxCatalogIndexCompareIsCaseSensitive", await RunTest("TestHfsxCatalogIndexCompareIsCaseSensitive", () => TestHfsxCatalogIndexCompareIsCaseSensitive(imageFilePath))));
+        results.Add(("TestHfsxCaseSensitiveCacheKeepsDistinctNames", await RunTest("TestHfsxCaseSensitiveCacheKeepsDistinctNames", TestHfsxCaseSensitiveCacheKeepsDistinctNames)));
+        results.Add(("TestMountHfsPlusResourceForkExtentsOverflow", await RunTest("TestMountHfsPlusResourceForkExtentsOverflow", () => TestMountHfsPlusResourceForkExtentsOverflow(imageFilePath))));
         results.Add(("TestDeleteFile", await RunTest("TestDeleteFile", () => TestDeleteFile(imageFilePath))));
         results.Add(("TestLargeFile", await RunTest("TestLargeFile", () => TestLargeFile(imageFilePath))));
         results.Add(("TestOverwriteFile", await RunTest("TestOverwriteFile", () => TestOverwriteFile(imageFilePath))));
@@ -29,6 +36,13 @@ public static class HfsPlusWriteTests
         results.Add(("TestUserExactSequence", await RunTest("TestUserExactSequence", () => TestUserExactSequence(imageFilePath))));
         results.Add(("TestLongFilenames", await RunTest("TestLongFilenames", () => TestLongFilenames(imageFilePath))));
         results.Add(("TestAnalyzeApmClassicHfs", await RunTest("TestAnalyzeApmClassicHfs", () => TestAnalyzeApmClassicHfs(imageFilePath))));
+        results.Add(("TestMountApmClassicHfsReadOnly", await RunTest("TestMountApmClassicHfsReadOnly", () => TestMountApmClassicHfsReadOnly(imageFilePath))));
+        results.Add(("TestMountApmClassicHfsExtentsOverflow", await RunTest("TestMountApmClassicHfsExtentsOverflow", () => TestMountApmClassicHfsExtentsOverflow(imageFilePath))));
+        results.Add(("TestMountApmClassicHfsResourceForkAppleDouble", await RunTest("TestMountApmClassicHfsResourceForkAppleDouble", () => TestMountApmClassicHfsResourceForkAppleDouble(imageFilePath))));
+        results.Add(("TestMountApmClassicHfsFinderInfoAppleDouble", await RunTest("TestMountApmClassicHfsFinderInfoAppleDouble", () => TestMountApmClassicHfsFinderInfoAppleDouble(imageFilePath))));
+        results.Add(("TestMountApmClassicHfsResourceForkExtentsOverflow", await RunTest("TestMountApmClassicHfsResourceForkExtentsOverflow", () => TestMountApmClassicHfsResourceForkExtentsOverflow(imageFilePath))));
+        results.Add(("TestMountApmClassicHfsMacRomanFilename", await RunTest("TestMountApmClassicHfsMacRomanFilename", () => TestMountApmClassicHfsMacRomanFilename(imageFilePath))));
+        results.Add(("TestMountApmClassicHfsCatalogLeafChain", await RunTest("TestMountApmClassicHfsCatalogLeafChain", () => TestMountApmClassicHfsCatalogLeafChain(imageFilePath))));
 
         Console.WriteLine();
         Console.WriteLine("Summary:");
@@ -86,6 +100,764 @@ public static class HfsPlusWriteTests
         }
     }
 
+    private static async Task<bool> TestMountHfsPlusResourceForkAppleDouble(string imageFilePath)
+    {
+        if (File.Exists(imageFilePath))
+            File.Delete(imageFilePath);
+
+        var data = System.Text.Encoding.UTF8.GetBytes("hello from hfs plus data fork\n");
+        var resource = System.Text.Encoding.UTF8.GetBytes("hfs plus resource fork payload\n");
+
+        using (var device = FileBackedBlockDevice.CreateNew(imageFilePath, ImageSize))
+        {
+            await HfsPlusNativeReader.FormatAsync(device, 0, ImageSize, "TestVolume");
+            var reader = await HfsPlusNativeReader.OpenAsync(device, 0);
+            if (reader is null)
+            {
+                Console.WriteLine("  FAIL: Could not open formatted image.");
+                return false;
+            }
+
+            using (reader)
+            {
+                await reader.CreateFileAsync(2, "Forked.txt", data);
+            }
+        }
+
+        await PatchHfsPlusResourceForkAsync(imageFilePath, "Forked.txt", resource);
+
+        var engine = new global::CrossDrive.RawDiskEngine.RawDiskEngine(deviceFactory: new FileImageDeviceFactory());
+        var plan = await engine.AnalyzeAsync(new MountRequest(imageFilePath, string.Empty));
+        if (!string.Equals(plan.FileSystemType, "HFS+", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.WriteLine($"  Expected HFS+, got {plan.FileSystemType}. Notes: {plan.Notes}");
+            return false;
+        }
+
+        using var provider = await engine.CreateFileSystemProviderAsync(plan);
+        var rootEntries = provider.ListDirectory("\\");
+
+        var entry = provider.GetEntry("\\Forked.txt");
+        if (entry is null || entry.Size != data.Length)
+        {
+            Console.WriteLine($"  Expected Forked.txt size {data.Length}, got {entry?.Size.ToString() ?? "missing"}");
+            return false;
+        }
+
+        if (!rootEntries.Any(e => string.Equals(e.Name, "._Forked.txt", StringComparison.OrdinalIgnoreCase)))
+        {
+            Console.WriteLine($"  Expected listed AppleDouble sidecar ._Forked.txt. Got: {string.Join(", ", rootEntries.Select(e => e.Name))}");
+            return false;
+        }
+
+        var sidecar = provider.GetEntry("\\._Forked.txt");
+        if (sidecar is null)
+        {
+            Console.WriteLine("  Expected AppleDouble sidecar ._Forked.txt for HFS+ resource fork.");
+            return false;
+        }
+        if (sidecar.Size != 38 + resource.Length)
+        {
+            Console.WriteLine($"  Expected AppleDouble sidecar size {38 + resource.Length}, got {sidecar.Size}");
+            return false;
+        }
+        if (!sidecar.Attributes.HasFlag(FileAttributes.ReadOnly) ||
+            !sidecar.Attributes.HasFlag(FileAttributes.Hidden))
+        {
+            Console.WriteLine($"  Expected read-only hidden sidecar attributes, got {sidecar.Attributes}");
+            return false;
+        }
+
+        var dataRead = new byte[data.Length];
+        var dataReadCount = provider.ReadFile("\\Forked.txt", 0, dataRead);
+        if (dataReadCount != data.Length || !dataRead.SequenceEqual(data))
+        {
+            Console.WriteLine($"  Expected to read {data.Length} data-fork bytes, got {dataReadCount}.");
+            return false;
+        }
+
+        var appleDouble = new byte[(int)sidecar.Size];
+        var read = provider.ReadFile("\\._Forked.txt", 0, appleDouble);
+        if (read != appleDouble.Length)
+        {
+            Console.WriteLine($"  Expected to read {appleDouble.Length} AppleDouble bytes, got {read}");
+            return false;
+        }
+
+        var magic = BinaryPrimitives.ReadUInt32BigEndian(appleDouble.AsSpan(0, 4));
+        var version = BinaryPrimitives.ReadUInt32BigEndian(appleDouble.AsSpan(4, 4));
+        var entryCount = BinaryPrimitives.ReadUInt16BigEndian(appleDouble.AsSpan(24, 2));
+        var entryId = BinaryPrimitives.ReadUInt32BigEndian(appleDouble.AsSpan(26, 4));
+        var entryOffset = BinaryPrimitives.ReadUInt32BigEndian(appleDouble.AsSpan(30, 4));
+        var entryLength = BinaryPrimitives.ReadUInt32BigEndian(appleDouble.AsSpan(34, 4));
+        if (magic != 0x00051607 || version != 0x00020000 || entryCount != 1 || entryId != 2 ||
+            entryOffset != 38 || entryLength != resource.Length)
+        {
+            Console.WriteLine($"  Invalid AppleDouble header: magic=0x{magic:X8}, version=0x{version:X8}, entries={entryCount}, id={entryId}, offset={entryOffset}, len={entryLength}");
+            return false;
+        }
+
+        if (!appleDouble.Skip((int)entryOffset).Take(resource.Length).SequenceEqual(resource))
+        {
+            Console.WriteLine("  HFS+ resource fork payload did not match AppleDouble entry data.");
+            return false;
+        }
+
+        var partial = new byte[12];
+        var partialRead = provider.ReadFile("\\._Forked.txt", 38 + 5, partial);
+        if (partialRead != partial.Length || !partial.SequenceEqual(resource.Skip(5).Take(partial.Length)))
+        {
+            Console.WriteLine($"  Expected partial HFS+ resource-fork read, got {partialRead} bytes.");
+            return false;
+        }
+
+        Console.WriteLine("  HFS+ resource fork is exposed as a valid read-only AppleDouble sidecar.");
+        return true;
+    }
+
+    private static async Task<bool> TestMountHfsPlusFinderInfoAppleDouble(string imageFilePath)
+    {
+        if (File.Exists(imageFilePath))
+            File.Delete(imageFilePath);
+
+        var data = System.Text.Encoding.UTF8.GetBytes("hfs plus finder info data\n");
+        var resource = System.Text.Encoding.UTF8.GetBytes("finder info resource payload\n");
+        var finderInfo = new byte[32];
+        System.Text.Encoding.ASCII.GetBytes("TEXTttxt").CopyTo(finderInfo, 0);
+        for (var i = 8; i < finderInfo.Length; i++)
+        {
+            finderInfo[i] = (byte)(0xA0 + i);
+        }
+
+        using (var device = FileBackedBlockDevice.CreateNew(imageFilePath, ImageSize))
+        {
+            await HfsPlusNativeReader.FormatAsync(device, 0, ImageSize, "TestVolume");
+            var reader = await HfsPlusNativeReader.OpenAsync(device, 0);
+            if (reader is null)
+            {
+                Console.WriteLine("  FAIL: Could not open formatted image.");
+                return false;
+            }
+
+            using (reader)
+            {
+                await reader.CreateFileAsync(2, "FinderInfo.txt", data);
+            }
+        }
+
+        await PatchHfsPlusResourceForkAsync(imageFilePath, "FinderInfo.txt", resource, finderInfo: finderInfo);
+
+        var engine = new global::CrossDrive.RawDiskEngine.RawDiskEngine(deviceFactory: new FileImageDeviceFactory());
+        var plan = await engine.AnalyzeAsync(new MountRequest(imageFilePath, string.Empty));
+        using var provider = await engine.CreateFileSystemProviderAsync(plan);
+
+        var sidecar = provider.GetEntry("\\._FinderInfo.txt");
+        if (sidecar is null || sidecar.Size != 82 + resource.Length)
+        {
+            Console.WriteLine($"  Expected Finder Info AppleDouble sidecar size {82 + resource.Length}, got {sidecar?.Size.ToString() ?? "missing"}");
+            return false;
+        }
+
+        var appleDouble = new byte[(int)sidecar.Size];
+        var read = provider.ReadFile("\\._FinderInfo.txt", 0, appleDouble);
+        if (read != appleDouble.Length)
+        {
+            Console.WriteLine($"  Expected to read {appleDouble.Length} Finder Info AppleDouble bytes, got {read}");
+            return false;
+        }
+
+        var magic = BinaryPrimitives.ReadUInt32BigEndian(appleDouble.AsSpan(0, 4));
+        var version = BinaryPrimitives.ReadUInt32BigEndian(appleDouble.AsSpan(4, 4));
+        var entryCount = BinaryPrimitives.ReadUInt16BigEndian(appleDouble.AsSpan(24, 2));
+        var finderEntryId = BinaryPrimitives.ReadUInt32BigEndian(appleDouble.AsSpan(26, 4));
+        var finderOffset = BinaryPrimitives.ReadUInt32BigEndian(appleDouble.AsSpan(30, 4));
+        var finderLength = BinaryPrimitives.ReadUInt32BigEndian(appleDouble.AsSpan(34, 4));
+        var resourceEntryId = BinaryPrimitives.ReadUInt32BigEndian(appleDouble.AsSpan(38, 4));
+        var resourceOffset = BinaryPrimitives.ReadUInt32BigEndian(appleDouble.AsSpan(42, 4));
+        var resourceLength = BinaryPrimitives.ReadUInt32BigEndian(appleDouble.AsSpan(46, 4));
+        if (magic != 0x00051607 || version != 0x00020000 || entryCount != 2 ||
+            finderEntryId != 9 || finderOffset != 50 || finderLength != 32 ||
+            resourceEntryId != 2 || resourceOffset != 82 || resourceLength != resource.Length)
+        {
+            Console.WriteLine($"  Invalid Finder Info AppleDouble header: entries={entryCount}, finder=({finderEntryId},{finderOffset},{finderLength}), resource=({resourceEntryId},{resourceOffset},{resourceLength})");
+            return false;
+        }
+
+        if (!appleDouble.Skip((int)finderOffset).Take(32).SequenceEqual(finderInfo))
+        {
+            Console.WriteLine("  HFS+ Finder Info payload did not match AppleDouble entry data.");
+            return false;
+        }
+        if (!appleDouble.Skip((int)resourceOffset).Take(resource.Length).SequenceEqual(resource))
+        {
+            Console.WriteLine("  HFS+ resource fork payload did not match shifted AppleDouble entry data.");
+            return false;
+        }
+
+        var partial = new byte[10];
+        var partialRead = provider.ReadFile("\\._FinderInfo.txt", finderOffset + 7, partial);
+        if (partialRead != partial.Length || !partial.SequenceEqual(finderInfo.Skip(7).Take(partial.Length)))
+        {
+            Console.WriteLine($"  Expected partial Finder Info read, got {partialRead} bytes.");
+            return false;
+        }
+
+        Console.WriteLine("  HFS+ Finder Info is preserved in AppleDouble sidecars.");
+        return true;
+    }
+
+    private static async Task<bool> TestMountHfsPlusSymlinkReparsePoint(string imageFilePath)
+    {
+        if (File.Exists(imageFilePath))
+            File.Delete(imageFilePath);
+
+        const string linkName = "LinkToTarget";
+        const string target = "../Target.txt";
+        var symlinkPayload = System.Text.Encoding.UTF8.GetBytes(target);
+
+        using (var device = FileBackedBlockDevice.CreateNew(imageFilePath, ImageSize))
+        {
+            await HfsPlusNativeReader.FormatAsync(device, 0, ImageSize, "TestVolume");
+            var reader = await HfsPlusNativeReader.OpenAsync(device, 0);
+            if (reader is null)
+            {
+                Console.WriteLine("  FAIL: Could not open formatted image.");
+                return false;
+            }
+
+            using (reader)
+            {
+                await reader.CreateFileAsync(2, "Target.txt", System.Text.Encoding.UTF8.GetBytes("target data\n"));
+                await reader.CreateFileAsync(2, linkName, symlinkPayload);
+            }
+        }
+
+        await PatchHfsPlusResourceForkAsync(
+            imageFilePath,
+            linkName,
+            Array.Empty<byte>(),
+            fileMode: 0xA1FF);
+
+        var engine = new global::CrossDrive.RawDiskEngine.RawDiskEngine(deviceFactory: new FileImageDeviceFactory());
+        var plan = await engine.AnalyzeAsync(new MountRequest(imageFilePath, string.Empty));
+        using var provider = await engine.CreateFileSystemProviderAsync(plan);
+
+        var entries = provider.ListDirectory("\\");
+        var link = entries.FirstOrDefault(e => string.Equals(e.Name, linkName, StringComparison.Ordinal));
+        if (link is null)
+        {
+            Console.WriteLine($"  Expected listed HFS+ symlink {linkName}. Got: {string.Join(", ", entries.Select(e => e.Name))}");
+            return false;
+        }
+
+        if (!link.IsSymbolicLink ||
+            !string.Equals(link.SymlinkTarget, target, StringComparison.Ordinal) ||
+            !link.Attributes.HasFlag(FileAttributes.ReparsePoint) ||
+            link.Size != 0)
+        {
+            Console.WriteLine($"  Invalid HFS+ symlink metadata: target='{link.SymlinkTarget}', attrs={link.Attributes}, size={link.Size}");
+            return false;
+        }
+
+        var readBuffer = new byte[symlinkPayload.Length];
+        var read = provider.ReadFile($"\\{linkName}", 0, readBuffer);
+        if (read != 0)
+        {
+            Console.WriteLine($"  Expected HFS+ symlink to expose reparse metadata instead of target bytes, read {read}.");
+            return false;
+        }
+
+        Console.WriteLine("  HFS+ symlinks preserve target text as WinFsp reparse-point metadata.");
+        return true;
+    }
+
+    private static async Task<bool> TestMountHfsxReadOnlyBrowsing(string imageFilePath)
+    {
+        if (File.Exists(imageFilePath))
+            File.Delete(imageFilePath);
+
+        const string fileName = "MixedCase-HFSX.txt";
+        var data = System.Text.Encoding.UTF8.GetBytes("hello from an HFSX volume\n");
+
+        using (var device = FileBackedBlockDevice.CreateNew(imageFilePath, ImageSize))
+        {
+            await HfsPlusNativeReader.FormatAsync(device, 0, ImageSize, "HFSXVolume");
+            var reader = await HfsPlusNativeReader.OpenAsync(device, 0);
+            if (reader is null)
+            {
+                Console.WriteLine("  FAIL: Could not open formatted image.");
+                return false;
+            }
+
+            using (reader)
+            {
+                await reader.CreateFileAsync(2, fileName, data);
+            }
+        }
+
+        await PatchHfsxSignatureAsync(imageFilePath, ImageSize);
+
+        using (var readDevice = FileBackedBlockDevice.Open(imageFilePath, writable: false))
+        {
+            var hfsxReader = await HfsPlusNativeReader.OpenAsync(readDevice, 0);
+            if (hfsxReader is null || !hfsxReader.VolumeHeader.IsHfsx)
+            {
+                Console.WriteLine("  Expected native reader to recognize the HX HFSX signature.");
+                return false;
+            }
+            hfsxReader.Dispose();
+        }
+
+        var engine = new global::CrossDrive.RawDiskEngine.RawDiskEngine(deviceFactory: new FileImageDeviceFactory());
+        var plan = await engine.AnalyzeAsync(new MountRequest(imageFilePath, string.Empty));
+        if (!string.Equals(plan.FileSystemType, "HFSX", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.WriteLine($"  Expected HFSX, got {plan.FileSystemType}. Notes: {plan.Notes}");
+            return false;
+        }
+
+        using var provider = await engine.CreateFileSystemProviderAsync(plan);
+        var root = provider.ListDirectory("\\");
+        var entry = root.FirstOrDefault(e => string.Equals(e.Name, fileName, StringComparison.Ordinal));
+        if (entry is null || entry.Size != data.Length)
+        {
+            Console.WriteLine($"  Expected {fileName} size {data.Length}, got {entry?.Size.ToString() ?? "missing"}");
+            return false;
+        }
+
+        var readBuffer = new byte[data.Length];
+        var read = provider.ReadFile($"\\{fileName}", 0, readBuffer);
+        if (read != data.Length || !readBuffer.SequenceEqual(data))
+        {
+            Console.WriteLine($"  Expected to read {data.Length} HFSX bytes, got {read}.");
+            return false;
+        }
+
+        Console.WriteLine("  HFSX volumes are analyzed, mounted through the native provider, and browsed read-only.");
+        return true;
+    }
+
+    private static async Task<bool> TestHfsxCatalogIndexCompareIsCaseSensitive(string imageFilePath)
+    {
+        if (File.Exists(imageFilePath))
+            File.Delete(imageFilePath);
+
+        using (var device = FileBackedBlockDevice.CreateNew(imageFilePath, ImageSize))
+        {
+            await HfsPlusNativeReader.FormatAsync(device, 0, ImageSize, "HFSXCompare");
+            using var hfsPlusReader = await HfsPlusNativeReader.OpenAsync(device, 0);
+            if (hfsPlusReader is null)
+            {
+                Console.WriteLine("  FAIL: Could not open formatted HFS+ image.");
+                return false;
+            }
+
+            var hfsPlusCompare = InvokeCatalogKeyCompare(hfsPlusReader, "abc", "ABC");
+            if (hfsPlusCompare != 0)
+            {
+                Console.WriteLine($"  Expected HFS+ catalog comparison to fold case, got {hfsPlusCompare}.");
+                return false;
+            }
+        }
+
+        await PatchHfsxSignatureAsync(imageFilePath, ImageSize);
+
+        using (var readDevice = FileBackedBlockDevice.Open(imageFilePath, writable: false))
+        {
+            using var hfsxReader = await HfsPlusNativeReader.OpenAsync(readDevice, 0);
+            if (hfsxReader is null || !hfsxReader.VolumeHeader.IsHfsx)
+            {
+                Console.WriteLine("  Expected native reader to recognize the HX HFSX signature.");
+                return false;
+            }
+
+            var hfsxCompare = InvokeCatalogKeyCompare(hfsxReader, "abc", "ABC");
+            if (hfsxCompare <= 0)
+            {
+                Console.WriteLine($"  Expected HFSX catalog comparison to be case-sensitive, got {hfsxCompare}.");
+                return false;
+            }
+        }
+
+        Console.WriteLine("  HFSX catalog index comparison is case-sensitive while HFS+ remains case-folded.");
+        return true;
+    }
+
+    private static int InvokeCatalogKeyCompare(HfsPlusNativeReader reader, string recordName, string targetName)
+    {
+        const int recOffset = 14;
+        var nodeBuf = new byte[128];
+        BinaryPrimitives.WriteUInt32BigEndian(nodeBuf.AsSpan(recOffset + 2, 4), 2);
+        BinaryPrimitives.WriteUInt16BigEndian(nodeBuf.AsSpan(recOffset + 6, 2), (ushort)recordName.Length);
+        for (var i = 0; i < recordName.Length; i++)
+        {
+            BinaryPrimitives.WriteUInt16BigEndian(nodeBuf.AsSpan(recOffset + 8 + i * 2, 2), (ushort)recordName[i]);
+        }
+
+        var method = typeof(HfsPlusNativeReader).GetMethod(
+            "CompareCatalogKeys",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        if (method is null)
+        {
+            throw new MissingMethodException(nameof(HfsPlusNativeReader), "CompareCatalogKeys");
+        }
+
+        return (int)method.Invoke(reader, new object[] { nodeBuf, recOffset, 2u, targetName })!;
+    }
+
+    private static Task<bool> TestHfsxCaseSensitiveCacheKeepsDistinctNames()
+    {
+        using var provider = new CachedRawFileSystemProvider(
+            new HfsxCaseSensitiveTestProvider(),
+            new CacheOptions { EnableReadAhead = false, BlockSize = 16 });
+
+        var root = provider.ListDirectory("\\");
+        if (root.Count(e => string.Equals(e.Name, "Report.txt", StringComparison.Ordinal)) != 1 ||
+            root.Count(e => string.Equals(e.Name, "report.txt", StringComparison.Ordinal)) != 1)
+        {
+            Console.WriteLine("  Expected both HFSX case-distinct names in the cached root listing.");
+            return Task.FromResult(false);
+        }
+
+        var mixedCase = provider.GetEntry("\\Report.txt");
+        var lowerCase = provider.GetEntry("\\report.txt");
+        if (mixedCase is null || lowerCase is null ||
+            !string.Equals(mixedCase.Path, "\\Report.txt", StringComparison.Ordinal) ||
+            !string.Equals(lowerCase.Path, "\\report.txt", StringComparison.Ordinal))
+        {
+            Console.WriteLine($"  HFSX entry cache collapsed case-distinct names: {mixedCase?.Path ?? "missing"} / {lowerCase?.Path ?? "missing"}");
+            return Task.FromResult(false);
+        }
+
+        var mixedBuffer = new byte[(int)mixedCase.Size];
+        var lowerBuffer = new byte[(int)lowerCase.Size];
+        var mixedRead = provider.ReadFile("\\Report.txt", 0, mixedBuffer);
+        var lowerRead = provider.ReadFile("\\report.txt", 0, lowerBuffer);
+        var mixedText = System.Text.Encoding.UTF8.GetString(mixedBuffer, 0, mixedRead);
+        var lowerText = System.Text.Encoding.UTF8.GetString(lowerBuffer, 0, lowerRead);
+        if (mixedText != "mixed-case payload" || lowerText != "lower-case payload")
+        {
+            Console.WriteLine($"  HFSX block cache returned wrong data: '{mixedText}' / '{lowerText}'.");
+            return Task.FromResult(false);
+        }
+
+        var hitsBeforeWrite = provider.GetStatistics().CacheHits;
+        var replacement = System.Text.Encoding.UTF8.GetBytes("MIXED-case payload");
+        provider.WriteFile("\\Report.txt", 0, replacement);
+
+        var lowerHitsBeforeReread = provider.GetStatistics().CacheHits;
+        Array.Clear(lowerBuffer);
+        lowerRead = provider.ReadFile("\\report.txt", 0, lowerBuffer);
+        var lowerHitsAfterReread = provider.GetStatistics().CacheHits;
+        lowerText = System.Text.Encoding.UTF8.GetString(lowerBuffer, 0, lowerRead);
+        if (lowerText != "lower-case payload" || lowerHitsAfterReread <= lowerHitsBeforeReread)
+        {
+            Console.WriteLine("  HFSX invalidation for Report.txt removed or polluted report.txt.");
+            return Task.FromResult(false);
+        }
+
+        Array.Clear(mixedBuffer);
+        mixedRead = provider.ReadFile("\\Report.txt", 0, mixedBuffer);
+        mixedText = System.Text.Encoding.UTF8.GetString(mixedBuffer, 0, mixedRead);
+        if (mixedText != "MIXED-case payload" || provider.GetStatistics().CacheHits <= hitsBeforeWrite)
+        {
+            Console.WriteLine($"  HFSX invalidation did not refresh the modified case-distinct file: '{mixedText}'.");
+            return Task.FromResult(false);
+        }
+
+        Console.WriteLine("  HFSX cache preserves case-distinct paths, file data, and invalidation.");
+        return Task.FromResult(true);
+    }
+
+    private static async Task<bool> TestMountHfsPlusResourceForkExtentsOverflow(string imageFilePath)
+    {
+        if (File.Exists(imageFilePath))
+            File.Delete(imageFilePath);
+
+        const int blockSize = 4096;
+        var data = System.Text.Encoding.UTF8.GetBytes("hfs plus fragmented resource fork data\n");
+        var resource = new byte[blockSize * 10 + 123];
+        for (var i = 0; i < resource.Length; i++)
+        {
+            resource[i] = (byte)((i * 31 + 7) & 0xFF);
+        }
+
+        using (var device = FileBackedBlockDevice.CreateNew(imageFilePath, ImageSize))
+        {
+            await HfsPlusNativeReader.FormatAsync(device, 0, ImageSize, "TestVolume");
+            var reader = await HfsPlusNativeReader.OpenAsync(device, 0);
+            if (reader is null)
+            {
+                Console.WriteLine("  FAIL: Could not open formatted image.");
+                return false;
+            }
+
+            using (reader)
+            {
+                await reader.CreateFileAsync(2, "FragmentedFork.bin", data);
+            }
+        }
+
+        await PatchHfsPlusResourceForkAsync(imageFilePath, "FragmentedFork.bin", resource, useOverflowExtents: true);
+
+        var engine = new global::CrossDrive.RawDiskEngine.RawDiskEngine(deviceFactory: new FileImageDeviceFactory());
+        var plan = await engine.AnalyzeAsync(new MountRequest(imageFilePath, string.Empty));
+        using var provider = await engine.CreateFileSystemProviderAsync(plan);
+        var rootEntries = provider.ListDirectory("\\");
+
+        if (!rootEntries.Any(e => string.Equals(e.Name, "._FragmentedFork.bin", StringComparison.OrdinalIgnoreCase)))
+        {
+            Console.WriteLine($"  Expected listed fragmented AppleDouble sidecar ._FragmentedFork.bin. Got: {string.Join(", ", rootEntries.Select(e => e.Name))}");
+            return false;
+        }
+
+        var sidecar = provider.GetEntry("\\._FragmentedFork.bin");
+        if (sidecar is null || sidecar.Size != 38 + resource.Length)
+        {
+            Console.WriteLine($"  Expected fragmented AppleDouble sidecar size {38 + resource.Length}, got {sidecar?.Size.ToString() ?? "missing"}");
+            return false;
+        }
+
+        var appleDouble = new byte[(int)sidecar.Size];
+        var read = provider.ReadFile("\\._FragmentedFork.bin", 0, appleDouble);
+        if (read != appleDouble.Length)
+        {
+            Console.WriteLine($"  Expected to read {appleDouble.Length} fragmented AppleDouble bytes, got {read}");
+            return false;
+        }
+
+        var entryOffset = BinaryPrimitives.ReadUInt32BigEndian(appleDouble.AsSpan(30, 4));
+        var entryLength = BinaryPrimitives.ReadUInt32BigEndian(appleDouble.AsSpan(34, 4));
+        if (entryOffset != 38 || entryLength != resource.Length)
+        {
+            Console.WriteLine($"  Invalid fragmented AppleDouble resource entry: offset={entryOffset}, length={entryLength}");
+            return false;
+        }
+
+        if (!appleDouble.Skip((int)entryOffset).Take(resource.Length).SequenceEqual(resource))
+        {
+            Console.WriteLine("  Fragmented HFS+ resource fork payload did not match AppleDouble entry data.");
+            return false;
+        }
+
+        var crossing = new byte[96];
+        var crossingOffset = 38 + blockSize * 8 - 37;
+        var crossingRead = provider.ReadFile("\\._FragmentedFork.bin", crossingOffset, crossing);
+        if (crossingRead != crossing.Length ||
+            !crossing.SequenceEqual(resource.Skip(blockSize * 8 - 37).Take(crossing.Length)))
+        {
+            Console.WriteLine($"  Expected partial read across HFS+ resource-fork overflow boundary, got {crossingRead} bytes.");
+            return false;
+        }
+
+        Console.WriteLine("  HFS+ resource fork data continues through the extents-overflow B-tree.");
+        return true;
+    }
+
+    private static async Task PatchHfsPlusResourceForkAsync(string imageFilePath, string fileName, byte[] resourceFork, bool useOverflowExtents = false, byte[]? finderInfo = null, ushort? fileMode = null)
+    {
+        await using var stream = new FileStream(imageFilePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+
+        var vh = new byte[512];
+        stream.Position = 1024;
+        await stream.ReadExactlyAsync(vh);
+
+        var blockSize = BinaryPrimitives.ReadUInt32BigEndian(vh.AsSpan(40, 4));
+        var freeBlocks = BinaryPrimitives.ReadUInt32BigEndian(vh.AsSpan(48, 4));
+        var nextAllocation = BinaryPrimitives.ReadUInt32BigEndian(vh.AsSpan(52, 4));
+        var bitmapStartBlock = BinaryPrimitives.ReadUInt32BigEndian(vh.AsSpan(112 + 16, 4));
+        var bitmapBlockCount = BinaryPrimitives.ReadUInt32BigEndian(vh.AsSpan(112 + 20, 4));
+        var extentsStartBlock = BinaryPrimitives.ReadUInt32BigEndian(vh.AsSpan(192 + 16, 4));
+        var extentsBlockCount = BinaryPrimitives.ReadUInt32BigEndian(vh.AsSpan(192 + 20, 4));
+        var catalogStartBlock = BinaryPrimitives.ReadUInt32BigEndian(vh.AsSpan(272 + 16, 4));
+
+        var resourceBlocks = (uint)((resourceFork.Length + blockSize - 1) / blockSize);
+        var resourceExtents = new List<(uint StartBlock, uint BlockCount)>();
+        var allocatedBlocks = new SortedSet<uint>();
+        uint extentsOverflowLeafStartBlock = 0;
+        uint extentsOverflowLeafBlockCount = 0;
+
+        if (useOverflowExtents)
+        {
+            extentsOverflowLeafBlockCount = (uint)((8192 + blockSize - 1) / blockSize);
+            extentsOverflowLeafStartBlock = nextAllocation + 4;
+            for (uint block = extentsOverflowLeafStartBlock; block < extentsOverflowLeafStartBlock + extentsOverflowLeafBlockCount; block++)
+            {
+                allocatedBlocks.Add(block);
+            }
+
+            var firstResourceBlock = nextAllocation + 16;
+            for (uint i = 0; i < resourceBlocks; i++)
+            {
+                var startBlock = firstResourceBlock + i * 2;
+                resourceExtents.Add((startBlock, 1));
+                allocatedBlocks.Add(startBlock);
+
+                var blockBytes = new byte[blockSize];
+                var sourceOffset = (int)(i * blockSize);
+                var sourceCount = Math.Min((int)blockSize, resourceFork.Length - sourceOffset);
+                if (sourceCount > 0)
+                {
+                    Buffer.BlockCopy(resourceFork, sourceOffset, blockBytes, 0, sourceCount);
+                }
+                stream.Position = (long)startBlock * blockSize;
+                await stream.WriteAsync(blockBytes);
+            }
+        }
+        else
+        {
+            var resourceStartBlock = nextAllocation + 8;
+            resourceExtents.Add((resourceStartBlock, resourceBlocks));
+            for (uint block = resourceStartBlock; block < resourceStartBlock + resourceBlocks; block++)
+            {
+                allocatedBlocks.Add(block);
+            }
+
+            var paddedResource = new byte[resourceBlocks * blockSize];
+            Buffer.BlockCopy(resourceFork, 0, paddedResource, 0, resourceFork.Length);
+            stream.Position = (long)resourceStartBlock * blockSize;
+            await stream.WriteAsync(paddedResource);
+        }
+
+        var bitmap = new byte[bitmapBlockCount * blockSize];
+        stream.Position = (long)bitmapStartBlock * blockSize;
+        await stream.ReadExactlyAsync(bitmap);
+        foreach (var block in allocatedBlocks)
+        {
+            var byteIndex = block / 8;
+            var bitIndex = 7 - (int)(block % 8);
+            bitmap[byteIndex] |= (byte)(1 << bitIndex);
+        }
+        stream.Position = (long)bitmapStartBlock * blockSize;
+        await stream.WriteAsync(bitmap);
+
+        if (useOverflowExtents)
+        {
+            WriteHfsPlusForkData(
+                vh.AsSpan(192, 80),
+                checked((int)((extentsBlockCount + extentsOverflowLeafBlockCount) * blockSize)),
+                blockSize,
+                new[] { (extentsStartBlock, extentsBlockCount), (extentsOverflowLeafStartBlock, extentsOverflowLeafBlockCount) });
+        }
+
+        var allocatedBlockCount = (uint)allocatedBlocks.Count;
+        var nextFreeBlock = allocatedBlocks.Count > 0 ? allocatedBlocks.Max + 1 : nextAllocation;
+        BinaryPrimitives.WriteUInt32BigEndian(vh.AsSpan(48, 4), freeBlocks > allocatedBlockCount ? freeBlocks - allocatedBlockCount : 0);
+        BinaryPrimitives.WriteUInt32BigEndian(vh.AsSpan(52, 4), Math.Max(nextAllocation, nextFreeBlock));
+        stream.Position = 1024;
+        await stream.WriteAsync(vh);
+
+        var catalogOffset = (long)catalogStartBlock * blockSize;
+        var catalogHeader = new byte[8192];
+        stream.Position = catalogOffset;
+        await stream.ReadExactlyAsync(catalogHeader);
+
+        var nodeSize = BinaryPrimitives.ReadUInt16BigEndian(catalogHeader.AsSpan(14 + 18, 2));
+        var totalNodes = BinaryPrimitives.ReadUInt32BigEndian(catalogHeader.AsSpan(14 + 22, 4));
+        if (nodeSize == 0)
+        {
+            throw new InvalidDataException($"Unexpected HFS+ catalog node size {nodeSize}.");
+        }
+
+        for (uint nodeIndex = 0; nodeIndex < totalNodes; nodeIndex++)
+        {
+            var node = new byte[nodeSize];
+            stream.Position = catalogOffset + (long)nodeIndex * nodeSize;
+            await stream.ReadExactlyAsync(node);
+
+            if ((sbyte)node[8] != -1)
+            {
+                continue;
+            }
+
+            var numRecords = BinaryPrimitives.ReadUInt16BigEndian(node.AsSpan(10, 2));
+            for (var recordIndex = 0; recordIndex < numRecords; recordIndex++)
+            {
+                var (recordOffset, _) = GetBTreeRecordOffsetAndLength(node, recordIndex, numRecords);
+                if (recordOffset < 14 || recordOffset + 8 > node.Length) continue;
+
+                var keyLen = BinaryPrimitives.ReadUInt16BigEndian(node.AsSpan(recordOffset, 2));
+                if (keyLen < 6 || recordOffset + 2 + keyLen > node.Length) continue;
+
+                var parentCnid = BinaryPrimitives.ReadUInt32BigEndian(node.AsSpan(recordOffset + 2, 4));
+                var nameLength = BinaryPrimitives.ReadUInt16BigEndian(node.AsSpan(recordOffset + 6, 2));
+                if (parentCnid != 2 || nameLength != fileName.Length) continue;
+
+                var chars = new char[nameLength];
+                for (var i = 0; i < nameLength; i++)
+                {
+                    chars[i] = (char)BinaryPrimitives.ReadUInt16BigEndian(node.AsSpan(recordOffset + 8 + i * 2, 2));
+                }
+                if (!string.Equals(new string(chars), fileName, StringComparison.Ordinal)) continue;
+
+                var dataOffset = recordOffset + 2 + keyLen;
+                if (dataOffset % 2 != 0) dataOffset++;
+                if (dataOffset + 248 > node.Length) continue;
+                if (BinaryPrimitives.ReadInt16BigEndian(node.AsSpan(dataOffset, 2)) != 2) continue;
+                if (fileMode.HasValue)
+                {
+                    BinaryPrimitives.WriteUInt16BigEndian(node.AsSpan(dataOffset + 42, 2), fileMode.Value);
+                }
+
+                if (finderInfo is not null)
+                {
+                    if (finderInfo.Length != 32)
+                    {
+                        throw new ArgumentOutOfRangeException(nameof(finderInfo), "Finder Info must be exactly 32 bytes.");
+                    }
+                    finderInfo.CopyTo(node.AsSpan(dataOffset + 48, 32));
+                }
+
+                var fileCnid = BinaryPrimitives.ReadUInt32BigEndian(node.AsSpan(dataOffset + 8, 4));
+                var inlineResourceExtents = useOverflowExtents
+                    ? resourceExtents.Take(8).ToArray()
+                    : resourceExtents.ToArray();
+
+                WriteHfsPlusForkData(
+                    node.AsSpan(dataOffset + 168, 80),
+                    resourceFork.Length,
+                    blockSize,
+                    inlineResourceExtents);
+
+                stream.Position = catalogOffset + (long)nodeIndex * nodeSize;
+                await stream.WriteAsync(node);
+
+                if (useOverflowExtents)
+                {
+                    await WriteHfsPlusExtentsOverflowTreeAsync(
+                        stream,
+                        blockSize,
+                        extentsStartBlock,
+                        extentsOverflowLeafStartBlock,
+                        fileCnid,
+                        startBlock: 8,
+                        resourceExtents.Skip(8).ToArray());
+                }
+                return;
+            }
+        }
+
+        throw new InvalidDataException($"Could not locate HFS+ catalog file record for '{fileName}'.");
+    }
+
+    private static async Task PatchHfsxSignatureAsync(string imageFilePath, long partitionSize)
+    {
+        await using var stream = new FileStream(imageFilePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        var hfsxHeader = new byte[4];
+        BinaryPrimitives.WriteUInt16BigEndian(hfsxHeader.AsSpan(0, 2), 0x4858); // "HX"
+        BinaryPrimitives.WriteUInt16BigEndian(hfsxHeader.AsSpan(2, 2), 5);      // HFSX volume version
+
+        stream.Position = 1024;
+        await stream.WriteAsync(hfsxHeader);
+
+        var alternateHeaderOffset = partitionSize - 1024;
+        if (alternateHeaderOffset > 1024 && alternateHeaderOffset + hfsxHeader.Length <= stream.Length)
+        {
+            stream.Position = alternateHeaderOffset;
+            await stream.WriteAsync(hfsxHeader);
+        }
+    }
+
     private static async Task<bool> TestAnalyzeApmClassicHfs(string imageFilePath)
     {
         if (File.Exists(imageFilePath))
@@ -137,6 +909,868 @@ public static class HfsPlusWriteTests
 
         Console.WriteLine("  APM Apple_HFS with BD signature is classified as classic HFS.");
         return true;
+    }
+
+    private static async Task<bool> TestMountApmClassicHfsReadOnly(string imageFilePath)
+    {
+        if (File.Exists(imageFilePath))
+            File.Delete(imageFilePath);
+
+        const int blockSize = 512;
+        const uint partitionStartBlock = 64;
+        const long imageSize = 8 * 1024 * 1024;
+        var partitionOffset = partitionStartBlock * blockSize;
+        var content = System.Text.Encoding.ASCII.GetBytes("hello hfs!\n");
+
+        await WriteClassicHfsImageAsync(imageFilePath, imageSize, partitionStartBlock, content);
+
+        var engine = new global::CrossDrive.RawDiskEngine.RawDiskEngine(deviceFactory: new FileImageDeviceFactory());
+        var plan = await engine.AnalyzeAsync(new MountRequest(imageFilePath, string.Empty));
+        if (!string.Equals(plan.FileSystemType, "HFS", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.WriteLine($"  Expected HFS, got {plan.FileSystemType}. Notes: {plan.Notes}");
+            return false;
+        }
+        if (plan.PartitionOffsetBytes != partitionOffset)
+        {
+            Console.WriteLine($"  Expected partition offset {partitionOffset}, got {plan.PartitionOffsetBytes}");
+            return false;
+        }
+
+        using var device = FileBackedBlockDevice.Open(imageFilePath, writable: false);
+        using var provider = await HfsClassicRawFileSystemProvider.CreateFromDeviceAsync(plan, device);
+
+        var root = provider.ListDirectory("\\");
+        var hello = root.FirstOrDefault(e => string.Equals(e.Name, "HELLO.TXT", StringComparison.OrdinalIgnoreCase));
+        var folder = root.FirstOrDefault(e => string.Equals(e.Name, "FOLDER", StringComparison.OrdinalIgnoreCase));
+        if (hello is null || folder is null || !folder.IsDirectory)
+        {
+            Console.WriteLine($"  Expected HELLO.TXT and FOLDER in root. Got: {string.Join(", ", root.Select(e => e.Name))}");
+            return false;
+        }
+        if (hello.Size != content.Length)
+        {
+            Console.WriteLine($"  Expected HELLO.TXT size {content.Length}, got {hello.Size}");
+            return false;
+        }
+
+        var readBuffer = new byte[content.Length];
+        var read = provider.ReadFile("\\HELLO.TXT", 0, readBuffer);
+        if (read != content.Length || !readBuffer.SequenceEqual(content))
+        {
+            Console.WriteLine($"  Expected to read '{System.Text.Encoding.ASCII.GetString(content)}', got {read} bytes '{System.Text.Encoding.ASCII.GetString(readBuffer)}'");
+            return false;
+        }
+
+        Console.WriteLine("  Classic HFS provider listed root and read HELLO.TXT without external runtime.");
+        return true;
+    }
+
+    private static async Task<bool> TestMountApmClassicHfsExtentsOverflow(string imageFilePath)
+    {
+        if (File.Exists(imageFilePath))
+            File.Delete(imageFilePath);
+
+        const uint partitionStartBlock = 64;
+        const long imageSize = 8 * 1024 * 1024;
+        var blocks = new[]
+        {
+            System.Text.Encoding.ASCII.GetBytes("catalog extent block 1".PadRight(512, '1')),
+            System.Text.Encoding.ASCII.GetBytes("catalog extent block 2".PadRight(512, '2')),
+            System.Text.Encoding.ASCII.GetBytes("catalog extent block 3".PadRight(512, '3')),
+            System.Text.Encoding.ASCII.GetBytes("overflow extent block 4".PadRight(512, '4'))
+        };
+        var expected = blocks.SelectMany(b => b).ToArray();
+
+        await WriteClassicHfsImageAsync(imageFilePath, imageSize, partitionStartBlock, expected, useOverflowExtent: true);
+
+        var engine = new global::CrossDrive.RawDiskEngine.RawDiskEngine(deviceFactory: new FileImageDeviceFactory());
+        var plan = await engine.AnalyzeAsync(new MountRequest(imageFilePath, string.Empty));
+        using var device = FileBackedBlockDevice.Open(imageFilePath, writable: false);
+        using var provider = await HfsClassicRawFileSystemProvider.CreateFromDeviceAsync(plan, device);
+
+        var entry = provider.GetEntry("\\HELLO.TXT");
+        if (entry is null || entry.Size != expected.Length)
+        {
+            Console.WriteLine($"  Expected HELLO.TXT size {expected.Length}, got {entry?.Size.ToString() ?? "missing"}");
+            return false;
+        }
+
+        var actual = new byte[expected.Length];
+        var read = provider.ReadFile("\\HELLO.TXT", 0, actual);
+        if (read != expected.Length || !actual.SequenceEqual(expected))
+        {
+            Console.WriteLine($"  Expected {expected.Length} bytes across catalog+overflow extents, got {read}.");
+            return false;
+        }
+
+        var tail = new byte[64];
+        var tailRead = provider.ReadFile("\\HELLO.TXT", 1536, tail);
+        if (tailRead != tail.Length || !tail.SequenceEqual(expected.Skip(1536).Take(64)))
+        {
+            Console.WriteLine($"  Expected partial read from overflow extent, got {tailRead} bytes.");
+            return false;
+        }
+
+        Console.WriteLine("  Classic HFS provider read file data that continues in the extents-overflow B-tree.");
+        return true;
+    }
+
+    private static async Task<bool> TestMountApmClassicHfsResourceForkAppleDouble(string imageFilePath)
+    {
+        if (File.Exists(imageFilePath))
+            File.Delete(imageFilePath);
+
+        const uint partitionStartBlock = 64;
+        const long imageSize = 8 * 1024 * 1024;
+        var data = System.Text.Encoding.ASCII.GetBytes("hello hfs!\n");
+        var resource = System.Text.Encoding.ASCII.GetBytes("classic resource fork payload\n");
+        await WriteClassicHfsImageAsync(imageFilePath, imageSize, partitionStartBlock, data, resourceForkContent: resource);
+
+        var engine = new global::CrossDrive.RawDiskEngine.RawDiskEngine(deviceFactory: new FileImageDeviceFactory());
+        var plan = await engine.AnalyzeAsync(new MountRequest(imageFilePath, string.Empty));
+        using var device = FileBackedBlockDevice.Open(imageFilePath, writable: false);
+        using var provider = await HfsClassicRawFileSystemProvider.CreateFromDeviceAsync(plan, device);
+
+        var sidecar = provider.GetEntry("\\._HELLO.TXT");
+        if (sidecar is null)
+        {
+            Console.WriteLine("  Expected AppleDouble sidecar ._HELLO.TXT for resource fork.");
+            return false;
+        }
+        if (sidecar.Size != 38 + resource.Length)
+        {
+            Console.WriteLine($"  Expected AppleDouble sidecar size {38 + resource.Length}, got {sidecar.Size}");
+            return false;
+        }
+
+        var appleDouble = new byte[(int)sidecar.Size];
+        var read = provider.ReadFile("\\._HELLO.TXT", 0, appleDouble);
+        if (read != appleDouble.Length)
+        {
+            Console.WriteLine($"  Expected to read {appleDouble.Length} AppleDouble bytes, got {read}");
+            return false;
+        }
+
+        var magic = BinaryPrimitives.ReadUInt32BigEndian(appleDouble.AsSpan(0, 4));
+        var version = BinaryPrimitives.ReadUInt32BigEndian(appleDouble.AsSpan(4, 4));
+        var entryCount = BinaryPrimitives.ReadUInt16BigEndian(appleDouble.AsSpan(24, 2));
+        var entryId = BinaryPrimitives.ReadUInt32BigEndian(appleDouble.AsSpan(26, 4));
+        var entryOffset = BinaryPrimitives.ReadUInt32BigEndian(appleDouble.AsSpan(30, 4));
+        var entryLength = BinaryPrimitives.ReadUInt32BigEndian(appleDouble.AsSpan(34, 4));
+        if (magic != 0x00051607 || version != 0x00020000 || entryCount != 1 || entryId != 2 ||
+            entryOffset != 38 || entryLength != resource.Length)
+        {
+            Console.WriteLine($"  Invalid AppleDouble header: magic=0x{magic:X8}, version=0x{version:X8}, entries={entryCount}, id={entryId}, offset={entryOffset}, len={entryLength}");
+            return false;
+        }
+
+        if (!appleDouble.Skip((int)entryOffset).Take(resource.Length).SequenceEqual(resource))
+        {
+            Console.WriteLine("  Resource fork payload did not match AppleDouble entry data.");
+            return false;
+        }
+
+        Console.WriteLine("  Classic HFS resource fork is exposed as a valid AppleDouble sidecar.");
+        return true;
+    }
+
+    private static async Task<bool> TestMountApmClassicHfsFinderInfoAppleDouble(string imageFilePath)
+    {
+        if (File.Exists(imageFilePath))
+            File.Delete(imageFilePath);
+
+        const uint partitionStartBlock = 64;
+        const long imageSize = 8 * 1024 * 1024;
+        var data = System.Text.Encoding.ASCII.GetBytes("hello hfs finder info!\n");
+        var resource = System.Text.Encoding.ASCII.GetBytes("classic finder info resource\n");
+        var finderInfo = new byte[32];
+        System.Text.Encoding.ASCII.GetBytes("TEXTttxt").CopyTo(finderInfo, 0);
+        for (var i = 8; i < finderInfo.Length; i++)
+        {
+            finderInfo[i] = (byte)(0x50 + i);
+        }
+
+        await WriteClassicHfsImageAsync(
+            imageFilePath,
+            imageSize,
+            partitionStartBlock,
+            data,
+            resourceForkContent: resource,
+            finderInfo: finderInfo);
+
+        var engine = new global::CrossDrive.RawDiskEngine.RawDiskEngine(deviceFactory: new FileImageDeviceFactory());
+        var plan = await engine.AnalyzeAsync(new MountRequest(imageFilePath, string.Empty));
+        using var device = FileBackedBlockDevice.Open(imageFilePath, writable: false);
+        using var provider = await HfsClassicRawFileSystemProvider.CreateFromDeviceAsync(plan, device);
+
+        var sidecar = provider.GetEntry("\\._HELLO.TXT");
+        if (sidecar is null || sidecar.Size != 82 + resource.Length)
+        {
+            Console.WriteLine($"  Expected classic Finder Info AppleDouble sidecar size {82 + resource.Length}, got {sidecar?.Size.ToString() ?? "missing"}");
+            return false;
+        }
+
+        var appleDouble = new byte[(int)sidecar.Size];
+        var read = provider.ReadFile("\\._HELLO.TXT", 0, appleDouble);
+        if (read != appleDouble.Length)
+        {
+            Console.WriteLine($"  Expected to read {appleDouble.Length} classic Finder Info AppleDouble bytes, got {read}");
+            return false;
+        }
+
+        var entryCount = BinaryPrimitives.ReadUInt16BigEndian(appleDouble.AsSpan(24, 2));
+        var finderEntryId = BinaryPrimitives.ReadUInt32BigEndian(appleDouble.AsSpan(26, 4));
+        var finderOffset = BinaryPrimitives.ReadUInt32BigEndian(appleDouble.AsSpan(30, 4));
+        var finderLength = BinaryPrimitives.ReadUInt32BigEndian(appleDouble.AsSpan(34, 4));
+        var resourceEntryId = BinaryPrimitives.ReadUInt32BigEndian(appleDouble.AsSpan(38, 4));
+        var resourceOffset = BinaryPrimitives.ReadUInt32BigEndian(appleDouble.AsSpan(42, 4));
+        var resourceLength = BinaryPrimitives.ReadUInt32BigEndian(appleDouble.AsSpan(46, 4));
+        if (entryCount != 2 ||
+            finderEntryId != 9 || finderOffset != 50 || finderLength != 32 ||
+            resourceEntryId != 2 || resourceOffset != 82 || resourceLength != resource.Length)
+        {
+            Console.WriteLine($"  Invalid classic Finder Info AppleDouble header: entries={entryCount}, finder=({finderEntryId},{finderOffset},{finderLength}), resource=({resourceEntryId},{resourceOffset},{resourceLength})");
+            return false;
+        }
+
+        if (!appleDouble.Skip((int)finderOffset).Take(32).SequenceEqual(finderInfo))
+        {
+            Console.WriteLine("  Classic HFS Finder Info payload did not match AppleDouble entry data.");
+            return false;
+        }
+        if (!appleDouble.Skip((int)resourceOffset).Take(resource.Length).SequenceEqual(resource))
+        {
+            Console.WriteLine("  Classic HFS resource fork payload did not match shifted AppleDouble entry data.");
+            return false;
+        }
+
+        Console.WriteLine("  Classic HFS Finder Info is preserved in AppleDouble sidecars.");
+        return true;
+    }
+
+    private static async Task<bool> TestMountApmClassicHfsResourceForkExtentsOverflow(string imageFilePath)
+    {
+        if (File.Exists(imageFilePath))
+            File.Delete(imageFilePath);
+
+        const uint partitionStartBlock = 64;
+        const long imageSize = 8 * 1024 * 1024;
+        var data = System.Text.Encoding.ASCII.GetBytes("hello hfs!\n");
+        var resourceBlocks = new[]
+        {
+            System.Text.Encoding.ASCII.GetBytes("resource catalog block 1".PadRight(512, 'R')),
+            System.Text.Encoding.ASCII.GetBytes("resource catalog block 2".PadRight(512, 'S')),
+            System.Text.Encoding.ASCII.GetBytes("resource catalog block 3".PadRight(512, 'T')),
+            System.Text.Encoding.ASCII.GetBytes("resource overflow block 4".PadRight(512, 'U'))
+        };
+        var resource = resourceBlocks.SelectMany(b => b).ToArray();
+
+        await WriteClassicHfsImageAsync(
+            imageFilePath,
+            imageSize,
+            partitionStartBlock,
+            data,
+            resourceForkContent: resource,
+            useResourceOverflowExtent: true);
+
+        var engine = new global::CrossDrive.RawDiskEngine.RawDiskEngine(deviceFactory: new FileImageDeviceFactory());
+        var plan = await engine.AnalyzeAsync(new MountRequest(imageFilePath, string.Empty));
+        using var device = FileBackedBlockDevice.Open(imageFilePath, writable: false);
+        using var provider = await HfsClassicRawFileSystemProvider.CreateFromDeviceAsync(plan, device);
+
+        var sidecar = provider.GetEntry("\\._HELLO.TXT");
+        if (sidecar is null || sidecar.Size != 38 + resource.Length)
+        {
+            Console.WriteLine($"  Expected AppleDouble sidecar size {38 + resource.Length}, got {sidecar?.Size.ToString() ?? "missing"}");
+            return false;
+        }
+
+        var appleDouble = new byte[(int)sidecar.Size];
+        var read = provider.ReadFile("\\._HELLO.TXT", 0, appleDouble);
+        if (read != appleDouble.Length)
+        {
+            Console.WriteLine($"  Expected to read {appleDouble.Length} AppleDouble bytes, got {read}");
+            return false;
+        }
+
+        var entryOffset = BinaryPrimitives.ReadUInt32BigEndian(appleDouble.AsSpan(30, 4));
+        var entryLength = BinaryPrimitives.ReadUInt32BigEndian(appleDouble.AsSpan(34, 4));
+        if (entryOffset != 38 || entryLength != resource.Length)
+        {
+            Console.WriteLine($"  Invalid AppleDouble resource entry: offset={entryOffset}, length={entryLength}");
+            return false;
+        }
+        if (!appleDouble.Skip((int)entryOffset).Take(resource.Length).SequenceEqual(resource))
+        {
+            Console.WriteLine("  Resource fork overflow payload did not match AppleDouble entry data.");
+            return false;
+        }
+
+        var tail = new byte[64];
+        var tailRead = provider.ReadFile("\\._HELLO.TXT", 38 + 1536, tail);
+        if (tailRead != tail.Length || !tail.SequenceEqual(resource.Skip(1536).Take(64)))
+        {
+            Console.WriteLine($"  Expected partial read from resource overflow extent, got {tailRead} bytes.");
+            return false;
+        }
+
+        Console.WriteLine("  Classic HFS resource fork data continues through the extents-overflow B-tree.");
+        return true;
+    }
+
+    private static async Task<bool> TestMountApmClassicHfsMacRomanFilename(string imageFilePath)
+    {
+        if (File.Exists(imageFilePath))
+            File.Delete(imageFilePath);
+
+        const uint partitionStartBlock = 64;
+        const long imageSize = 8 * 1024 * 1024;
+        var data = System.Text.Encoding.ASCII.GetBytes("bonjour classic hfs\n");
+        var macRomanName = new byte[] { (byte)'C', (byte)'A', (byte)'F', 0x83, (byte)'.', (byte)'T', (byte)'X', (byte)'T' }; // CAFÉ.TXT
+
+        await WriteClassicHfsImageAsync(imageFilePath, imageSize, partitionStartBlock, data, fileNameBytes: macRomanName);
+
+        var engine = new global::CrossDrive.RawDiskEngine.RawDiskEngine(deviceFactory: new FileImageDeviceFactory());
+        var plan = await engine.AnalyzeAsync(new MountRequest(imageFilePath, string.Empty));
+        using var device = FileBackedBlockDevice.Open(imageFilePath, writable: false);
+        using var provider = await HfsClassicRawFileSystemProvider.CreateFromDeviceAsync(plan, device);
+
+        var entry = provider.GetEntry("\\CAFÉ.TXT");
+        if (entry is null)
+        {
+            var root = provider.ListDirectory("\\");
+            Console.WriteLine($"  Expected CAFÉ.TXT decoded from MacRoman. Got: {string.Join(", ", root.Select(e => e.Name))}");
+            return false;
+        }
+        if (entry.Size != data.Length)
+        {
+            Console.WriteLine($"  Expected CAFÉ.TXT size {data.Length}, got {entry.Size}");
+            return false;
+        }
+
+        var actual = new byte[data.Length];
+        var read = provider.ReadFile("\\CAFÉ.TXT", 0, actual);
+        if (read != data.Length || !actual.SequenceEqual(data))
+        {
+            Console.WriteLine($"  Expected to read MacRoman-named file data, got {read} bytes.");
+            return false;
+        }
+
+        Console.WriteLine("  Classic HFS MacRoman filename decoded and read through the native provider.");
+        return true;
+    }
+
+    private static async Task<bool> TestMountApmClassicHfsCatalogLeafChain(string imageFilePath)
+    {
+        if (File.Exists(imageFilePath))
+            File.Delete(imageFilePath);
+
+        const uint partitionStartBlock = 64;
+        const long imageSize = 8 * 1024 * 1024;
+        var firstLeafContent = System.Text.Encoding.ASCII.GetBytes("first catalog leaf\n");
+        var secondLeafContent = System.Text.Encoding.ASCII.GetBytes("second catalog leaf\n");
+
+        await WriteClassicHfsImageAsync(
+            imageFilePath,
+            imageSize,
+            partitionStartBlock,
+            firstLeafContent,
+            useSecondCatalogLeaf: true,
+            secondLeafFileContent: secondLeafContent);
+
+        var engine = new global::CrossDrive.RawDiskEngine.RawDiskEngine(deviceFactory: new FileImageDeviceFactory());
+        var plan = await engine.AnalyzeAsync(new MountRequest(imageFilePath, string.Empty));
+        using var device = FileBackedBlockDevice.Open(imageFilePath, writable: false);
+        using var provider = await HfsClassicRawFileSystemProvider.CreateFromDeviceAsync(plan, device);
+
+        var root = provider.ListDirectory("\\");
+        var second = root.FirstOrDefault(e => string.Equals(e.Name, "SECOND.TXT", StringComparison.OrdinalIgnoreCase));
+        if (second is null || second.Size != secondLeafContent.Length)
+        {
+            Console.WriteLine($"  Expected SECOND.TXT from second catalog leaf. Got: {string.Join(", ", root.Select(e => e.Name))}");
+            return false;
+        }
+
+        var actual = new byte[secondLeafContent.Length];
+        var read = provider.ReadFile("\\SECOND.TXT", 0, actual);
+        if (read != secondLeafContent.Length || !actual.SequenceEqual(secondLeafContent))
+        {
+            Console.WriteLine($"  Expected to read SECOND.TXT from the linked catalog leaf, got {read} bytes.");
+            return false;
+        }
+
+        Console.WriteLine("  Classic HFS catalog leaf fLink chain was followed and SECOND.TXT was read.");
+        return true;
+    }
+
+    private static async Task WriteClassicHfsImageAsync(string imageFilePath, long imageSize, uint partitionStartBlock, byte[] fileContent, bool useOverflowExtent = false, byte[]? resourceForkContent = null, byte[]? fileNameBytes = null, bool useResourceOverflowExtent = false, bool useSecondCatalogLeaf = false, byte[]? secondLeafFileContent = null, byte[]? finderInfo = null)
+    {
+        const int blockSize = 512;
+        const ushort extentsStartBlock = 4;
+        const ushort catalogStartAllocationBlock = 16;
+        const ushort fileStartAllocationBlock = 32;
+        const ushort fileSecondAllocationBlock = 40;
+        const ushort fileThirdAllocationBlock = 48;
+        const ushort fileOverflowAllocationBlock = 56;
+        const ushort resourceForkAllocationBlock = 72;
+        const ushort resourceForkSecondAllocationBlock = 80;
+        const ushort resourceForkThirdAllocationBlock = 88;
+        const ushort resourceForkOverflowAllocationBlock = 96;
+        const ushort secondLeafFileStartAllocationBlock = 104;
+        const ushort extentsOverflowStartAllocationBlock = 24;
+        const ushort extentsOverflowBlockCount = 2;
+        const uint allocationBlockSize = 512;
+        var catalogBlockCount = (ushort)(useSecondCatalogLeaf ? 3 : 2);
+
+        var partitionOffset = partitionStartBlock * blockSize;
+        var partitionBlockCount = (uint)((imageSize - partitionOffset) / blockSize);
+        var allocationBlockCount = (ushort)(partitionBlockCount - extentsStartBlock);
+        var allocationStart = partitionOffset + extentsStartBlock * blockSize;
+        var catalogOffset = allocationStart + catalogStartAllocationBlock * allocationBlockSize;
+        var extentsOverflowOffset = allocationStart + extentsOverflowStartAllocationBlock * allocationBlockSize;
+        var fileOffset = allocationStart + fileStartAllocationBlock * allocationBlockSize;
+        var now = ToHfsTimestamp(DateTimeOffset.UtcNow);
+
+        await using var stream = new FileStream(imageFilePath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
+        stream.SetLength(imageSize);
+
+        var ddr = new byte[blockSize];
+        BinaryPrimitives.WriteUInt16BigEndian(ddr.AsSpan(0, 2), 0x4552); // "ER"
+        BinaryPrimitives.WriteUInt16BigEndian(ddr.AsSpan(2, 2), blockSize);
+        stream.Position = 0;
+        await stream.WriteAsync(ddr);
+
+        var apm = new byte[blockSize];
+        BinaryPrimitives.WriteUInt16BigEndian(apm.AsSpan(0, 2), 0x504D); // "PM"
+        BinaryPrimitives.WriteUInt32BigEndian(apm.AsSpan(4, 4), 1);
+        BinaryPrimitives.WriteUInt32BigEndian(apm.AsSpan(8, 4), partitionStartBlock);
+        BinaryPrimitives.WriteUInt32BigEndian(apm.AsSpan(12, 4), partitionBlockCount);
+        WriteApmString(apm.AsSpan(16, 32), "LegacyHFS");
+        WriteApmString(apm.AsSpan(48, 32), "Apple_HFS");
+        stream.Position = blockSize;
+        await stream.WriteAsync(apm);
+
+        var mdb = new byte[blockSize];
+        BinaryPrimitives.WriteUInt16BigEndian(mdb.AsSpan(0, 2), 0x4244); // "BD"
+        BinaryPrimitives.WriteUInt32BigEndian(mdb.AsSpan(6, 4), now);
+        BinaryPrimitives.WriteUInt16BigEndian(mdb.AsSpan(18, 2), allocationBlockCount);
+        BinaryPrimitives.WriteUInt32BigEndian(mdb.AsSpan(20, 4), allocationBlockSize);
+        BinaryPrimitives.WriteUInt16BigEndian(mdb.AsSpan(28, 2), extentsStartBlock);
+        BinaryPrimitives.WriteUInt16BigEndian(mdb.AsSpan(34, 2), (ushort)(allocationBlockCount - 40));
+        WriteClassicPascalString(mdb.AsSpan(36, 28), "LegacyHFS");
+        if (useOverflowExtent || useResourceOverflowExtent)
+        {
+            BinaryPrimitives.WriteUInt32BigEndian(mdb.AsSpan(130, 4), extentsOverflowBlockCount * allocationBlockSize);
+            WriteClassicExtent(mdb.AsSpan(134, 4), extentsOverflowStartAllocationBlock, extentsOverflowBlockCount);
+        }
+        BinaryPrimitives.WriteUInt32BigEndian(mdb.AsSpan(146, 4), catalogBlockCount * allocationBlockSize);
+        WriteClassicExtent(mdb.AsSpan(150, 4), catalogStartAllocationBlock, catalogBlockCount);
+        stream.Position = partitionOffset + 1024;
+        await stream.WriteAsync(mdb);
+
+        if (useOverflowExtent || useResourceOverflowExtent)
+        {
+            var extentsHeaderNode = BuildClassicHfsCatalogHeaderNode();
+            stream.Position = extentsOverflowOffset;
+            await stream.WriteAsync(extentsHeaderNode);
+
+            var overflowRecords = new List<byte[]>();
+            if (useOverflowExtent)
+            {
+                overflowRecords.Add(BuildClassicHfsExtentsOverflowRecord(16, 0, 3, fileOverflowAllocationBlock));
+            }
+            if (useResourceOverflowExtent)
+            {
+                overflowRecords.Add(BuildClassicHfsExtentsOverflowRecord(16, -1, 3, resourceForkOverflowAllocationBlock));
+            }
+            var extentsLeafNode = BuildClassicHfsExtentsOverflowLeafNode(overflowRecords);
+            stream.Position = extentsOverflowOffset + blockSize;
+            await stream.WriteAsync(extentsLeafNode);
+        }
+
+        var headerNode = BuildClassicHfsCatalogHeaderNode(
+            leafRecords: useSecondCatalogLeaf ? 3u : 2u,
+            lastLeaf: useSecondCatalogLeaf ? 2u : 1u,
+            totalNodes: useSecondCatalogLeaf ? 3u : 2u);
+        stream.Position = catalogOffset;
+        await stream.WriteAsync(headerNode);
+
+        var leafNode = BuildClassicHfsCatalogLeafNode(now, (uint)fileContent.Length, fileStartAllocationBlock, useOverflowExtent, (uint)(resourceForkContent?.Length ?? 0), resourceForkAllocationBlock, fileNameBytes, useResourceOverflowExtent, nextNode: useSecondCatalogLeaf ? 2u : 0u, finderInfo: finderInfo);
+        stream.Position = catalogOffset + blockSize;
+        await stream.WriteAsync(leafNode);
+
+        if (useSecondCatalogLeaf)
+        {
+            var secondContent = secondLeafFileContent ?? System.Text.Encoding.ASCII.GetBytes("second catalog leaf\n");
+            var secondLeafNode = BuildClassicHfsCatalogLeafNode(
+                now,
+                (uint)secondContent.Length,
+                secondLeafFileStartAllocationBlock,
+                fileNameBytes: System.Text.Encoding.ASCII.GetBytes("SECOND.TXT"),
+                previousNode: 1,
+                fileCnid: 18,
+                includeFolder: false);
+            stream.Position = catalogOffset + (2 * blockSize);
+            await stream.WriteAsync(secondLeafNode);
+
+            stream.Position = allocationStart + secondLeafFileStartAllocationBlock * allocationBlockSize;
+            await stream.WriteAsync(secondContent);
+        }
+
+        if (useOverflowExtent)
+        {
+            var fileBlocks = fileContent.Chunk(blockSize).Select(c => c.ToArray()).ToArray();
+            var starts = new[] { fileStartAllocationBlock, fileSecondAllocationBlock, fileThirdAllocationBlock, fileOverflowAllocationBlock };
+            for (var i = 0; i < starts.Length; i++)
+            {
+                stream.Position = allocationStart + starts[i] * allocationBlockSize;
+                await stream.WriteAsync(fileBlocks[i]);
+            }
+        }
+        else
+        {
+            stream.Position = fileOffset;
+            await stream.WriteAsync(fileContent);
+        }
+
+        if (resourceForkContent is { Length: > 0 })
+        {
+            if (useResourceOverflowExtent)
+            {
+                var resourceBlocks = resourceForkContent.Chunk(blockSize).Select(c => c.ToArray()).ToArray();
+                var starts = new[] { resourceForkAllocationBlock, resourceForkSecondAllocationBlock, resourceForkThirdAllocationBlock, resourceForkOverflowAllocationBlock };
+                for (var i = 0; i < starts.Length; i++)
+                {
+                    stream.Position = allocationStart + starts[i] * allocationBlockSize;
+                    await stream.WriteAsync(resourceBlocks[i]);
+                }
+            }
+            else
+            {
+                stream.Position = allocationStart + resourceForkAllocationBlock * allocationBlockSize;
+                await stream.WriteAsync(resourceForkContent);
+            }
+        }
+    }
+
+    private static byte[] BuildClassicHfsCatalogHeaderNode(uint leafRecords = 2, uint lastLeaf = 1, uint totalNodes = 2)
+    {
+        var node = new byte[512];
+        node[8] = 1; // header node
+        BinaryPrimitives.WriteUInt16BigEndian(node.AsSpan(10, 2), 1);
+
+        const int recordOffset = 14;
+        BinaryPrimitives.WriteUInt16BigEndian(node.AsSpan(recordOffset + 0, 2), 1); // tree depth
+        BinaryPrimitives.WriteUInt32BigEndian(node.AsSpan(recordOffset + 2, 4), 1); // root node
+        BinaryPrimitives.WriteUInt32BigEndian(node.AsSpan(recordOffset + 6, 4), leafRecords);
+        BinaryPrimitives.WriteUInt32BigEndian(node.AsSpan(recordOffset + 10, 4), 1); // first leaf
+        BinaryPrimitives.WriteUInt32BigEndian(node.AsSpan(recordOffset + 14, 4), lastLeaf);
+        BinaryPrimitives.WriteUInt16BigEndian(node.AsSpan(recordOffset + 18, 2), 512); // node size
+        BinaryPrimitives.WriteUInt16BigEndian(node.AsSpan(recordOffset + 20, 2), 37); // max key length
+        BinaryPrimitives.WriteUInt32BigEndian(node.AsSpan(recordOffset + 22, 4), totalNodes);
+        BinaryPrimitives.WriteUInt32BigEndian(node.AsSpan(recordOffset + 26, 4), 0); // free nodes
+
+        WriteRecordOffsetTable(node, new[] { recordOffset }, 64);
+        return node;
+    }
+
+    private static byte[] BuildClassicHfsCatalogLeafNode(uint timestamp, uint fileSize, ushort fileStartAllocationBlock, bool useOverflowExtent = false, uint resourceForkSize = 0, ushort resourceForkStartBlock = 0, byte[]? fileNameBytes = null, bool useResourceOverflowExtent = false, uint nextNode = 0, uint previousNode = 0, uint fileCnid = 16, bool includeFolder = true, byte[]? finderInfo = null)
+    {
+        var node = new byte[512];
+        BinaryPrimitives.WriteUInt32BigEndian(node.AsSpan(0, 4), nextNode);
+        BinaryPrimitives.WriteUInt32BigEndian(node.AsSpan(4, 4), previousNode);
+        node[8] = unchecked((byte)-1); // leaf node
+        node[9] = 1;
+
+        var records = new List<byte[]>
+        {
+            BuildClassicHfsFileRecord(2, fileNameBytes ?? System.Text.Encoding.ASCII.GetBytes("HELLO.TXT"), fileCnid, timestamp, fileSize, fileStartAllocationBlock, useOverflowExtent, resourceForkSize, resourceForkStartBlock, useResourceOverflowExtent, finderInfo)
+        };
+        if (includeFolder)
+        {
+            records.Add(BuildClassicHfsFolderRecord(2, "FOLDER", 17, timestamp));
+        }
+
+        var offsets = new int[records.Count];
+        var cursor = 14;
+        for (var i = 0; i < records.Count; i++)
+        {
+            offsets[i] = cursor;
+            records[i].CopyTo(node.AsSpan(cursor));
+            cursor += records[i].Length;
+            if ((cursor & 1) != 0) cursor++;
+        }
+
+        BinaryPrimitives.WriteUInt16BigEndian(node.AsSpan(10, 2), (ushort)records.Count);
+        WriteRecordOffsetTable(node, offsets, cursor);
+        return node;
+    }
+
+    private static byte[] BuildClassicHfsExtentsOverflowLeafNode(uint fileId, ushort forkBlockIndex, ushort overflowStartBlock)
+        => BuildClassicHfsExtentsOverflowLeafNode(new[] { BuildClassicHfsExtentsOverflowRecord(fileId, 0, forkBlockIndex, overflowStartBlock) });
+
+    private static byte[] BuildClassicHfsExtentsOverflowLeafNode(IReadOnlyList<byte[]> records)
+    {
+        var node = new byte[512];
+        node[8] = unchecked((byte)-1); // leaf node
+        node[9] = 1;
+
+        var offsets = new int[records.Count];
+        var cursor = 14;
+        for (var i = 0; i < records.Count; i++)
+        {
+            offsets[i] = cursor;
+            records[i].CopyTo(node.AsSpan(cursor));
+            cursor += records[i].Length;
+            if ((cursor & 1) != 0) cursor++;
+        }
+
+        BinaryPrimitives.WriteUInt16BigEndian(node.AsSpan(10, 2), (ushort)records.Count);
+        WriteRecordOffsetTable(node, offsets, cursor);
+        return node;
+    }
+
+    private static byte[] BuildClassicHfsExtentsOverflowRecord(uint fileId, ushort forkBlockIndex, ushort overflowStartBlock)
+        => BuildClassicHfsExtentsOverflowRecord(fileId, 0, forkBlockIndex, overflowStartBlock);
+
+    private static byte[] BuildClassicHfsExtentsOverflowRecord(uint fileId, sbyte forkType, ushort forkBlockIndex, ushort overflowStartBlock)
+    {
+        var record = new byte[20];
+        record[0] = 7; // key length
+        record[1] = unchecked((byte)forkType);
+        BinaryPrimitives.WriteUInt32BigEndian(record.AsSpan(2, 4), fileId);
+        BinaryPrimitives.WriteUInt16BigEndian(record.AsSpan(6, 2), forkBlockIndex);
+        WriteClassicExtent(record.AsSpan(8, 4), overflowStartBlock, 1);
+        return record;
+    }
+
+    private static byte[] BuildClassicHfsFileRecord(uint parentId, string name, uint cnid, uint timestamp, uint fileSize, ushort dataStartBlock, bool useOverflowExtent = false, uint resourceForkSize = 0, ushort resourceForkStartBlock = 0, byte[]? finderInfo = null)
+        => BuildClassicHfsFileRecord(parentId, System.Text.Encoding.ASCII.GetBytes(name), cnid, timestamp, fileSize, dataStartBlock, useOverflowExtent, resourceForkSize, resourceForkStartBlock, finderInfo: finderInfo);
+
+    private static byte[] BuildClassicHfsFileRecord(uint parentId, byte[] nameBytes, uint cnid, uint timestamp, uint fileSize, ushort dataStartBlock, bool useOverflowExtent = false, uint resourceForkSize = 0, ushort resourceForkStartBlock = 0, bool useResourceOverflowExtent = false, byte[]? finderInfo = null)
+    {
+        var key = BuildClassicCatalogKey(parentId, nameBytes);
+        var dataOffset = key.Length;
+        if ((dataOffset & 1) != 0) dataOffset++;
+        var record = new byte[dataOffset + 102];
+        key.CopyTo(record.AsSpan(0));
+
+        BinaryPrimitives.WriteUInt16BigEndian(record.AsSpan(dataOffset + 0, 2), 0x0200);
+        if (finderInfo is not null)
+        {
+            if (finderInfo.Length != 32)
+            {
+                throw new ArgumentOutOfRangeException(nameof(finderInfo), "Finder Info must be exactly 32 bytes.");
+            }
+
+            finderInfo.AsSpan(0, 16).CopyTo(record.AsSpan(dataOffset + 4, 16));
+            finderInfo.AsSpan(16, 16).CopyTo(record.AsSpan(dataOffset + 56, 16));
+        }
+        BinaryPrimitives.WriteUInt32BigEndian(record.AsSpan(dataOffset + 20, 4), cnid);
+        BinaryPrimitives.WriteUInt16BigEndian(record.AsSpan(dataOffset + 24, 2), dataStartBlock);
+        BinaryPrimitives.WriteUInt32BigEndian(record.AsSpan(dataOffset + 26, 4), fileSize);
+        BinaryPrimitives.WriteUInt32BigEndian(record.AsSpan(dataOffset + 30, 4), 512);
+        if (resourceForkSize > 0)
+        {
+            BinaryPrimitives.WriteUInt16BigEndian(record.AsSpan(dataOffset + 34, 2), resourceForkStartBlock);
+            BinaryPrimitives.WriteUInt32BigEndian(record.AsSpan(dataOffset + 36, 4), resourceForkSize);
+            BinaryPrimitives.WriteUInt32BigEndian(record.AsSpan(dataOffset + 40, 4), 512);
+        }
+        BinaryPrimitives.WriteUInt32BigEndian(record.AsSpan(dataOffset + 44, 4), timestamp);
+        BinaryPrimitives.WriteUInt32BigEndian(record.AsSpan(dataOffset + 48, 4), timestamp);
+        WriteClassicExtent(record.AsSpan(dataOffset + 74, 4), dataStartBlock, 1);
+        if (useOverflowExtent)
+        {
+            WriteClassicExtent(record.AsSpan(dataOffset + 78, 4), 40, 1);
+            WriteClassicExtent(record.AsSpan(dataOffset + 82, 4), 48, 1);
+        }
+        if (resourceForkSize > 0)
+        {
+            WriteClassicExtent(record.AsSpan(dataOffset + 86, 4), resourceForkStartBlock, 1);
+            if (useResourceOverflowExtent)
+            {
+                WriteClassicExtent(record.AsSpan(dataOffset + 90, 4), 80, 1);
+                WriteClassicExtent(record.AsSpan(dataOffset + 94, 4), 88, 1);
+            }
+        }
+        return record;
+    }
+
+    private static byte[] BuildClassicHfsFolderRecord(uint parentId, string name, uint cnid, uint timestamp)
+    {
+        var key = BuildClassicCatalogKey(parentId, name);
+        var dataOffset = key.Length;
+        if ((dataOffset & 1) != 0) dataOffset++;
+        var record = new byte[dataOffset + 70];
+        key.CopyTo(record.AsSpan(0));
+
+        BinaryPrimitives.WriteUInt16BigEndian(record.AsSpan(dataOffset + 0, 2), 0x0100);
+        BinaryPrimitives.WriteUInt32BigEndian(record.AsSpan(dataOffset + 6, 4), cnid);
+        BinaryPrimitives.WriteUInt32BigEndian(record.AsSpan(dataOffset + 10, 4), timestamp);
+        BinaryPrimitives.WriteUInt32BigEndian(record.AsSpan(dataOffset + 14, 4), timestamp);
+        return record;
+    }
+
+    private static byte[] BuildClassicCatalogKey(uint parentId, string name)
+    {
+        var nameBytes = System.Text.Encoding.ASCII.GetBytes(name);
+        return BuildClassicCatalogKey(parentId, nameBytes);
+    }
+
+    private static byte[] BuildClassicCatalogKey(uint parentId, byte[] nameBytes)
+    {
+        if (nameBytes.Length > 31) throw new ArgumentOutOfRangeException(nameof(nameBytes), "Classic HFS names are limited to 31 bytes.");
+        var keyLength = 6 + nameBytes.Length;
+        var key = new byte[1 + keyLength];
+        key[0] = (byte)keyLength;
+        key[1] = 0;
+        BinaryPrimitives.WriteUInt32BigEndian(key.AsSpan(2, 4), parentId);
+        key[6] = (byte)nameBytes.Length;
+        nameBytes.CopyTo(key.AsSpan(7));
+        return key;
+    }
+
+    private static void WriteRecordOffsetTable(byte[] node, IReadOnlyList<int> recordOffsets, int freeOffset)
+    {
+        var count = recordOffsets.Count;
+        var freeSpacePos = node.Length - 2;
+        for (var i = 0; i < count; i++)
+        {
+            var entryPos = freeSpacePos - ((count - i) * 2);
+            BinaryPrimitives.WriteUInt16BigEndian(node.AsSpan(entryPos, 2), (ushort)recordOffsets[i]);
+        }
+        BinaryPrimitives.WriteUInt16BigEndian(node.AsSpan(freeSpacePos, 2), (ushort)freeOffset);
+    }
+
+    private static void WriteClassicExtent(Span<byte> target, ushort startBlock, ushort blockCount)
+    {
+        BinaryPrimitives.WriteUInt16BigEndian(target[..2], startBlock);
+        BinaryPrimitives.WriteUInt16BigEndian(target.Slice(2, 2), blockCount);
+    }
+
+    private static void WriteClassicPascalString(Span<byte> target, string value)
+    {
+        target.Clear();
+        var bytes = System.Text.Encoding.ASCII.GetBytes(value);
+        var length = Math.Min(bytes.Length, target.Length - 1);
+        target[0] = (byte)length;
+        bytes.AsSpan(0, length).CopyTo(target[1..]);
+    }
+
+    private static void WriteHfsPlusForkData(Span<byte> target, int logicalSize, uint blockSize, uint startBlock, uint blockCount)
+        => WriteHfsPlusForkData(target, logicalSize, blockSize, new[] { (startBlock, blockCount) });
+
+    private static void WriteHfsPlusForkData(Span<byte> target, int logicalSize, uint blockSize, IReadOnlyList<(uint StartBlock, uint BlockCount)> extents)
+    {
+        target.Clear();
+        BinaryPrimitives.WriteUInt64BigEndian(target[..8], (ulong)logicalSize);
+        BinaryPrimitives.WriteUInt32BigEndian(target.Slice(8, 4), blockSize);
+        BinaryPrimitives.WriteUInt32BigEndian(target.Slice(12, 4), extents.Aggregate(0u, (sum, ext) => sum + ext.BlockCount));
+        for (var i = 0; i < extents.Count && i < 8; i++)
+        {
+            BinaryPrimitives.WriteUInt32BigEndian(target.Slice(16 + i * 8, 4), extents[i].StartBlock);
+            BinaryPrimitives.WriteUInt32BigEndian(target.Slice(20 + i * 8, 4), extents[i].BlockCount);
+        }
+    }
+
+    private static async Task WriteHfsPlusExtentsOverflowTreeAsync(
+        FileStream stream,
+        uint blockSize,
+        uint extentsStartBlock,
+        uint leafStartBlock,
+        uint fileCnid,
+        uint startBlock,
+        IReadOnlyList<(uint StartBlock, uint BlockCount)> overflowExtents)
+    {
+        const int nodeSize = 8192;
+
+        var header = new byte[nodeSize];
+        stream.Position = (long)extentsStartBlock * blockSize;
+        await stream.ReadExactlyAsync(header);
+
+        header[8] = 1; // header node
+        BinaryPrimitives.WriteUInt16BigEndian(header.AsSpan(10, 2), 3);
+        BinaryPrimitives.WriteUInt16BigEndian(header.AsSpan(14, 2), 1); // treeDepth
+        BinaryPrimitives.WriteUInt32BigEndian(header.AsSpan(16, 4), 1); // rootNode
+        BinaryPrimitives.WriteUInt32BigEndian(header.AsSpan(20, 4), 1); // leafRecords
+        BinaryPrimitives.WriteUInt32BigEndian(header.AsSpan(24, 4), 1); // firstLeafNode
+        BinaryPrimitives.WriteUInt32BigEndian(header.AsSpan(28, 4), 1); // lastLeafNode
+        BinaryPrimitives.WriteUInt16BigEndian(header.AsSpan(32, 2), nodeSize);
+        BinaryPrimitives.WriteUInt16BigEndian(header.AsSpan(34, 2), 10);
+        BinaryPrimitives.WriteUInt32BigEndian(header.AsSpan(36, 4), 2); // totalNodes
+        BinaryPrimitives.WriteUInt32BigEndian(header.AsSpan(40, 4), 0); // freeNodes
+
+        const int mapRecordOffset = 252;
+        header[mapRecordOffset] = 0xC0; // nodes 0 and 1 allocated
+
+        stream.Position = (long)extentsStartBlock * blockSize;
+        await stream.WriteAsync(header);
+
+        var leaf = BuildHfsPlusExtentsOverflowLeafNode(fileCnid, 0xFF, startBlock, overflowExtents);
+        stream.Position = (long)leafStartBlock * blockSize;
+        await stream.WriteAsync(leaf);
+    }
+
+    private static byte[] BuildHfsPlusExtentsOverflowLeafNode(
+        uint fileCnid,
+        byte forkType,
+        uint startBlock,
+        IReadOnlyList<(uint StartBlock, uint BlockCount)> overflowExtents)
+    {
+        const int nodeSize = 8192;
+        var node = new byte[nodeSize];
+        node[8] = 0; // leaf node for the current extents-overflow reader
+        node[9] = 1;
+        BinaryPrimitives.WriteUInt16BigEndian(node.AsSpan(10, 2), 1);
+
+        var record = new byte[12 + 64];
+        BinaryPrimitives.WriteUInt16BigEndian(record.AsSpan(0, 2), 10);
+        record[2] = forkType;
+        record[3] = 0;
+        BinaryPrimitives.WriteUInt32BigEndian(record.AsSpan(4, 4), fileCnid);
+        BinaryPrimitives.WriteUInt32BigEndian(record.AsSpan(8, 4), startBlock);
+
+        for (var i = 0; i < overflowExtents.Count && i < 8; i++)
+        {
+            BinaryPrimitives.WriteUInt32BigEndian(record.AsSpan(12 + i * 8, 4), overflowExtents[i].StartBlock);
+            BinaryPrimitives.WriteUInt32BigEndian(record.AsSpan(16 + i * 8, 4), overflowExtents[i].BlockCount);
+        }
+
+        record.CopyTo(node.AsSpan(14));
+        WriteRecordOffsetTable(node, new[] { 14 }, 14 + record.Length);
+        return node;
+    }
+
+    private static (int Offset, int Length) GetBTreeRecordOffsetAndLength(byte[] node, int recordIndex, int recordCount)
+    {
+        if (recordIndex < 0 || recordIndex >= recordCount)
+        {
+            return (0, 0);
+        }
+
+        var nodeSize = node.Length;
+        var offsetEntry = nodeSize - 2 * (recordCount + 1 - recordIndex);
+        var nextEntry = nodeSize - 2 * (recordCount - recordIndex);
+        if (offsetEntry < 0 || nextEntry < 0 || nextEntry + 2 > node.Length)
+        {
+            return (0, 0);
+        }
+
+        var offset = BinaryPrimitives.ReadUInt16BigEndian(node.AsSpan(offsetEntry, 2));
+        var nextOffset = BinaryPrimitives.ReadUInt16BigEndian(node.AsSpan(nextEntry, 2));
+        if (offset < 14 || nextOffset <= offset)
+        {
+            return (offset, 0);
+        }
+
+        return (offset, nextOffset - offset);
+    }
+
+    private static uint ToHfsTimestamp(DateTimeOffset value)
+    {
+        const long hfsToUnixSeconds = 2082844800L;
+        return checked((uint)(value.ToUnixTimeSeconds() + hfsToUnixSeconds));
     }
 
     private static void WriteApmString(Span<byte> target, string value)
@@ -1365,6 +2999,84 @@ public static class HfsPlusWriteTests
     }
 
     // ─── Diagnostic helper ──────────────────────────────────────────────────
+
+    private sealed class HfsxCaseSensitiveTestProvider : IRawFileSystemProvider
+    {
+        private readonly Dictionary<string, byte[]> _files = new(StringComparer.Ordinal)
+        {
+            ["\\Report.txt"] = System.Text.Encoding.UTF8.GetBytes("mixed-case payload"),
+            ["\\report.txt"] = System.Text.Encoding.UTF8.GetBytes("lower-case payload")
+        };
+
+        public string FileSystemType => "HFSX";
+        public long TotalBytes => 1024;
+        public long FreeBytes => 512;
+        public bool IsWritable => true;
+
+        public RawFsEntry? GetEntry(string path)
+        {
+            var normalized = NormalizePath(path);
+            if (normalized == "\\")
+            {
+                return new RawFsEntry("\\", "ROOT", true, 0, DateTimeOffset.UtcNow, FileAttributes.Directory);
+            }
+
+            return _files.TryGetValue(normalized, out var data)
+                ? new RawFsEntry(normalized, normalized[(normalized.LastIndexOf('\\') + 1)..], false, data.Length, DateTimeOffset.UtcNow)
+                : null;
+        }
+
+        public IReadOnlyList<RawFsEntry> ListDirectory(string path)
+        {
+            if (NormalizePath(path) != "\\")
+            {
+                return Array.Empty<RawFsEntry>();
+            }
+
+            return _files
+                .Select(file => new RawFsEntry(file.Key, file.Key[(file.Key.LastIndexOf('\\') + 1)..], false, file.Value.Length, DateTimeOffset.UtcNow))
+                .ToArray();
+        }
+
+        public int ReadFile(string path, long offset, Span<byte> destination)
+        {
+            var normalized = NormalizePath(path);
+            if (!_files.TryGetValue(normalized, out var data) || offset < 0 || offset >= data.Length)
+            {
+                return 0;
+            }
+
+            var count = (int)Math.Min(destination.Length, data.Length - offset);
+            data.AsSpan((int)offset, count).CopyTo(destination);
+            return count;
+        }
+
+        public int WriteFile(string path, long offset, ReadOnlySpan<byte> source)
+        {
+            var normalized = NormalizePath(path);
+            if (!_files.TryGetValue(normalized, out var data) || offset < 0 || offset > data.Length)
+            {
+                return 0;
+            }
+
+            var target = data.ToArray();
+            var count = Math.Min(source.Length, target.Length - (int)offset);
+            source[..count].CopyTo(target.AsSpan((int)offset, count));
+            _files[normalized] = target;
+            return count;
+        }
+
+        public void Dispose()
+        {
+        }
+
+        private static string NormalizePath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || path == "/" || path == "\\") return "\\";
+            var p = path.Replace('/', '\\');
+            return p.StartsWith('\\') ? p : "\\" + p.TrimStart('\\');
+        }
+    }
 
     private static async Task DumpBTreeDiagnostics(HfsPlusNativeReader reader, FileBackedBlockDevice device)
     {

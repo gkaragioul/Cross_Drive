@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Buffers;
+using System.Buffers.Binary;
 using System.Diagnostics;
 using System.IO.Enumeration;
 using System.IO.Pipes;
@@ -416,7 +417,8 @@ internal sealed class BrokerService
 
             var fsType = plan.FileSystemType ?? string.Empty;
             var isApfs = string.Equals(fsType, "APFS", StringComparison.OrdinalIgnoreCase);
-            var isHfs = string.Equals(fsType, "HFS+", StringComparison.OrdinalIgnoreCase) ||
+            var isHfs = string.Equals(fsType, "HFS", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(fsType, "HFS+", StringComparison.OrdinalIgnoreCase) ||
                         string.Equals(fsType, "HFSX", StringComparison.OrdinalIgnoreCase);
 
             if (plan.NeedsPassword && string.IsNullOrWhiteSpace(password))
@@ -528,6 +530,7 @@ internal sealed class BrokerService
             }
 
             var supportsRawProvider =
+                string.Equals(fsType, "HFS", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(fsType, "HFS+", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(fsType, "HFSX", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(fsType, "APFS", StringComparison.OrdinalIgnoreCase);
@@ -552,17 +555,18 @@ internal sealed class BrokerService
             provider = await _rawDiskEngine.CreateFileSystemProviderAsync(plan).ConfigureAwait(false);
 
             var fs = new BrokerRawProviderFileSystem(provider);
+            var caseSensitiveSearch = IsCaseSensitiveFileSystem(plan.FileSystemType);
             host = new FileSystemHost(fs)
             {
                 FileSystemName = "CrossDrive",
                 Prefix = "",
                 SectorSize = 4096,
                 SectorsPerAllocationUnit = 1,
-                CaseSensitiveSearch = false,
+                CaseSensitiveSearch = caseSensitiveSearch,
                 CasePreservedNames = true,
                 UnicodeOnDisk = true,
                 PersistentAcls = false,
-                ReparsePoints = false,
+                ReparsePoints = true,
                 NamedStreams = false,
                 ExtendedAttributes = false
             };
@@ -615,6 +619,9 @@ internal sealed class BrokerService
             return new { ok = false, requestId, error = ex.ToString() };
         }
     }
+
+    private static bool IsCaseSensitiveFileSystem(string? fileSystemType)
+        => string.Equals(fileSystemType, "HFSX", StringComparison.OrdinalIgnoreCase);
 
     private object HandleUnmount(JsonElement root, string? requestId)
     {
@@ -806,6 +813,9 @@ internal sealed class BrokerProbeFileSystem : FileSystemBase
 
 internal sealed class BrokerRawProviderFileSystem : FileSystemBase
 {
+    private const int StatusNotAReparsePoint = unchecked((int)0xC0000275);
+    private const uint IoReparseTagSymlink = 0xA000000C;
+    private const uint SymlinkFlagRelative = 1;
     private readonly IRawFileSystemProvider _provider;
     private readonly DirectoryBuffer _dirBuffer = new();
     private static readonly string _debugLog = Path.Combine(
@@ -959,6 +969,18 @@ internal sealed class BrokerRawProviderFileSystem : FileSystemBase
         }
 
         return unchecked((int)0xC000000D);
+    }
+
+    public override int GetReparsePointByName(string fileName, bool isDirectory, ref byte[] reparseData)
+    {
+        var entry = _provider.GetEntry(Normalize(fileName));
+        return TryGetSymlinkReparseData(entry, ref reparseData);
+    }
+
+    public override int GetReparsePoint(object fileNode, object fileDesc, string fileName, ref byte[] reparseData)
+    {
+        var entry = fileNode as RawFsEntry ?? _provider.GetEntry(Normalize(fileName));
+        return TryGetSymlinkReparseData(entry, ref reparseData);
     }
 
     public override int Read(object fileNode, object fileDesc, IntPtr buffer, ulong offset, uint length, out uint bytesTransferred)
@@ -1180,6 +1202,7 @@ internal sealed class BrokerRawProviderFileSystem : FileSystemBase
     {
         var size = entry.IsDirectory ? 0L : Math.Max(0, entry.Size);
         fileInfo.FileAttributes = (uint)entry.Attributes;
+        fileInfo.ReparseTag = entry.IsSymbolicLink ? IoReparseTagSymlink : 0;
         fileInfo.FileSize = (ulong)size;
         fileInfo.AllocationSize = (ulong)(((size + 4095) / 4096) * 4096);
         var t = (ulong)entry.LastWriteUtc.UtcDateTime.ToFileTimeUtc();
@@ -1189,6 +1212,57 @@ internal sealed class BrokerRawProviderFileSystem : FileSystemBase
         fileInfo.ChangeTime = t;
         fileInfo.IndexNumber = 0;
         fileInfo.HardLinks = 0;
+    }
+
+    private static int TryGetSymlinkReparseData(RawFsEntry? entry, ref byte[] reparseData)
+    {
+        if (entry?.SymlinkTarget is not { Length: > 0 } target)
+        {
+            reparseData = Array.Empty<byte>();
+            return StatusNotAReparsePoint;
+        }
+
+        reparseData = BuildSymlinkReparseData(target);
+        return 0;
+    }
+
+    internal static byte[] BuildSymlinkReparseData(string target)
+    {
+        var printName = NormalizeSymlinkTarget(target);
+        var substituteName = printName;
+        var flags = IsRelativeSymlinkTarget(target) ? SymlinkFlagRelative : 0u;
+        var substituteBytes = Encoding.Unicode.GetBytes(substituteName);
+        var printBytes = Encoding.Unicode.GetBytes(printName);
+        var pathBufferLength = checked(substituteBytes.Length + printBytes.Length);
+        var reparseDataLength = checked((ushort)(12 + pathBufferLength));
+        var output = new byte[8 + reparseDataLength];
+
+        BinaryPrimitives.WriteUInt32LittleEndian(output.AsSpan(0, 4), IoReparseTagSymlink);
+        BinaryPrimitives.WriteUInt16LittleEndian(output.AsSpan(4, 2), reparseDataLength);
+        BinaryPrimitives.WriteUInt16LittleEndian(output.AsSpan(6, 2), 0);
+        BinaryPrimitives.WriteUInt16LittleEndian(output.AsSpan(8, 2), 0);
+        BinaryPrimitives.WriteUInt16LittleEndian(output.AsSpan(10, 2), (ushort)substituteBytes.Length);
+        BinaryPrimitives.WriteUInt16LittleEndian(output.AsSpan(12, 2), (ushort)substituteBytes.Length);
+        BinaryPrimitives.WriteUInt16LittleEndian(output.AsSpan(14, 2), (ushort)printBytes.Length);
+        BinaryPrimitives.WriteUInt32LittleEndian(output.AsSpan(16, 4), flags);
+        substituteBytes.CopyTo(output.AsSpan(20, substituteBytes.Length));
+        printBytes.CopyTo(output.AsSpan(20 + substituteBytes.Length, printBytes.Length));
+        return output;
+    }
+
+    private static bool IsRelativeSymlinkTarget(string target)
+    {
+        var value = target.Trim();
+        return value.Length > 0 &&
+               !value.StartsWith("/", StringComparison.Ordinal) &&
+               !value.StartsWith("\\", StringComparison.Ordinal) &&
+               !(value.Length >= 2 && value[1] == ':');
+    }
+
+    private static string NormalizeSymlinkTarget(string target)
+    {
+        var normalized = target.Trim().Replace('/', '\\');
+        return string.IsNullOrWhiteSpace(normalized) ? "." : normalized;
     }
 }
 
@@ -1383,10 +1457,10 @@ internal sealed class BrokerPassthroughFileSystem : FileSystemBase
                 return false;
             }
 
-            // WSL UNC paths can report the WSL ext4 root if the Linux mount has
-            // disappeared. Never replace the Mac volume hint with an unrelated
-            // backing filesystem size; that is how Explorer shows convincing but
-            // false capacity for a stale folder.
+            // Passthrough roots can report a stale backing volume after the
+            // provider disappears. Never replace the Mac volume hint with an
+            // unrelated backing filesystem size; that is how Explorer shows
+            // convincing but false capacity for a stale folder.
             var hintedTotal = Interlocked.Read(ref _volumeTotalBytes);
             if (hintedTotal > 0)
             {

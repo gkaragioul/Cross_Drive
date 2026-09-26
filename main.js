@@ -104,7 +104,7 @@ function installAppMenu() {
                 click: () => openLegalFile('GPL_SOURCE_MANIFEST.md', 'GPL Source Manifest')
             },
             {
-                label: 'GNU GPL v2 (kernel + modules)',
+                label: 'GNU GPL v2 License',
                 click: () => openLegalFile('LICENSE.GPL-2.0.txt', 'GNU GPL v2')
             },
             { type: 'separator' },

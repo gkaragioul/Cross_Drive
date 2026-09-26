@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Buffers;
+using System.Buffers.Binary;
 using System.IO;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
@@ -291,6 +292,18 @@ internal sealed class NativeService
                 new MountRequest(physicalDrivePath, fileSystemHint ?? string.Empty, ReadOnly: true)
             ).ConfigureAwait(false);
 
+            if (plan.HardwareBound)
+            {
+                return new
+                {
+                    ok = false,
+                    requestId,
+                    error = "This APFS volume appears hardware-bound to the original Mac and cannot be unlocked on Windows.",
+                    hardwareBound = true,
+                    plan = CreatePlanPayload(plan)
+                };
+            }
+
             if (plan.NeedsPassword && string.IsNullOrWhiteSpace(password))
             {
                 return new
@@ -305,14 +318,20 @@ internal sealed class NativeService
 
             if (plan.IsEncrypted && !string.IsNullOrWhiteSpace(password))
             {
-                return new
+                var encryptionKey = await TryUnlockEncryptedApfsAsync(plan, password).ConfigureAwait(false);
+                if (encryptionKey is null)
                 {
-                    ok = false,
-                    requestId,
-                    error = "Native raw provider cannot unlock encrypted APFS volumes yet.",
-                    suggestion = "Retry with bridge fallback enabled so the bundled APFS bridge can use the supplied password.",
-                    plan = CreatePlanPayload(plan)
-                };
+                    return new
+                    {
+                        ok = false,
+                        requestId,
+                        error = "Encrypted APFS unlock failed. Check the password or unlock this disk on the original Mac if it is hardware-bound.",
+                        needsPassword = true,
+                        plan = CreatePlanPayload(plan)
+                    };
+                }
+
+                plan = plan with { EncryptionKey = encryptionKey, NeedsPassword = false };
             }
 
             var provider = await _rawDiskEngine.CreateFileSystemProviderAsync(plan).ConfigureAwait(false);
@@ -339,6 +358,49 @@ internal sealed class NativeService
         {
             return new { ok = false, requestId, error = ex.Message };
         }
+    }
+
+    private async Task<byte[]?> TryUnlockEncryptedApfsAsync(MountPlan plan, string password)
+    {
+        try
+        {
+            var drivePath = plan.PhysicalDrivePath;
+            var hashIdx = drivePath.IndexOf("#part", StringComparison.OrdinalIgnoreCase);
+            if (hashIdx > 0)
+            {
+                drivePath = drivePath[..hashIdx];
+            }
+
+            var uuid = ExtractVolumeUuid(plan.Notes);
+            if (uuid == Guid.Empty)
+            {
+                return null;
+            }
+
+            var device = await new WindowsRawBlockDeviceFactory().OpenReadOnlyAsync(drivePath).ConfigureAwait(false);
+            using (device)
+            {
+                var offset = Math.Max(0L, plan.PartitionOffsetBytes);
+                var blockSize = 4096u;
+                var keyManager = new ApfsKeyManager(device, (ulong)offset, blockSize);
+                return await keyManager.TryUnlockVolumeAsync(uuid, password).ConfigureAwait(false);
+            }
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static Guid ExtractVolumeUuid(string? notes)
+    {
+        if (string.IsNullOrWhiteSpace(notes))
+        {
+            return Guid.Empty;
+        }
+
+        var match = System.Text.RegularExpressions.Regex.Match(notes, @"VolumeUuid=([0-9a-fA-F-]{36})");
+        return match.Success && Guid.TryParse(match.Groups[1].Value, out var uuid) ? uuid : Guid.Empty;
     }
 
     private async Task<object> HandleAnalyzeRawAsync(JsonElement root, string? requestId)
@@ -397,6 +459,7 @@ internal interface IMountEngine
 
 internal sealed class WinFspMountEngine : IMountEngine
 {
+    private const string MissingRuntimeMessage = "CrossDrive runtime is not ready. Restart CrossDrive so it can repair its bundled runtime, or run the CrossDrive installer repair option.";
     private readonly ConcurrentDictionary<string, MountedDrive> _mounted = new(StringComparer.OrdinalIgnoreCase);
 
     public string EngineName => "winfsp";
@@ -427,12 +490,12 @@ internal sealed class WinFspMountEngine : IMountEngine
         }
         catch (DllNotFoundException)
         {
-            return MountResult.Fail("WinFsp runtime not installed. Install WinFsp first.");
+            return MountResult.Fail(MissingRuntimeMessage);
         }
         catch (TypeInitializationException tie)
         {
             var detail = tie.InnerException?.Message ?? tie.Message;
-            return MountResult.Fail($"WinFsp initialization failed. Install/repair WinFsp runtime. Detail: {detail}");
+            return MountResult.Fail($"CrossDrive runtime initialization failed. Restart CrossDrive so it can repair its bundled runtime, or run the CrossDrive installer repair option. Detail: {detail}");
         }
         catch (Exception ex)
         {
@@ -460,12 +523,12 @@ internal sealed class WinFspMountEngine : IMountEngine
         }
         catch (DllNotFoundException)
         {
-            return MountResult.Fail("WinFsp runtime not installed. Install WinFsp first.");
+            return MountResult.Fail(MissingRuntimeMessage);
         }
         catch (TypeInitializationException tie)
         {
             var detail = tie.InnerException?.Message ?? tie.Message;
-            return MountResult.Fail($"WinFsp initialization failed. Install/repair WinFsp runtime. Detail: {detail}");
+            return MountResult.Fail($"CrossDrive runtime initialization failed. Restart CrossDrive so it can repair its bundled runtime, or run the CrossDrive installer repair option. Detail: {detail}");
         }
         catch (Exception ex)
         {
@@ -490,18 +553,23 @@ internal sealed class WinFspMountEngine : IMountEngine
         try
         {
             var fs = new RawProviderFileSystem(provider, plan);
-            return MountWithFileSystem(driveId, letter, plan.PhysicalDrivePath, fs);
+            return MountWithFileSystem(
+                driveId,
+                letter,
+                plan.PhysicalDrivePath,
+                fs,
+                IsCaseSensitiveFileSystem(plan.FileSystemType));
         }
         catch (DllNotFoundException)
         {
             provider.Dispose();
-            return MountResult.Fail("WinFsp runtime not installed. Install WinFsp first.");
+            return MountResult.Fail(MissingRuntimeMessage);
         }
         catch (TypeInitializationException tie)
         {
             provider.Dispose();
             var detail = tie.InnerException?.Message ?? tie.Message;
-            return MountResult.Fail($"WinFsp initialization failed. Install/repair WinFsp runtime. Detail: {detail}");
+            return MountResult.Fail($"CrossDrive runtime initialization failed. Restart CrossDrive so it can repair its bundled runtime, or run the CrossDrive installer repair option. Detail: {detail}");
         }
         catch (Exception ex)
         {
@@ -552,7 +620,10 @@ internal sealed class WinFspMountEngine : IMountEngine
         return s;
     }
 
-    private MountResult MountWithFileSystem(string driveId, string letter, string sourcePath, FileSystemBase fs)
+    private static bool IsCaseSensitiveFileSystem(string fileSystemType)
+        => string.Equals(fileSystemType, "HFSX", StringComparison.OrdinalIgnoreCase);
+
+    private MountResult MountWithFileSystem(string driveId, string letter, string sourcePath, FileSystemBase fs, bool caseSensitiveSearch = false)
     {
         var host = new FileSystemHost(fs)
         {
@@ -560,11 +631,11 @@ internal sealed class WinFspMountEngine : IMountEngine
             Prefix = "",
             SectorSize = 4096,
             SectorsPerAllocationUnit = 1,
-            CaseSensitiveSearch = false,
+            CaseSensitiveSearch = caseSensitiveSearch,
             CasePreservedNames = true,
             UnicodeOnDisk = true,
             PersistentAcls = false,
-            ReparsePoints = false,
+            ReparsePoints = fs is RawProviderFileSystem,
             NamedStreams = false,
             ExtendedAttributes = false
         };
@@ -765,6 +836,9 @@ internal sealed class RawProbeFileSystem : FileSystemBase
 
 internal sealed class RawProviderFileSystem : FileSystemBase
 {
+    private const int StatusNotAReparsePoint = unchecked((int)0xC0000275);
+    private const uint IoReparseTagSymlink = 0xA000000C;
+    private const uint SymlinkFlagRelative = 1;
     private readonly IRawFileSystemProvider _provider;
     private readonly MountPlan _plan;
     private readonly DirectoryBuffer _dirBuffer = new();
@@ -831,6 +905,18 @@ internal sealed class RawProviderFileSystem : FileSystemBase
             return 0;
         }
         return unchecked((int)0xC000000D);
+    }
+
+    public override int GetReparsePointByName(string fileName, bool isDirectory, ref byte[] reparseData)
+    {
+        var entry = _provider.GetEntry(Normalize(fileName));
+        return TryGetSymlinkReparseData(entry, ref reparseData);
+    }
+
+    public override int GetReparsePoint(object fileNode, object fileDesc, string fileName, ref byte[] reparseData)
+    {
+        var entry = fileNode as RawFsEntry ?? _provider.GetEntry(Normalize(fileName));
+        return TryGetSymlinkReparseData(entry, ref reparseData);
     }
 
     public override int Read(object fileNode, object fileDesc, IntPtr buffer, ulong offset, uint length, out uint bytesTransferred)
@@ -912,6 +998,7 @@ internal sealed class RawProviderFileSystem : FileSystemBase
     {
         var size = entry.IsDirectory ? 0L : Math.Max(0, entry.Size);
         fileInfo.FileAttributes = (uint)entry.Attributes;
+        fileInfo.ReparseTag = entry.IsSymbolicLink ? IoReparseTagSymlink : 0;
         fileInfo.FileSize = (ulong)size;
         fileInfo.AllocationSize = (ulong)(((size + 4095) / 4096) * 4096);
         var t = (ulong)entry.LastWriteUtc.UtcDateTime.ToFileTimeUtc();
@@ -921,6 +1008,57 @@ internal sealed class RawProviderFileSystem : FileSystemBase
         fileInfo.ChangeTime = t;
         fileInfo.IndexNumber = 0;
         fileInfo.HardLinks = 0;
+    }
+
+    private static int TryGetSymlinkReparseData(RawFsEntry? entry, ref byte[] reparseData)
+    {
+        if (entry?.SymlinkTarget is not { Length: > 0 } target)
+        {
+            reparseData = Array.Empty<byte>();
+            return StatusNotAReparsePoint;
+        }
+
+        reparseData = BuildSymlinkReparseData(target);
+        return 0;
+    }
+
+    internal static byte[] BuildSymlinkReparseData(string target)
+    {
+        var printName = NormalizeSymlinkTarget(target);
+        var substituteName = printName;
+        var flags = IsRelativeSymlinkTarget(target) ? SymlinkFlagRelative : 0u;
+        var substituteBytes = Encoding.Unicode.GetBytes(substituteName);
+        var printBytes = Encoding.Unicode.GetBytes(printName);
+        var pathBufferLength = checked(substituteBytes.Length + printBytes.Length);
+        var reparseDataLength = checked((ushort)(12 + pathBufferLength));
+        var output = new byte[8 + reparseDataLength];
+
+        BinaryPrimitives.WriteUInt32LittleEndian(output.AsSpan(0, 4), IoReparseTagSymlink);
+        BinaryPrimitives.WriteUInt16LittleEndian(output.AsSpan(4, 2), reparseDataLength);
+        BinaryPrimitives.WriteUInt16LittleEndian(output.AsSpan(6, 2), 0);
+        BinaryPrimitives.WriteUInt16LittleEndian(output.AsSpan(8, 2), 0);
+        BinaryPrimitives.WriteUInt16LittleEndian(output.AsSpan(10, 2), (ushort)substituteBytes.Length);
+        BinaryPrimitives.WriteUInt16LittleEndian(output.AsSpan(12, 2), (ushort)substituteBytes.Length);
+        BinaryPrimitives.WriteUInt16LittleEndian(output.AsSpan(14, 2), (ushort)printBytes.Length);
+        BinaryPrimitives.WriteUInt32LittleEndian(output.AsSpan(16, 4), flags);
+        substituteBytes.CopyTo(output.AsSpan(20, substituteBytes.Length));
+        printBytes.CopyTo(output.AsSpan(20 + substituteBytes.Length, printBytes.Length));
+        return output;
+    }
+
+    private static bool IsRelativeSymlinkTarget(string target)
+    {
+        var value = target.Trim();
+        return value.Length > 0 &&
+               !value.StartsWith("/", StringComparison.Ordinal) &&
+               !value.StartsWith("\\", StringComparison.Ordinal) &&
+               !(value.Length >= 2 && value[1] == ':');
+    }
+
+    private static string NormalizeSymlinkTarget(string target)
+    {
+        var normalized = target.Trim().Replace('/', '\\');
+        return string.IsNullOrWhiteSpace(normalized) ? "." : normalized;
     }
 }
 

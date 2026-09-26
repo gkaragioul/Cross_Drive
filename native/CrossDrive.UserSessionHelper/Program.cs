@@ -42,20 +42,6 @@ static class Program
         {
             if (args.Length < 2) return 2;
             var action = args[0].Trim().ToLowerInvariant();
-            if (action == "wslmount" && args.Length >= 5)
-            {
-                var password = args.Length >= 6 ? args[5] : null;
-                var expectedDisk = args.Length >= 7 ? args[6] : null;
-                return RunWslCommand(args[3], args[4], "-d", "Ubuntu", "-u", "root", "--", "bash", args[1], args[2], password, expectedDisk);
-            }
-            if (action == "wslvalidate" && args.Length >= 7)
-            {
-                return RunWslCommand(args[5], args[6], "-d", "Ubuntu", "-u", "root", "--", "bash", args[1], args[2], args[3], args[4]);
-            }
-            if (action == "wslkeepalive")
-            {
-                return StartWslKeepAlive();
-            }
 
             var letter = NormalizeLetter(args[1]);
             if (letter is null) return 3;
@@ -66,65 +52,6 @@ static class Program
                 "unmap" => Unmap(letter),
                 _ => 4
             };
-        }
-        catch
-        {
-            return 1;
-        }
-    }
-
-    private static int RunWslCommand(string stdoutPath, string stderrPath, params string?[] args)
-    {
-        try
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(stdoutPath) ?? ".");
-            Directory.CreateDirectory(Path.GetDirectoryName(stderrPath) ?? ".");
-            using var stdout = new StreamWriter(stdoutPath, false, new UTF8Encoding(false));
-            using var stderr = new StreamWriter(stderrPath, false, new UTF8Encoding(false));
-            using var process = new System.Diagnostics.Process();
-            process.StartInfo.FileName = "wsl.exe";
-            process.StartInfo.UseShellExecute = false;
-            process.StartInfo.CreateNoWindow = true;
-            process.StartInfo.RedirectStandardOutput = true;
-            process.StartInfo.RedirectStandardError = true;
-            process.StartInfo.WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden;
-            foreach (var arg in args)
-            {
-                if (arg is not null)
-                {
-                    process.StartInfo.ArgumentList.Add(arg);
-                }
-            }
-            process.Start();
-            stdout.Write(process.StandardOutput.ReadToEnd());
-            stderr.Write(process.StandardError.ReadToEnd());
-            process.WaitForExit();
-            return process.ExitCode;
-        }
-        catch (Exception ex)
-        {
-            try { File.WriteAllText(stderrPath, ex.ToString()); } catch {}
-            return 1;
-        }
-    }
-
-    private static int StartWslKeepAlive()
-    {
-        try
-        {
-            using var process = new System.Diagnostics.Process();
-            process.StartInfo.FileName = "wsl.exe";
-            process.StartInfo.UseShellExecute = false;
-            process.StartInfo.CreateNoWindow = true;
-            process.StartInfo.WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden;
-            process.StartInfo.ArgumentList.Add("-d");
-            process.StartInfo.ArgumentList.Add("Ubuntu");
-            process.StartInfo.ArgumentList.Add("--");
-            process.StartInfo.ArgumentList.Add("bash");
-            process.StartInfo.ArgumentList.Add("-lc");
-            process.StartInfo.ArgumentList.Add("pgrep -f crossdrive-keepalive >/dev/null 2>&1 || nohup bash -lc 'exec -a crossdrive-keepalive sleep 2147483647' >/dev/null 2>&1 &");
-            process.Start();
-            return 0;
         }
         catch
         {

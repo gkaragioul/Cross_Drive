@@ -8,8 +8,12 @@ public sealed record RawFsEntry(
     bool IsDirectory,
     long Size,
     DateTimeOffset LastWriteUtc,
-    FileAttributes Attributes = FileAttributes.ReadOnly
-);
+    FileAttributes Attributes = FileAttributes.ReadOnly,
+    string? SymlinkTarget = null
+)
+{
+    public bool IsSymbolicLink => !string.IsNullOrWhiteSpace(SymlinkTarget);
+}
 
 public interface IRawFileSystemProvider : IDisposable
 {

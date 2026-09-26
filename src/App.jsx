@@ -68,7 +68,7 @@ const SetupBanner = ({ setup }) => {
       )}
       {isFailed && <span style={{ fontSize: 18 }}>&#9888;&#65039;</span>}
       <div>
-        <strong>{isInstalling ? 'Setting up Mac drivers' : 'Setup failed'}</strong>
+        <strong>{isInstalling ? 'Preparing CrossDrive runtime' : 'Setup failed'}</strong>
         {isInstalling && <Dots />}
         {' \u2014 '}
         <span style={{ opacity: 0.85 }}>{isInstalling ? 'Preparing runtime components. This can take a moment on first launch.' : setup.message}</span>
@@ -180,16 +180,16 @@ const App = () => {
   const doFixPreflight = async ({ automatic = false } = {}) => {
     setFixingPreflight(true);
     try {
-      if (automatic) await logRemote('Automatic runtime setup started.', 'info');
+      if (automatic) await logRemote('Automatic native runtime repair started.', 'info');
       const data = await fixPreflight();
       setPreflight(data);
-      if (data.message) await logRemote(`Automatic runtime setup: ${data.message}`, data.success ? 'success' : 'warning');
+      if (data.message) await logRemote(`Automatic native runtime repair: ${data.message}`, data.success ? 'success' : 'warning');
       if (data.success) {
         const { drives: d } = await apiFetchDrives();
         setDrives(d);
       }
     } catch (e) {
-      await logRemote(`Automatic runtime setup failed: ${e.message}`, 'error');
+      await logRemote(`Automatic native runtime repair failed: ${e.message}`, 'error');
     }
     finally { setFixingPreflight(false); }
   };
@@ -325,8 +325,8 @@ const App = () => {
   };
 
   const renderDrives = () => {
-    const environmentReady = setup.ready || runtimeConfig?.mode !== 'wsl_kernel';
-    const showSetupBanner = setup.status !== 'ready' && runtimeConfig?.mode === 'wsl_kernel';
+    const environmentReady = setup.ready !== false;
+    const showSetupBanner = setup.status !== 'ready';
     return (
       <>
         <section className="header-section fade-in">
@@ -343,10 +343,10 @@ const App = () => {
             fontSize: '12px', fontFamily: 'var(--font-mono)', letterSpacing: '0.5px'
           }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
-              <strong>{fixingPreflight ? 'Runtime Setup Running' : 'Runtime Setup Needs Attention'}</strong>
+              <strong>{fixingPreflight ? 'Native Runtime Repair Running' : 'Native Runtime Needs Attention'}</strong>
               <button className="btn btn-primary" style={{ width: 'auto', padding: '6px 14px', fontSize: '11px' }}
                 onClick={doFixPreflight} disabled={fixingPreflight}>
-                {fixingPreflight ? 'Installing...' : 'Retry Setup'}
+                {fixingPreflight ? 'Repairing...' : 'Repair'}
               </button>
             </div>
             {preflight.items && preflight.items.map(item => (
@@ -356,9 +356,9 @@ const App = () => {
               </div>
             ))}
             <div style={{ marginTop: '10px', opacity: 0.85 }}>
-              {fixingPreflight ? 'CrossDrive is installing missing runtime components automatically.' : (preflight.message || 'CrossDrive attempted automatic setup. Approve any Windows prompt, then retry if Windows asks for a reboot.')}
+              {fixingPreflight ? 'CrossDrive is repairing bundled native runtime components automatically.' : (preflight.message || 'CrossDrive attempted native runtime repair. Approve any Windows prompt if shown, then retry.')}
             </div>
-            {preflight.rebootRequired && <div style={{ marginTop: '8px', color: 'var(--warning)' }}>WSL Fallback Runtime installation may require a Windows reboot.</div>}
+            {preflight.rebootRequired && <div style={{ marginTop: '8px', color: 'var(--warning)' }}>Windows requested a restart to finish native runtime repair.</div>}
             {preflight.note && <div style={{ marginTop: '8px', opacity: 0.7, fontSize: '11px' }}>{preflight.note}</div>}
           </div>
         )}
@@ -413,7 +413,7 @@ const App = () => {
                       ? (drive.driveLetter
                           ? `Mounted as ${drive.driveLetter}:`
                           : drive.mountPath && drive.mountPath.startsWith('\\\\')
-                            ? 'Mounted (R/W via WSL2 \u2014 click Open Explorer)'
+                            ? 'Mounted (click Open Explorer)'
                             : 'Mounted')
                       : 'Unmounted'}
                   </div>
@@ -478,13 +478,13 @@ const App = () => {
     <section className="fade-in">
       <h1>Settings</h1>
 
-      <h3 style={{ marginTop: '24px', marginBottom: '12px', opacity: 0.5, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '2.5px', fontFamily: 'var(--font-heading)', color: 'var(--primary)' }}>Runtime Prerequisites</h3>
+      <h3 style={{ marginTop: '24px', marginBottom: '12px', opacity: 0.5, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '2.5px', fontFamily: 'var(--font-heading)', color: 'var(--primary)' }}>Native Runtime</h3>
       <div style={{ background: '#0e0e0e', border: '1px solid var(--border)', padding: '16px' }}>
         {preflight ? (
           <>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
               <span style={{ color: preflight.ready ? 'var(--success)' : 'var(--danger)', fontSize: '13px', fontWeight: 'bold' }}>
-                {preflight.ready ? 'Runtime ready' : (fixingPreflight ? 'Runtime setup running' : 'Runtime setup needs attention')}
+                {preflight.ready ? 'Native runtime ready' : (fixingPreflight ? 'Native runtime repair running' : 'Native runtime needs attention')}
               </span>
               {!preflight.ready && (
                 <button className="btn btn-primary" style={{ width: 'auto', padding: '6px 14px', fontSize: '11px' }} onClick={doFixPreflight} disabled={fixingPreflight}>
@@ -529,7 +529,6 @@ const App = () => {
             <SettingsRow label="Mount Mode" value={runtimeConfig.mode} />
             <SettingsRow label="Native Mount Enabled" value={runtimeConfig.nativeEnabled ? 'Yes' : 'No'} />
             <SettingsRow label="Raw Engine Rollout %" value={`${runtimeConfig.canaryPercent}%`} />
-            <SettingsRow label="Native Bridge Fallback" value={runtimeConfig.allowBridgeFallback ? 'Allowed' : 'Disabled'} />
           </>
         ) : (
           <div style={{ color: 'var(--text-dim)', fontSize: '13px' }}>Loading...</div>

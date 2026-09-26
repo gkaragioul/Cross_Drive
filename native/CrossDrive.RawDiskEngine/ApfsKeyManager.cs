@@ -198,7 +198,7 @@ public sealed class ApfsKeyManager
         using var pbkdf2 = new Rfc2898DeriveBytes(pwBytes, entry.Salt, (int)entry.Iterations, HashAlgorithmName.SHA256);
         derivedKey = pbkdf2.GetBytes(32);
 
-        if (entry.WrappedKey.Length < 24) return null;
+        if (entry.WrappedKey is null || entry.WrappedKey.Length < 24) return null;
 
         var unwrappedKey = new byte[entry.WrappedKey.Length - 8];
         var success = Rfc3394KeyUnwrap(unwrappedKey, entry.WrappedKey, entry.WrappedKey.Length - 8, derivedKey, entry.AesMode == ApfsConstants.AesMode256 ? 32 : 16);

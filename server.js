@@ -1,11 +1,10 @@
 const express = require('express');
-const { exec, execSync, spawn } = require('child_process');
+const { exec, execSync } = require('child_process');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const { startNativeService, stopNativeService, sendNativeRequest, getNativeStatus } = require('./scripts/nativeServiceClient');
 const { sendBrokerRequest, ensureBrokerReady } = require('./scripts/nativeBrokerClient');
-const { ensureWslMountPathReady } = require('./scripts/wslSetup');
 
 const mountSystemRoutes = require('./routes/systemRoutes');
 const mountDriveRoutes = require('./routes/driveRoutes');
@@ -18,7 +17,7 @@ const host = '127.0.0.1';
 let httpServer = null;
 
 let logs = [];
-const VALID_RUNTIME_MOUNT_MODES = new Set(['wsl_kernel', 'native_first', 'native_only']);
+const VALID_RUNTIME_MOUNT_MODES = new Set(['native_first', 'native_only']);
 function readCrossDriveEnv(name, fallbackName = null) {
     return process.env[name] ?? (fallbackName ? process.env[fallbackName] : undefined);
 }
@@ -26,8 +25,7 @@ const RUNTIME_MOUNT_MODE = (() => {
     const raw = String(readCrossDriveEnv('CROSSDRIVE_MOUNT_MODE', 'CROSSDRIVE_MOUNT_MODE') || '').trim().toLowerCase();
     if (!raw) return 'native_first';
     if (raw === 'experimental_raw') return 'native_only';
-    if (raw === 'wsl_unc' || raw === 'hybrid_canary') return 'wsl_kernel';
-    return VALID_RUNTIME_MOUNT_MODES.has(raw) ? raw : 'wsl_kernel';
+    return VALID_RUNTIME_MOUNT_MODES.has(raw) ? raw : 'native_first';
 })();
 const RUNTIME_CANARY_PERCENT = (() => {
     const raw = Number.parseInt(String(readCrossDriveEnv('CROSSDRIVE_CANARY_PERCENT', 'CROSSDRIVE_CANARY_PERCENT') || '100'), 10);
@@ -35,7 +33,6 @@ const RUNTIME_CANARY_PERCENT = (() => {
     return Math.max(0, Math.min(100, raw));
 })();
 const RUNTIME_NATIVE_MOUNT_ENABLED = true;
-const RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK = RUNTIME_MOUNT_MODE !== 'native_only';
 const PREFER_SUBST_LOCAL_FAST_PATH = true;
 const nativeMountState = new Map();
 const inFlightOps = new Set();
@@ -46,16 +43,10 @@ const ALLOWED_CORS_ORIGINS = new Set([
 
 // Driver installation state
 let setupState = {
-    status: 'checking',
-    message: 'Checking bundled native runtime.',
-    ready: false,
-    wslSetup: {
-        wslAvailable: false,
-        ubuntu: false,
-        kernelStaged: false,
-        configWritten: false,
-        modulesLoaded: [],
-        error: null,
+    status: 'ready',
+    message: 'Bundled native runtime ready.',
+    ready: true,
+    nativeSetup: {
         requiresAction: false
     }
 };
@@ -101,96 +92,6 @@ function bucketizeDriveId(driveId) {
         hash |= 0;
     }
     return Math.abs(hash) % 100;
-}
-
-function shouldAttemptNativeMountForDrive(driveId, forceNative = false) {
-    if (!RUNTIME_NATIVE_MOUNT_ENABLED) return false;
-    return forceNative || RUNTIME_MOUNT_MODE === 'native_first' || RUNTIME_MOUNT_MODE === 'native_only';
-}
-
-function execPsMount(driveId, password = '', skipLetter = false) {
-    const hasPassword = typeof password === 'string' && password.length > 0;
-    const args = ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', PS_PATH, '-Action', 'Mount', '-DriveID', String(driveId)];
-    if (hasPassword) {
-        args.push('-Password', String(password).replace(/'/g, "''"));
-    }
-    const env = skipLetter ? { ...process.env, CROSSDRIVE_SKIP_LETTER: '1', CROSSDRIVE_SKIP_LETTER: '1' } : process.env;
-
-    // Use spawn instead of exec.  exec waits for ALL pipe handles to close,
-    // but apfs-fuse inherits PowerShell's pipe handles and runs indefinitely,
-    // so exec hangs for the full 120s timeout.  With spawn we can resolve as
-    // soon as valid JSON arrives on stdout — no need to wait for pipe closure.
-    return new Promise((resolve, reject) => {
-        let resolved = false;
-        let stdout = '';
-        let stderr = '';
-
-        const child = spawn('powershell', args, {
-            windowsHide: true,
-            env,
-            stdio: ['ignore', 'pipe', 'pipe']
-        });
-
-        const timer = setTimeout(() => {
-            if (resolved) return;
-            resolved = true;
-            try { child.kill(); } catch {}
-            addLog('PS Mount TIMEOUT after 120s', 'error');
-            reject(new Error('Mount script timed out after 120 seconds'));
-        }, 120000);
-
-        function tryResolveFromStdout() {
-            if (resolved) return;
-            const jsonMatch = stdout.match(/\{[\s\S]*\}/);
-            if (!jsonMatch) return;
-            try {
-                const result = JSON.parse(jsonMatch[0]);
-                // Valid JSON received — resolve immediately
-                resolved = true;
-                clearTimeout(timer);
-                if (stderr) addLog(`PS Mount Info: ${stderr}`, 'info');
-                addLog(`PS Raw Output: ${stdout}`);
-                // Detach from child's pipes so we don't keep blocking on them
-                try { child.stdout.destroy(); } catch {}
-                try { child.stderr.destroy(); } catch {}
-                try { child.unref(); } catch {}
-                resolve(result);
-            } catch { /* JSON incomplete, wait for more data */ }
-        }
-
-        child.stdout.on('data', (data) => {
-            stdout += data.toString();
-            tryResolveFromStdout();
-        });
-
-        child.stderr.on('data', (data) => {
-            stderr += data.toString();
-        });
-
-        child.on('exit', (code) => {
-            if (resolved) return;
-            // Process exited without valid JSON yet — wait briefly for buffered data
-            setTimeout(() => {
-                if (resolved) return;
-                resolved = true;
-                clearTimeout(timer);
-                if (stderr) addLog(`PS Mount Info: ${stderr}`, 'info');
-                if (code !== 0 && code !== null) {
-                    addLog(`PS EXEC ERROR (Code ${code})`, 'error');
-                    return reject(new Error(`System execution failure: exit code ${code}`));
-                }
-                addLog(`PS Raw Output: ${stdout}`);
-                try {
-                    const jsonMatch = stdout.match(/\{[\s\S]*\}/);
-                    const result = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(stdout);
-                    return resolve(result);
-                } catch {
-                    addLog(`CRITICAL: Failed to parse mount result. Raw: ${stdout}`, 'error');
-                    return reject(new Error('Invalid response from mount tool.'));
-                }
-            }, 200);
-        });
-    });
 }
 
 async function sendNativeWithBoot(payload, timeoutMs = 5000, retries = 6) {
@@ -431,7 +332,7 @@ function isTerminalRawMountFailure(result) {
 
     const errorText = String(result.error || '');
     if (/does not yet support filesystem/i.test(errorText)) return true;
-    // Native broker cannot decrypt; retrying other drive letters does not help — fall back to APFS bridge.
+    // Native unlock failures are terminal for this mount attempt; retrying other drive letters does not help.
     if (/cannot unlock encrypted APFS/i.test(errorText)) return true;
 
     return false;
@@ -600,63 +501,10 @@ app.use((err, req, res, next) => {
 addLog("CrossDrive Backend started and logging initialized.");
 addLog(
     `Runtime mount mode: ${RUNTIME_MOUNT_MODE}` +
-    ` (wslPrimary=${RUNTIME_MOUNT_MODE === 'wsl_kernel'}, nativeEnabled=${RUNTIME_NATIVE_MOUNT_ENABLED}, canaryPercent=${RUNTIME_CANARY_PERCENT}, allowBridgeFallback=${RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK})`
+    ` (nativeEnabled=${RUNTIME_NATIVE_MOUNT_ENABLED}, canaryPercent=${RUNTIME_CANARY_PERCENT})`
 );
 startNativeService();
 addLog("Native service started for raw-disk analysis endpoints.");
-
-// First-launch / on-launch WSL2 setup — idempotent, best-effort.
-// Stages the bundled custom kernel + modules and writes .wslconfig so the
-// WSL-backed R/W mount path works on a fresh install.
-(async () => {
-    try {
-        const summary = await ensureWslMountPathReady(addLog);
-        setupState.wslSetup = {
-            ...summary,
-            requiresAction: RUNTIME_MOUNT_MODE === 'wsl_kernel' && Boolean(summary.error)
-        };
-        if (summary.error) {
-            if (RUNTIME_MOUNT_MODE === 'wsl_kernel') {
-                setupState.status = 'failed';
-                setupState.ready = false;
-                setupState.message = summary.error;
-                addLog(`WSL mount path setup incomplete: ${summary.error}. WSL kernel mode is blocked until setup is repaired.`, 'warning');
-            } else {
-                setupState.status = 'ready';
-                setupState.ready = true;
-                setupState.message = 'Native runtime ready. Optional WSL2 kernel runtime is not installed.';
-                addLog(`Optional WSL mount path unavailable: ${summary.error}. Continuing with bundled native engine.`, 'warning');
-            }
-        } else if (summary.modulesLoaded?.length) {
-            setupState.status = 'ready';
-            setupState.ready = true;
-            setupState.message = RUNTIME_MOUNT_MODE === 'wsl_kernel'
-                ? 'WSL2 kernel runtime ready.'
-                : 'Native runtime ready. Optional WSL2 kernel runtime is also available.';
-            addLog(`WSL mount path ready: kernel modules loaded [${summary.modulesLoaded.join(', ')}].`, 'success');
-        } else {
-            setupState.status = RUNTIME_MOUNT_MODE === 'wsl_kernel' ? 'failed' : 'ready';
-            setupState.ready = RUNTIME_MOUNT_MODE !== 'wsl_kernel';
-            setupState.message = RUNTIME_MOUNT_MODE === 'wsl_kernel'
-                ? 'WSL2 kernel runtime did not report loaded Mac filesystem modules.'
-                : 'Native runtime ready. Optional WSL2 kernel modules are not loaded.';
-            setupState.wslSetup.requiresAction = RUNTIME_MOUNT_MODE === 'wsl_kernel';
-            addLog(setupState.message, 'warning');
-        }
-    } catch (e) {
-        setupState.status = RUNTIME_MOUNT_MODE === 'wsl_kernel' ? 'failed' : 'ready';
-        setupState.ready = RUNTIME_MOUNT_MODE !== 'wsl_kernel';
-        setupState.message = RUNTIME_MOUNT_MODE === 'wsl_kernel'
-            ? `WSL setup failed: ${e.message}`
-            : 'Native runtime ready. Optional WSL2 kernel setup failed.';
-        setupState.wslSetup = {
-            ...setupState.wslSetup,
-            error: e.message,
-            requiresAction: RUNTIME_MOUNT_MODE === 'wsl_kernel'
-        };
-        addLog(setupState.message, 'warning');
-    }
-})();
 
 function packagedAssetPath(...parts) {
     return process.resourcesPath ? path.join(process.resourcesPath, 'app.asar.unpacked', ...parts) : '';
@@ -815,14 +663,11 @@ const ctx = {
     RUNTIME_MOUNT_MODE,
     RUNTIME_NATIVE_MOUNT_ENABLED,
     RUNTIME_CANARY_PERCENT,
-    RUNTIME_ALLOW_NATIVE_BRIDGE_FALLBACK,
     PREFER_SUBST_LOCAL_FAST_PATH,
     PS_PATH,
     MAP_USER_SESSION_PS_PATH,
-    execPsMount,
     sendNativeWithBoot,
     getBrokerMountedMap,
-    shouldAttemptNativeMountForDrive,
     tryMountRawWithFallbackLetters,
     runPsJson,
     getNativeStatus,
