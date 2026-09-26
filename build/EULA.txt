@@ -6,10 +6,25 @@ Copyright (c) 2026 CrossDrive contributors
 CrossDrive is distributed under the MIT License for its application source code.
 Third-party components are distributed under their own license terms.
 
-By installing or using CrossDrive, you acknowledge that the software mounts
-physical disks and performs privileged local operations. You are responsible
-for selecting the correct physical disk and maintaining backups. The software
-is provided "as is" without warranties of any kind.
+READ BEFORE INSTALLING
+----------------------
+
+CrossDrive is an ABANDONED RESEARCH PROJECT. It is not maintained or supported.
+
+CrossDrive reads and writes raw disks and CAN DAMAGE OR DESTROY THE DATA on the
+drives you connect to it. In particular, it mounts HFS+ volumes read-write by
+default and switches their journal off without replaying it, which can make a
+Mac drive unmountable. Only use it on drives you have fully backed up, or on
+disk images.
+
+By installing or using CrossDrive you accept that you do so entirely at your
+own risk, that you alone are responsible for how you use it, for selecting the
+correct physical disk and for keeping backups, and that the authors accept no
+liability for any loss or damage, including loss of data. The software is
+provided "as is" without warranties of any kind. CrossDrive is not affiliated
+with Apple, Western Digital or Microsoft.
+
+If you do not accept these terms, do not install CrossDrive.
 
 MIT License
 -----------
@@ -56,7 +71,5 @@ CrossDrive is developed at:
 
     https://github.com/gkaragioul/Cross_Drive
 
-For licensing inquiries, GPL source-code requests, or other legal questions,
-open an issue at:
-
-    https://github.com/gkaragioul/Cross_Drive/issues
+The project is abandoned and is not supported. GPL source-code requests are
+still honoured as described in GPL_SOURCE_OFFER.txt.

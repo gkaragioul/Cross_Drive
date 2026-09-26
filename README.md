@@ -4,36 +4,75 @@ https://github.com/user-attachments/assets/c7755cff-ae9e-4af9-bac5-8dbea1d96bd5
 <h1>CrossDrive</h1>
 
 <p>
-  <strong>Mac drive access for Windows. Mount, browse, and copy files from APFS and HFS+ drives as real local drive letters.</strong><br>
-  <em>Built with Electron, React, bundled native Windows helper services, and optional WSL2 kernel filesystem drivers.</em>
+  <strong>Abandoned research project: experimental access to Mac-formatted (APFS / HFS+) drives from Windows.</strong><br>
+  <em>Unmaintained. Provided as-is, with no warranty and no support.</em>
 </p>
 
 <p>
-  <a href="#downloads">Downloads</a> -
-  <a href="#features">Features</a> -
-  <a href="#requirements">Requirements</a> -
+  <a href="#known-dangerous-behaviour">Known dangerous behaviour</a> -
+  <a href="#status">Status</a> -
+  <a href="#what-it-does">What it does</a> -
   <a href="#development">Building</a> -
   <a href="#license">License</a>
 </p>
 
 </div>
 
-## Features
-
-- Mount supported APFS, HFS, and HFS+ Mac-formatted volumes on Windows.
-- Expose mounted volumes through local Windows drive letters.
-- Use bundled native Windows helper services as the default mount path.
-- Keep WSL2 kernel filesystem drivers available as an optional advanced path.
-- Keep backend communication local through loopback HTTP and named pipes.
+> [!CAUTION]
+> **CrossDrive is abandoned research software. It can damage or destroy the data on drives you connect to it.**
+>
+> - It is not maintained, not supported and not safe for everyday use. Bugs will not be fixed and issues will not be answered (GPL source requests excepted, see [SUPPORT.md](SUPPORT.md)).
+> - Only use it on a drive you have fully backed up, or on a disk image. Never use it on your only copy of anything.
+> - It is provided "as is" under the [MIT License](LICENSE), without warranty of any kind. You alone are responsible for how you use it and for any loss that results. See [DISCLAIMER.md](DISCLAIMER.md).
 
 ## Status
 
-CrossDrive is pre-GA. APFS write support is experimental and disabled by
-default unless `CROSSDRIVE_EXPERIMENTAL_APFS_WRITES=1` is set. The legacy
-`CROSSDRIVE_EXPERIMENTAL_APFS_WRITES` alias is still accepted. CoreStorage /
-FileVault 1 is detected but explicitly unsupported.
+CrossDrive is a research project that has been **abandoned**. Its source is
+published so that others can study it, fork it and improve it under the MIT
+License. There will be no further releases, fixes or support from the original
+author. See [SUPPORT.md](SUPPORT.md).
+
+## Known dangerous behaviour
+
+Read this before running any build of CrossDrive.
+
+- **HFS+ volumes are mounted read-write by default.** The native engine only
+  mounts HFS+ read-only if the environment variable
+  `CROSSDRIVE_EXPERIMENTAL_HFS_WRITES=0` is set before CrossDrive starts.
+- **A read-write HFS+ mount switches the volume's journal off.** CrossDrive
+  clears the "journaled" flag and zeroes the journal pointer in both volume
+  headers **without replaying the journal first**
+  (`HfsPlusNativeReader.DisableJournalAsync`, called from `RawDiskEngine.cs`).
+  Changes still waiting in the journal are lost, and the volume can stop
+  mounting on a Mac. Most Mac external drives are formatted
+  "Mac OS Extended (Journaled)" and are affected. A user reported exactly this
+  in [#3](https://github.com/gkaragioul/Cross_Drive/issues/3).
+- **The optional WSL2 path repairs and force-mounts drives.**
+  `scripts/wsl_mount.sh` runs `fsck.hfsplus -f -y` (automatic repair) and then
+  mounts HFS+ with `-o rw,force`.
+- **`scripts/wsl_format_and_mount.sh` erases a drive.** It reformats the target
+  with `mkfs.hfsplus`. It ships with the app as a recovery tool. Never run it on
+  a drive that holds data.
+- APFS writes are experimental and off by default
+  (`CROSSDRIVE_EXPERIMENTAL_APFS_WRITES=1` turns them on). Do not turn them on.
+
+If you only need to read files from a Mac drive on Windows, use a maintained
+tool instead.
+
+## What it does
+
+- Attempts to mount APFS, HFS and HFS+ Mac-formatted volumes on Windows.
+- Exposes mounted volumes through local Windows drive letters.
+- Uses bundled native Windows helper services as the default mount path.
+- Keeps WSL2 kernel filesystem drivers as an optional advanced path.
+- Keeps backend communication local through loopback HTTP and named pipes.
+
+CoreStorage / FileVault 1 is detected but not supported.
 
 ## Downloads
+
+Past builds are kept for research only. They all include the dangerous
+behaviour described above.
 
 The v1.5.35 Windows installer and portable executable are **unsigned**. Obtain
 them and `CrossDrive-GPL-Source-v1.5.35.zip` from the same
@@ -181,9 +220,19 @@ complete corresponding source package for those GPL-covered binaries, including
 the exact source revisions, kernel `.config`, local patches, and build
 commands/scripts.
 
-## Known Limitations
+## Known issues
 
+These will not be fixed by the original author.
+
+- [#3](https://github.com/gkaragioul/Cross_Drive/issues/3): an HFS+ drive became
+  unmountable on a Mac after being mounted by CrossDrive (see
+  [Known dangerous behaviour](#known-dangerous-behaviour)).
+- [#1](https://github.com/gkaragioul/Cross_Drive/issues/1): some drives are
+  detected but show no files.
+- [#2](https://github.com/gkaragioul/Cross_Drive/issues/2): the WSL2 path looks
+  for a distro named exactly `Ubuntu` and fails when it has another name
+  (for example `Ubuntu-26.04`).
 - APFS writes are experimental and hidden by default.
 - Hardware-bound APFS encryption requires the original Mac.
-- CoreStorage / FileVault 1 is unsupported for GA.
-- Final GA still requires real physical-drive validation.
+- CoreStorage / FileVault 1 is unsupported.
+- CrossDrive was never validated on real physical drives for general release.
