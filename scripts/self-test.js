@@ -471,7 +471,7 @@ if (!auditScript.includes('Packaging avoids dev script globs') || !auditScript.i
 if (!auditScript.includes('GPL source manifest present')) fail('release audit missing GPL source manifest check');
 else pass('release audit checks GPL source manifest');
 
-if (!licenseText.includes('Copyright (c) 2026 CrossDrive contributors')) fail('LICENSE copyright is not CrossDrive 2026');
+if (!licenseText.includes('Copyright (c) 2026 George Karagioules and contributors')) fail('LICENSE copyright line is missing or changed');
 else pass('LICENSE copyright is CrossDrive 2026');
 
 if (!eulaText.includes('CrossDrive is distributed under the MIT License') || !eulaText.includes('WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos')) {

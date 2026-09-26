@@ -6,7 +6,7 @@ const { execSync, execFile } = require('child_process');
 const APP_NAME = 'CrossDrive';
 const APP_ID = 'com.crossdrive.app';
 const RELEASES_URL = 'https://github.com/gkaragioul/Cross_Drive/releases/latest';
-const COPYRIGHT_NOTICE = 'Copyright (c) 2026 CrossDrive contributors';
+const COPYRIGHT_NOTICE = 'Copyright (c) 2026 George Karagioules and contributors';
 const WINFSP_NOTICE = 'WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos';
 
 app.setName(APP_NAME);

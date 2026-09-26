@@ -86,7 +86,7 @@ const SettingsRow = ({ label, value }) => (
 
 const APP_VERSION_FALLBACK = '1.5.32';
 const RELEASES_URL = 'https://github.com/gkaragioul/Cross_Drive/releases/latest';
-const COPYRIGHT_NOTICE = 'Copyright (c) 2026 CrossDrive contributors';
+const COPYRIGHT_NOTICE = 'Copyright (c) 2026 George Karagioules and contributors';
 const WINFSP_NOTICE = 'WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos';
 
 const formatMountError = (result) => {

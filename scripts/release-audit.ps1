@@ -226,7 +226,7 @@ $checks += [pscustomobject]@{
 
 $checks += [pscustomobject]@{
     Check = "CrossDrive MIT copyright documented"
-    Passed = ($noticeText -match "Copyright \(c\) 2026 CrossDrive contributors") -and ((Get-Content (Join-Path $root "LICENSE") -Raw) -match "Copyright \(c\) 2026 CrossDrive contributors")
+    Passed = ($noticeText -match "Copyright \(c\) 2026 George Karagioules and contributors") -and ((Get-Content (Join-Path $root "LICENSE") -Raw) -match "Copyright \(c\) 2026 George Karagioules and contributors")
     Detail = "LICENSE + THIRD_PARTY_NOTICES.txt"
 }
 

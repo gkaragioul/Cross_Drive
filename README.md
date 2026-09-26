@@ -77,8 +77,10 @@ behaviour described above.
 The v1.5.35 Windows installer and portable executable are **unsigned**. Obtain
 them and `CrossDrive-GPL-Source-v1.5.35.zip` from the same
 [GitHub release](https://github.com/gkaragioul/Cross_Drive/releases), and verify
-the SHA-256 hashes in its notes. The previously published v1.5.34 binaries have
-an unresolved GPL source provenance gap and should not be redistributed.
+the SHA-256 hashes in its notes. All builds before v1.5.35 (including every
+v1.5.17 to v1.5.34 installer) have an unresolved GPL source provenance gap for
+their bundled kernel components, are no longer distributed, and should not be
+redistributed.
 
 ## License
 
@@ -89,7 +91,7 @@ Third-party dependencies, bundled prerequisites, and GPL-covered kernel/module
 binaries remain under their own license terms. See the third-party and GPL
 source notices below for the full binary-distribution license picture.
 
-Copyright (c) 2026 CrossDrive contributors.
+Copyright (c) 2026 George Karagioules and contributors.
 
 ## Third-Party Notices
 

@@ -17,4 +17,4 @@ installing. Download the GPL source ZIP alongside the Windows executable.
 
 ## Where to download
 
-Permanent installer link: https://github.com/gkaragioul/Cross_Drive/releases/latest/download/CrossDriveSetup.exe
+Release page (installer, portable executable, and GPL source ZIP): https://github.com/gkaragioul/Cross_Drive/releases/tag/v1.5.35

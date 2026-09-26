@@ -1,7 +1,7 @@
 CrossDrive License and Notices
 ===============================
 
-Copyright (c) 2026 CrossDrive contributors
+Copyright (c) 2026 George Karagioules and contributors
 
 CrossDrive is distributed under the MIT License for its application source code.
 Third-party components are distributed under their own license terms.
